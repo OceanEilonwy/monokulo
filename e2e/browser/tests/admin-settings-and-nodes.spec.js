@@ -226,3 +226,91 @@ test('the CoinMarketCap API key is entered, shown only as set, and removed', asy
     standIn.close();
   }
 });
+
+// The Server tab's Push relay card (the push relay inside monokulo, off
+// here: the stack sets no MONOKULO_RELAY_* secret). Closed, it says the
+// relay is off and what it couldn't start without; Edit settings, a link,
+// opens every [relay.*] setting in place; an app the relay has no
+// credentials for is refused on its row, nothing saved; the public address
+// saves into monokulo's options file and shows as a chip; turning the relay
+// on without its handle key is refused on the switch.
+test('the push relay card opens, refuses what it can\'t use and saves its public address', async ({ page }) => {
+  await signInAsAdmin(page);
+  await openSettingsTab(page, 'server');
+  const card = page.locator('#card-relay');
+  // Between monokulo's server card and the engine's.
+  const order = await page.locator('#settings-panel .settings-card').evaluateAll((cards) => cards.map((c) => c.id));
+  expect(order.indexOf('card-relay')).toBe(order.indexOf('card-server-monokulo') + 1);
+  await expect(card.locator('.relay-state-words')).toHaveText('Off');
+  await expect(card.locator('.relay-chips')).toContainText('no apps');
+  await expect(card.locator('[data-relay-panel]')).toContainText('relay.server.public_uri is not set');
+  await expect(card.locator('[name="relay:server.listen"]')).toHaveCount(0);
+  await captureCoverageStage(page, 'admin-settings-relay-closed', test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
+
+  await card.getByRole('link', { name: 'Edit settings' }).click();
+  await expect(page).toHaveURL(/relay=edit/);
+  await expect(card.getByRole('link', { name: 'Close' })).toBeVisible();
+  for (const heading of ['Server', 'Handles and apps', 'Limits, a minute each', 'Apple (APNs)', 'Google (FCM)']) {
+    await expect(card.locator('h4', { hasText: heading })).toBeVisible();
+  }
+  // Secrets come from the environment only: never sent, never shown.
+  await expect(card.locator('[name="relay:apns.key"], [name="relay:fcm.credentials"], [name="relay:handles.id_key"]')).toHaveCount(0);
+  await expect(card).toContainText('Set MONOKULO_RELAY_FCM_CREDENTIALS in the environment and restart monokulo.');
+  await captureCoverageStage(page, 'admin-settings-relay-open', test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
+
+  // An app for Android, without the FCM account to reach it: refused on
+  // the card, the row kept as typed.
+  await card.getByRole('button', { name: 'Add an app' }).click();
+  const name = card.locator('input[name="relay_app_0_name"]');
+  await expect(name).toBeFocused();
+  await name.fill('monokular');
+  await card.locator('input[name="relay_app_0_fcm_project_id"]').fill('monokular-test');
+  await expect(page.locator('#save-bar')).toContainText('1 unsaved change in Push relay');
+  await pressSave(page);
+  await expect(page.locator('#settings-toasts .toast-error')).toBeVisible();
+  await expect(card).toContainText("monokular has an fcm_project_id, but MONOKULO_RELAY_FCM_CREDENTIALS isn't set");
+  await expect(card.locator('input[name="relay_app_0_name"]')).toHaveValue('monokular');
+
+  // Taken out again, and the public address saved instead.
+  await card.getByRole('button', { name: 'Remove the app monokular' }).click();
+  await card.locator('input[name="relay:server.public_uri"]').fill('https://relay.example.org');
+  await pressSave(page);
+  await expectSaved(page);
+  await openSettingsTab(page, 'server');
+  await expect(card.locator('.relay-chips')).toContainText('https://relay.example.org');
+  await expect(card.locator('[data-relay-panel]')).not.toContainText('public_uri');
+
+  // On, without MONOKULO_RELAY_HANDLE_KEY: refused, naming the switch.
+  await card.getByRole('switch', { name: 'relay enabled' }).check();
+  await pressSave(page);
+  await expect(page.locator('#settings-toasts .toast-error')).toBeVisible();
+  await expect(card).toContainText("relay.enabled: is on, but the relay can't start: MONOKULO_RELAY_HANDLE_KEY is not set");
+  await openSettingsTab(page, 'server');
+  await expect(card.locator('.relay-state-words')).toHaveText('Off');
+});
+
+// Without JavaScript the card's links and its app rows' buttons are plain
+// links and form posts: Add an app comes back with a blank row, nothing
+// saved; Remove takes it out again.
+test('the push relay card works without JavaScript', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    await signInAsAdmin(page);
+    await openSettingsTab(page, 'server');
+    const card = page.locator('#card-relay');
+    await card.getByRole('link', { name: 'Edit settings' }).click();
+    await expect(page).toHaveURL(/relay=edit/);
+    await expect(card.locator('[data-relay-app]')).toHaveCount(0);
+    await card.getByRole('button', { name: 'Add an app' }).click();
+    await expect(card.locator('[data-relay-app]')).toHaveCount(1);
+    await expect(page.locator('#settings-toasts .toast-success')).toHaveCount(0);
+    await card.locator('input[name="relay_app_0_name"]').fill('monokular-dev');
+    await card.locator('[data-relay-app]').getByRole('button', { name: /^Remove/ }).click();
+    await expect(card.locator('[data-relay-app]')).toHaveCount(0);
+    await card.getByRole('link', { name: 'Close' }).click();
+    await expect(card.locator('[name="relay:server.listen"]')).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});

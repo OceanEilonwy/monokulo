@@ -245,6 +245,7 @@ pub struct Field<'a> {
     chip: Option<Markup>,
     help: Option<(Option<&'a str>, Markup)>,
     layout: Option<ui::SettingLayout>,
+    counted_by_page: bool,
 }
 
 impl<'a> Field<'a> {
@@ -257,6 +258,7 @@ impl<'a> Field<'a> {
             chip: None,
             help: None,
             layout: None,
+            counted_by_page: false,
         }
     }
 
@@ -288,6 +290,13 @@ impl<'a> Field<'a> {
         self
     }
 
+    /// Its changes counted by the page's own script (`mk-count`), not by
+    /// its controls: rows the script adds and takes out.
+    pub fn counted_by_page(mut self) -> Self {
+        self.counted_by_page = true;
+        self
+    }
+
     /// The setting around `control` (and anything under it).
     pub fn render(self, control: Markup) -> Markup {
         let help_id = self
@@ -301,6 +310,10 @@ impl<'a> Field<'a> {
             .maybe_described_by(help_id.clone().filter(|_| self.group))
             .maybe_help_id(help_id)
             .maybe_layout(self.layout)
+            .maybe_attr(
+                "data-counted-by-page",
+                self.counted_by_page.then(String::new),
+            )
             .render()
     }
 }

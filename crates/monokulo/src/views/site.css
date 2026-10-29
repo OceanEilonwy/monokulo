@@ -557,3 +557,28 @@ table[data-table="wallets"] .card-unit { display: none; }
    inside the status alert, with the alert's own spacing. */
 #tor-status .mk-wizard-steps { margin: var(--space-md) 0; }
 .tor-progress-note { margin: 0; font-size: var(--text-sm); }
+/* Push relay card (views::admin::relay_card): the head's state in words
+   beside Edit settings or Close, the state as a row of chips, one panel of
+   what's missing, and, opened, the apps as bordered rows of three fields
+   and Remove, with Add an app under them. */
+.relay-head { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-sm); }
+.relay-state-words { font-size: var(--text-sm); color: var(--muted); }
+.relay-chips { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin: var(--space-md) 0; }
+.relay-chips code { font-size: var(--text-xs); }
+.relay-card [data-relay-panel] { margin: var(--space-md) 0; }
+.relay-card [data-relay-panel] p { margin: 0; overflow-wrap: anywhere; }
+.relay-card [data-relay-panel] p + p { margin-top: var(--space-xs); }
+.relay-card .card-body > .hint { margin-top: var(--space-md); }
+.relay-apps { display: grid; gap: var(--space-sm); width: 100%; }
+.relay-app { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper); }
+.relay-app .mk-field { margin: 0; min-width: 0; }
+.relay-app input[type="text"] { width: 100%; }
+.relay-app:has(.mk-error) { border-color: var(--card-failed); }
+.relay-app.is-changed { border-color: var(--card-changed); }
+.relay-apps [data-relay-app-add] { justify-self: stretch; justify-content: flex-start; border-style: dashed; }
+.relay-apps-locked { margin: 0; padding-left: var(--space-lg); }
+@media (max-width: 640px) {
+  .relay-head { width: 100%; }
+  .relay-app { grid-template-columns: minmax(0, 1fr); }
+  .relay-app [data-relay-app-remove] { justify-self: end; }
+}

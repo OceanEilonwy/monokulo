@@ -333,6 +333,11 @@ pub struct AdminScalarFieldView {
     /// again to fix): with JavaScript the setting is then still unsaved,
     /// and Discard goes back to this.
     pub saved_value: Option<String>,
+    /// Applies when the push relay restarts, which saving does: a relay
+    /// setting, or `relay.enabled` (in place of [`Self::restart_only`]).
+    pub applies_with_relay: bool,
+    /// A secret's environment variable (the relay's, which its card names).
+    pub env_var: String,
 }
 
 /// What the admin settings page can do with a setting, worked out once
@@ -560,12 +565,15 @@ pub enum Notice {
     Error(String),
 }
 
-/// Which process a setting belongs to: monokulo's own registry, or the
-/// engine's (fetched and saved over its admin API).
+/// Which process a setting belongs to: monokulo's own registry, the
+/// engine's (fetched and saved over its admin API), or the push relay's
+/// inside monokulo (its own registry over the `[relay.*]` tables, sent as
+/// `relay:<key>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingOwner {
     Monokulo,
     Engine,
+    Relay,
 }
 
 /// The admin settings page's tabs, grouped by job rather than by which
@@ -680,7 +688,8 @@ impl SettingsTab {
                 Group::AbuseVisitors,
             ],
             SettingsTab::Tor => &[Group::TorService, Group::TorVisitors],
-            SettingsTab::Server => &[Group::Server(Monokulo), Group::Server(Engine)],
+            // The push relay's card only when monokulo has one ([`tab_groups`]).
+            SettingsTab::Server => &[Group::Server(Monokulo), Group::Relay, Group::Server(Engine)],
             SettingsTab::Logging => &[Group::Logging(Monokulo), Group::Logging(Engine)],
             SettingsTab::Files => &[],
             SettingsTab::Other => &[Group::Other(Monokulo), Group::Other(Engine)],
@@ -727,6 +736,9 @@ pub enum Group {
     Logging(SettingOwner),
     /// One process's settings this map doesn't place yet.
     Other(SettingOwner),
+    /// The push relay inside monokulo: whether it runs, and, opened, its
+    /// own settings (`relay_card`).
+    Relay,
 }
 
 impl Group {
@@ -763,8 +775,8 @@ impl Group {
                 "database" | "server" | "crypto" => Group::Server(owner),
                 // The Query page's switch, beside the server's own settings.
                 "admin" => Group::Server(owner),
-                // Whether a push relay runs inside this process.
-                "relay" => Group::Server(owner),
+                // Whether a push relay runs inside this process: on its card.
+                "relay" => Group::Relay,
                 "logging" => Group::Logging(owner),
                 "key_custody" if rest.starts_with("cli_") => Group::CustodyCli,
                 "key_custody" => backend(),
@@ -793,6 +805,8 @@ impl Group {
                 "logging" => Group::Logging(owner),
                 _ => Group::Other(owner),
             },
+            // The relay's own settings, every one on its card.
+            SettingOwner::Relay => Group::Relay,
         }
     }
 
@@ -809,7 +823,7 @@ impl Group {
             Group::CustodyBackends | Group::Custody(_) | Group::CustodyCli => SettingsTab::Custody,
             Group::AbuseLimits | Group::AbuseChallenge | Group::AbuseVisitors => SettingsTab::Abuse,
             Group::TorService | Group::TorVisitors => SettingsTab::Tor,
-            Group::Server(_) => SettingsTab::Server,
+            Group::Server(_) | Group::Relay => SettingsTab::Server,
             Group::Logging(_) => SettingsTab::Logging,
             Group::Other(_) => SettingsTab::Other,
         }
@@ -820,6 +834,7 @@ impl Group {
         let owner = |owner: SettingOwner| match owner {
             SettingOwner::Monokulo => "Monokulo",
             SettingOwner::Engine => "Engine",
+            SettingOwner::Relay => "Push relay",
         };
         match self {
             Group::Signup => "Sign-up".into(),
@@ -842,6 +857,7 @@ impl Group {
             Group::TorService => "Onion service".into(),
             Group::TorVisitors => "Visitors on Tor".into(),
             Group::Server(o) | Group::Logging(o) | Group::Other(o) => owner(o).into(),
+            Group::Relay => "Push relay".into(),
         }
     }
 
@@ -887,6 +903,7 @@ impl std::fmt::Display for Group {
         let owner = |owner: &SettingOwner| match owner {
             SettingOwner::Monokulo => "monokulo",
             SettingOwner::Engine => "engine",
+            SettingOwner::Relay => "relay",
         };
         match self {
             Group::Signup => f.write_str("signup"),
@@ -916,6 +933,7 @@ impl std::fmt::Display for Group {
             Group::Server(o) => write!(f, "server-{}", owner(o)),
             Group::Logging(o) => write!(f, "logging-{}", owner(o)),
             Group::Other(o) => write!(f, "other-{}", owner(o)),
+            Group::Relay => f.write_str("relay"),
         }
     }
 }
@@ -1057,7 +1075,7 @@ impl SaveOutcome {
         }
     }
 
-    fn failures(&self) -> &[Failure] {
+    pub fn failures(&self) -> &[Failure] {
         match self {
             SaveOutcome::Refused { failures } | SaveOutcome::PartlySaved { failures, .. } => {
                 failures
@@ -1095,7 +1113,21 @@ pub struct AdminSettingsViewModel {
     /// What the Tor tab says about the onion service, above its cards;
     /// `None` while Tor is off.
     pub tor: Option<TorPanel>,
+    /// The push relay's own settings (`[relay.*]`), each sent as
+    /// `relay:<key>`.
+    pub relay_fields: Vec<AdminScalarFieldView>,
+    /// The Push relay card's state; `None` when monokulo has no relay
+    /// (built without it), and there is no card.
+    pub relay: Option<RelayCardView>,
 }
+
+pub use relay_card::{
+    app_field_name as relay_app_field_name, RelayAppField, RelayAppRow, RelayCardView,
+    APPS_KEY as RELAY_APPS_KEY, APPS_SENT as RELAY_APPS_SENT, APP_ACTION as RELAY_APP_ACTION,
+};
+
+#[path = "relay_card.rs"]
+mod relay_card;
 
 /// The onion service, as the Tor tab shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -1395,7 +1427,9 @@ fn field_status(field: &AdminScalarFieldView) -> Markup {
         @if let Some(example) = &field.example {
             (ui::FieldNote::new(html! { "Example: " code { (example) } }))
         }
-        @if field.restart_only {
+        @if field.applies_with_relay {
+            (ui::FieldNote::new("Applies when the relay restarts, which saving does."))
+        } @else if field.restart_only {
             (ui::FieldNote::new("Applies after a restart."))
         }
         @if field.pending_restart {
@@ -1466,14 +1500,15 @@ fn options_file_bars(data: &AdminSettingsViewModel) -> Markup {
             div class="options-files" {
                 @for file in &data.options_files {
                     @let process = match file.owner {
-                        SettingOwner::Monokulo => "monokulo",
+                        // The relay's settings are monokulo's file's.
+                        SettingOwner::Monokulo | SettingOwner::Relay => "monokulo",
                         SettingOwner::Engine => "the engine",
                     };
                     (ui::Panel::new(html! {
                         form class="options-file" method="post" action=(crate::base::url("/admin/settings/reload")) {
                             input type="hidden" name="tab" value=(data.tab.id());
                             input type="hidden" name="owner" value=(match file.owner {
-                                SettingOwner::Monokulo => "monokulo",
+                                SettingOwner::Monokulo | SettingOwner::Relay => "monokulo",
                                 SettingOwner::Engine => "engine",
                             });
                             div class="options-file-where" {
@@ -1539,6 +1574,9 @@ fn tab_groups(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<Group> {
         );
     }
     for fixed in tab.fixed_groups() {
+        if *fixed == Group::Relay && data.relay.is_none() {
+            continue;
+        }
         groups.push(*fixed);
         if *fixed == Group::CustodyBackends {
             let mut backends: Vec<Group> = custody_backends(&data.engine_fields)
@@ -1570,6 +1608,11 @@ fn group_fields(data: &AdminSettingsViewModel, group: Group) -> Vec<&AdminScalar
                 .iter()
                 .filter(|f| Group::of(&f.key, SettingOwner::Monokulo) == group),
         )
+        .chain(
+            data.relay_fields
+                .iter()
+                .filter(|f| Group::of(&f.key, SettingOwner::Relay) == group),
+        )
         .collect();
     fields.sort_by_key(|f| field_rank(&f.key));
     fields
@@ -1584,6 +1627,11 @@ fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<&AdminScal
             data.monokulo_fields
                 .iter()
                 .filter(|f| Group::of(&f.key, SettingOwner::Monokulo).tab() == tab),
+        )
+        .chain(
+            data.relay_fields
+                .iter()
+                .filter(|f| Group::of(&f.key, SettingOwner::Relay).tab() == tab),
         )
         .collect()
 }
@@ -1893,6 +1941,13 @@ fn card_fields(
 /// while the backend is turned on (at once with JavaScript, after saving
 /// without).
 fn settings_card(data: &AdminSettingsViewModel, group: Group) -> Markup {
+    if group == Group::Relay {
+        return data
+            .relay
+            .as_ref()
+            .map(|relay| relay_card::render(data, relay))
+            .unwrap_or_default();
+    }
     let fields = group_fields(data, group);
     if fields.is_empty() {
         return html! {};
@@ -2057,6 +2112,9 @@ fn save_bar(data: &AdminSettingsViewModel) -> Markup {
             }
         } @else {
             "Saving writes the changes on this tab to the options file and applies them."
+            @if data.relay.as_ref().is_some_and(|relay| relay.open) && data.tab == SettingsTab::Server {
+                " The push relay restarts its listener to read its new settings."
+            }
         }
     };
     super::settings::save_bar(
@@ -2292,10 +2350,11 @@ fn settings_tab(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
         } @else {
             (super::settings::form("/admin/settings", Save::Fixi { target: "#settings-panel" }, tab.label(), html! {
                 input type="hidden" name="tab" value=(tab.id());
-                @if tab == SettingsTab::Nodes {
+                @if tab == SettingsTab::Nodes || (tab == SettingsTab::Server && data.relay.as_ref().is_some_and(|relay| relay.open)) {
                     // Enter in a text box presses a form's first submit
-                    // button; here that would be a row's Move or Remove.
-                    // This one, first and out of sight, is Save.
+                    // button; here that would be a row's Move or Remove
+                    // (a node's, a relay app's). This one, first and out of
+                    // sight, is Save.
                     span class="visually-hidden" {
                         (ui::Button::new("Save").kind(ui::ButtonType::Submit).attr("tabindex", "-1").attr("aria-hidden", "true"))
                     }
@@ -2399,7 +2458,7 @@ mod tests {
     /// added later fails the registry cross-checks below until it is given
     /// a place here.
     const PLACEMENTS: &[(&str, SettingOwner, SettingsTab, &str)] = {
-        use SettingOwner::{Engine as E, Monokulo as M};
+        use SettingOwner::{Engine as E, Monokulo as M, Relay as R};
         use SettingsTab::*;
         &[
             ("signup.mode", M, General, "signup"),
@@ -2472,7 +2531,26 @@ mod tests {
             ("server.bind", M, Server, "server-monokulo"),
             ("crypto.encryption_key", M, Server, "server-monokulo"),
             ("admin.query_enabled", M, Server, "server-monokulo"),
-            ("relay.enabled", M, Server, "server-monokulo"),
+            ("relay.enabled", M, Server, "relay"),
+            // The push relay's own (`[relay.*]`), all on its card.
+            ("server.listen", R, Server, "relay"),
+            ("server.public_uri", R, Server, "relay"),
+            ("server.trusted_proxies", R, Server, "relay"),
+            ("server.upstream_timeout_ms", R, Server, "relay"),
+            ("store.path", R, Server, "relay"),
+            ("handles.ttl_days", R, Server, "relay"),
+            ("handles.unused_ttl_days", R, Server, "relay"),
+            ("handles.id_key", R, Server, "relay"),
+            ("handles.apps", R, Server, "relay"),
+            ("limits.per_sender_per_minute", R, Server, "relay"),
+            ("limits.per_handle_per_minute", R, Server, "relay"),
+            ("limits.registrations_per_minute", R, Server, "relay"),
+            ("apns.endpoint", R, Server, "relay"),
+            ("apns.team_id", R, Server, "relay"),
+            ("apns.key_id", R, Server, "relay"),
+            ("apns.key", R, Server, "relay"),
+            ("fcm.endpoint", R, Server, "relay"),
+            ("fcm.credentials", R, Server, "relay"),
             ("logging.format", M, Logging, "logging-monokulo"),
             ("abuse.soft_per_min", M, Abuse, "abuse-limits"),
             ("abuse.hard_per_min", M, Abuse, "abuse-limits"),
@@ -2630,6 +2708,18 @@ mod tests {
         let mut engine_listed = listed(SettingOwner::Engine);
         engine_listed.sort_unstable();
         assert_eq!(engine_listed, engine, "every engine setting has a tab");
+
+        #[cfg(feature = "relay")]
+        {
+            let mut relay: Vec<&str> = push_relay::settings::embedded_settings()
+                .iter()
+                .map(|s| s.key())
+                .collect();
+            relay.sort_unstable();
+            let mut relay_listed = listed(SettingOwner::Relay);
+            relay_listed.sort_unstable();
+            assert_eq!(relay_listed, relay, "every relay setting has a tab");
+        }
     }
 
     /// Other only appears while a setting nobody placed is in it.
@@ -2656,6 +2746,8 @@ mod tests {
             key: key.to_string(),
             name: if shared {
                 format!("engine:{key}")
+            } else if owner == SettingOwner::Relay {
+                format!("relay:{key}")
             } else {
                 String::new()
             },
@@ -2679,6 +2771,8 @@ mod tests {
         AdminSettingsViewModel {
             tab,
             monokulo_fields: fields(SettingOwner::Monokulo),
+            relay_fields: fields(SettingOwner::Relay),
+            relay: Some(relay_card_view(true)),
             engine_reachable: true,
             engine_fields: fields(SettingOwner::Engine),
             engine_networks: ["mainnet", "stagenet", "testnet"]
@@ -2693,6 +2787,35 @@ mod tests {
                 })
                 .collect(),
             ..Default::default()
+        }
+    }
+
+    /// The Push relay card, running with nothing missing, `open` or not.
+    fn relay_card_view(open: bool) -> RelayCardView {
+        RelayCardView {
+            relay: crate::relay::RelayView {
+                enabled: true,
+                state: crate::relay::RelayState::Running {
+                    address: "0.0.0.0:8444".parse().unwrap(),
+                    since: 0,
+                },
+                listen: "0.0.0.0:8444".into(),
+                public_uri: Some("https://relay.example.org".into()),
+                apps: vec!["monokular".into()],
+                handles_stored: Some(2314),
+                apns_ready: true,
+                fcm_ready: true,
+                missing: Vec::new(),
+            },
+            open,
+            apps: vec![RelayAppRow {
+                name: "monokular".into(),
+                apns_topic: "com.example.monokular".into(),
+                is_saved: true,
+                ..Default::default()
+            }],
+            saved_apps: 1,
+            since: Some("3 days ago".into()),
         }
     }
 
@@ -2737,10 +2860,11 @@ mod tests {
             .filter(|tab| *tab != SettingsTab::Files)
         {
             let html = page(&full_view(tab));
-            for (key, owner, placed, _) in PLACEMENTS
-                .iter()
-                .filter(|(key, ..)| !key.starts_with("monero_node."))
-            {
+            for (key, owner, placed, _) in PLACEMENTS.iter().filter(|(key, owner, ..)| {
+                // The relay's apps are rows of their own.
+                !key.starts_with("monero_node.")
+                    && !(*owner == SettingOwner::Relay && *key == RELAY_APPS_KEY)
+            }) {
                 let name = field_for(key, *owner).form_name().to_string();
                 let shown = html.contains(&format!(r#"name="{name}""#));
                 assert_eq!(shown, *placed == tab, "{name} on {tab:?}");

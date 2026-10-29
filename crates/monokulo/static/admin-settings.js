@@ -8,6 +8,7 @@
 //     Remove takes a row out; both are unsaved changes like any other, and
 //     a new order counts as one change however many rows it moves;
 //   - "Add another" adds a blank row;
+//   - the Push relay card's apps: Remove and Add an app act in place;
 //   - a row's self-signed box shows only while its Use TLS box is ticked;
 //   - the question (a ui dialog) before a save leaves a network stores use with no
 //     node;
@@ -212,6 +213,90 @@
   // handler has done so, the controls that need it follow.
   document.addEventListener("mk-discard", function () { setTimeout(function () { followSwitches(document); }, 0); });
 
+  // ---- the Push relay card's apps ----------------------------------------
+  //
+  // Without the script Remove and Add an app post the tab and come back
+  // with the rows changed, nothing saved. With it they act in place: Remove
+  // takes the row out, Add an app adds a blank one from the template; the
+  // rows are numbered again for their places, and each is a change counted
+  // with the card's own settings, saved with the bar.
+
+  var appsAtLoad = null;
+
+  function renumberApps(list) {
+    var names = /relay_app_(\d+|__i__)_/g, ids = /relay-app-(\d+|__i__)-/g;
+    each(list, ":scope > [data-relay-app]", function (row, i) {
+      row.setAttribute("data-relay-app", String(i));
+      each(row, "[name],[id],[for],[aria-describedby]", function (el) {
+        ["name", "id", "for", "aria-describedby"].forEach(function (attr) {
+          if (!el.hasAttribute(attr)) return;
+          el.setAttribute(attr, el.getAttribute(attr).replace(names, "relay_app_" + i + "_").replace(ids, "relay-app-" + i + "-"));
+        });
+      });
+      each(row, "[data-relay-app-remove]", function (button) { button.value = "remove-app:" + i; });
+    });
+  }
+
+  // Saved apps taken out, rows added with something in them, saved rows
+  // edited: one change each.
+  function appChanges(list) {
+    var rows = Array.prototype.slice.call(list.querySelectorAll(":scope > [data-relay-app]"));
+    var saved = rows.filter(function (row) { return row.hasAttribute("data-relay-app-saved"); });
+    var count = Math.max(0, (Number(list.getAttribute("data-saved-count")) || 0) - saved.length);
+    rows.forEach(function (row) {
+      var boxes = Array.prototype.slice.call(row.querySelectorAll("input[name]"));
+      var text = row.hasAttribute("data-relay-app-saved")
+        ? rowEdited(row)
+        : boxes.some(function (box) { return box.value.trim() !== ""; });
+      if (text) count++;
+      row.classList.toggle("is-changed", text);
+    });
+    return count;
+  }
+
+  document.addEventListener("mk-count", function (event) {
+    var list = event.target.querySelector && event.target.querySelector("[data-relay-apps]");
+    if (list) event.detail.changes += appChanges(list);
+  }, true);
+
+  // Discard: the rows as they came; a refused save's rows (as sent) only
+  // the server has as saved, so the tab is loaded again.
+  document.addEventListener("mk-discard", function (event) {
+    var list = event.target.querySelector && event.target.querySelector("[data-relay-apps]");
+    if (!list) return;
+    if (event.target.classList.contains("is-failed") || !appsAtLoad || list.querySelector("[data-saved]")) {
+      event.preventDefault();
+      var base = document.querySelector("meta[name=\"monokulo-base\"]");
+      location.href = (base ? base.content : "") + "/admin/settings?tab=server&relay=edit#card-relay";
+      return;
+    }
+    list.replaceWith(appsAtLoad.cloneNode(true));
+  }, true);
+
+  document.addEventListener("click", function (event) {
+    var target = event.target.closest ? event.target : null;
+    if (!target) return;
+    var remove = target.closest("[data-relay-app-remove]");
+    var add = !remove && target.closest("[data-relay-app-add]");
+    var list = (remove || add) && (remove || add).closest("[data-relay-apps]");
+    if (!list) return;
+    event.preventDefault();
+    if (remove) {
+      remove.closest("[data-relay-app]").remove();
+    } else {
+      var template = list.querySelector("template[data-relay-app-template]");
+      if (!template) return;
+      var fresh = template.content.firstElementChild.cloneNode(true);
+      list.insertBefore(fresh, template);
+    }
+    renumberApps(list);
+    changed();
+    if (add) {
+      var name = list.querySelector(":scope > [data-relay-app]:last-of-type input");
+      if (name) name.focus();
+    }
+  });
+
   // ---- saving -----------------------------------------------------------
 
   // Before fixi and the settings form (capture): a save that leaves a
@@ -260,6 +345,8 @@
       var list = card.querySelector("[data-node-rows]");
       if (list) listsAtLoad[card.id] = list.cloneNode(true);
     });
+    var apps = document.querySelector("[data-relay-apps]");
+    appsAtLoad = apps ? apps.cloneNode(true) : null;
     showSelfSigned(document);
     followSwitches(document);
   }
