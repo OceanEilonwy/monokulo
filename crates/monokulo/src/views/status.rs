@@ -334,6 +334,7 @@ fn tone(tone: TagTone) -> Option<&'static str> {
     match tone {
         TagTone::Ok => Some("success"),
         TagTone::Error => Some("error"),
+        TagTone::Warning => Some("warning"),
         TagTone::Unknown
         | TagTone::Syncing
         | TagTone::Stalled
