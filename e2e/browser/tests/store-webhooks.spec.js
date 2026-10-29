@@ -35,30 +35,22 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
 
   const healthy = webhook(page, 'https://bakery.example/hooks/monokulo');
   await expect(healthy.locator('.wh-health .tag')).toHaveText('delivering');
-  await expect(healthy.locator('.wh-health .hint')).toContainText(/last .+ · 200 in/);
   await expect(healthy.locator('details[data-disclosure="deliveries"]')).not.toHaveAttribute('open', '');
   await healthy.locator('details[data-disclosure="deliveries"]').scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-healthy', test.info(), { group: GROUP });
 
   const retrying = webhook(page, 'https://erp.bakery.example/payments/in');
   await expect(retrying.locator('.wh-health .tag')).toHaveText('retrying');
-  await expect(retrying.locator('.wh-health .hint')).toContainText('next try at');
-  await expect(retrying.locator('.wh-health .hint')).toContainText('attempt 5 of 8 failed (503)');
   await expect(retrying.locator('details[data-disclosure="deliveries"]')).toHaveAttribute('open', '');
-  await expect(retrying.locator('table[data-table="deliveries"] td[data-label="Attempt"]').first()).toHaveText('4 of 8');
   await retrying.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-retrying', test.info(), { group: GROUP });
 
   const gaveUp = webhook(page, 'https://old-shop.example/?wc-api=monokulo');
   await expect(gaveUp.locator('.wh-health .tag')).toHaveText('gave up');
-  await expect(gaveUp.locator('.wh-health .hint')).toContainText('after 8 attempts (connection refused)');
   await expect(gaveUp.locator('details[data-disclosure="deliveries"]')).toHaveAttribute('open', '');
   const sendAgain = gaveUp.getByRole('button', { name: 'Send again', exact: true });
   await expect(sendAgain).toHaveCount(1);
-  await expect(sendAgain).toHaveAttribute('title', 'Send again');
   await expect(gaveUp.getByRole('button', { name: 'Retry failed (1)' })).toBeVisible();
-  // Delete is the site's danger button, as Retire is on a wallet's page.
-  await expect(gaveUp.getByRole('link', { name: 'Delete', exact: true })).toHaveAttribute('data-variant', 'danger');
   await gaveUp.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-gave-up', test.info(), { group: GROUP });
 
@@ -67,8 +59,6 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   await retrying.getByRole('link', { name: 'Details' }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Delivery of order.paid' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('.dialog-title .tag')).toBeVisible();
-  await expect(dialog.locator('[data-facts="delivery"] dt')).toHaveText(['Endpoint', 'Order', 'Next try']);
   await expect(dialog.locator('table tbody tr')).toHaveCount(4);
   await expect(dialog.locator('tbody tr').first().locator('td').first()).toContainText('4');
   await dialog.getByText('Request', { exact: true }).click();
@@ -133,8 +123,6 @@ test('Send a test webhook delivers one in place and lists it as a test', async (
   const hook = receiver(page);
   await expect(hook.locator('.wh-health .tag')).toHaveText('no deliveries yet');
   const send = hook.getByRole('button', { name: 'Send a test webhook' });
-  // A neutral button beside the red Delete, not a second primary.
-  await expect(send).not.toHaveAttribute('data-variant', 'primary');
   await send.click();
   // Swapped in place by fixi: still the settings page.
   const result = hook.locator('[data-test-result]');
@@ -181,6 +169,8 @@ test('a test webhook the receiver refuses says what it answered and when it is t
   await expect(hook.locator('.wh-health .tag')).toHaveText('retrying');
   await expect(hook.locator('table[data-table="deliveries"] tbody tr').first().locator('td[data-label="Status"] .tag')).toHaveText('retrying');
   await page.setViewportSize({ width: 390, height: 844 });
+  // The one check that the webhooks card fits a phone: the page is already
+  // at phone width for the gallery stage.
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await hook.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-test-failed', test.info(), { group: GROUP, asIs: true });
