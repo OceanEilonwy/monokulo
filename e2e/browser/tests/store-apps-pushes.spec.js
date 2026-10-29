@@ -48,13 +48,14 @@ test('the Apps card says how each app\'s pushes are doing', async ({ page, conte
 
   const front = row(page, 'Monokular · Front counter');
   await expect(front.locator('.app-pushes')).toHaveAttribute('data-pushes', 'healthy');
-  await expect(front.locator('.app-pushes')).toContainText('2 push targets · last push 2 min ago');
+  // The minutes are unit-tested (http/apps/tests.rs): the clock moves here.
+  await expect(front.locator('.app-pushes-words')).toContainText('2 push targets · last push ');
   await expect(front.locator('.app-pushes-ok')).toHaveText('healthy');
   await expect(front.getByRole('link', { name: 'Pushes of Monokular · Front counter' })).toHaveAttribute('href', new RegExp(`/apps/${apps.front}$`));
 
   const kitchen = row(page, 'Tillwatch · Kitchen');
   await expect(kitchen.locator('.app-pushes-words')).toHaveText('1 push target · none delivered yet ·');
-  await expect(kitchen.locator('.app-pushes-bad').last()).toHaveText('1 failing (12 in a row, last 502 14 min ago)');
+  await expect(kitchen.locator('.app-pushes-bad').last()).toContainText('1 failing (12 in a row, last 502 ');
 
   const back = row(page, 'Monokular · Back office iPad');
   await expect(back.locator('.app-pushes')).toHaveAttribute('data-pushes', 'none');
