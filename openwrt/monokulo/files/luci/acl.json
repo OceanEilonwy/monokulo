@@ -3,12 +3,11 @@
 		"description": "Grant access to Monokulo settings",
 		"read": {
 			"ubus": {
-				"service": [ "list" ]
+				"monokulo": [ "status" ]
 			},
 			"uci": [ "monokulo" ],
 			"file": {
-				"*/tor/hostname": [ "read" ],
-				"/usr/share/monokulo/version": [ "read" ]
+				"*/tor/hostname": [ "read" ]
 			}
 		},
 		"write": {

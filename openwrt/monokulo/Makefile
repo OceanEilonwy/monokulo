@@ -60,6 +60,9 @@ define Package/monokulo/install
 	printf 'version=%s\ncommit=%s\n' '$(PKG_VERSION)-r$(PKG_RELEASE)' '$(PKG_COMMIT)' \
 		>$(1)/usr/share/monokulo/version
 	chmod 0644 $(1)/usr/share/monokulo/version
+	# The LuCI page's backend, shared with the relay's and the Bell's.
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode
+	$(INSTALL_DATA) $(CURDIR)/../common/rpcd.uc $(1)/usr/share/rpcd/ucode/monokulo
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view
 	$(INSTALL_DATA) $(CURDIR)/files/luci/monokulo.js $(1)/www/luci-static/resources/view/monokulo.js
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d $(1)/usr/share/rpcd/acl.d
