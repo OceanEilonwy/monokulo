@@ -752,8 +752,25 @@ async fn the_subscriber_queues_each_event_once_across_a_restart() {
     shop.engine.mark_order_paid(&later).unwrap();
     let reading = shop.subscribe();
     let all = shop.deliveries(&webhook, 3).await;
-    // Nothing more comes.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Nothing more comes: an event's deliveries are queued in the same
+    // transaction that moves the saved position past it, so once the
+    // position is at the engine's last event every event has been
+    // queued, and none can be queued again.
+    let last = shop
+        .engine
+        .store()
+        .lock()
+        .order_events_for_test()
+        .unwrap()
+        .last()
+        .unwrap()
+        .seq;
+    let mut waited = 0;
+    while shop.state.db.lock().order_event_position().unwrap().seq < last {
+        waited += 1;
+        assert!(waited < 500, "the subscriber never read up to {last}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     reading.abort();
     let all_again = shop
         .state
