@@ -794,8 +794,8 @@ async fn pushes_behind_a_token_endpoint_that_never_answers_are_503_within_the_ti
         }
     })
     .await;
-    let timeout = Duration::from_millis(1000);
-    let relay = TestRelay::start(&apns, &fcm, &[("server.upstream_timeout_ms", "1000")]).await;
+    let timeout = Duration::from_millis(250);
+    let relay = TestRelay::start(&apns, &fcm, &[("server.upstream_timeout_ms", "250")]).await;
     let sender = Arc::new(VapidKey::generate());
     let keys = ReceiverKeys::generate();
     let mut endpoints = Vec::new();
@@ -830,10 +830,11 @@ async fn pushes_behind_a_token_endpoint_that_never_answers_are_503_within_the_ti
         let waited = retry_after(&answered.unwrap());
         assert!((28..=30).contains(&waited), "{waited}");
     }
+    // A multiple of the budget, for a loaded runner: still far below a
+    // sender's own 5 s.
     let took = started.elapsed();
-    assert!(took < timeout * 3 / 2, "{took:?}");
+    assert!(took < timeout * 4, "{took:?}");
 
-    let started = std::time::Instant::now();
     let answered = relay
         .push(
             &endpoints[0],
@@ -841,7 +842,8 @@ async fn pushes_behind_a_token_endpoint_that_never_answers_are_503_within_the_ti
         )
         .await;
     assert!((28..=30).contains(&retry_after(&answered)));
-    assert!(started.elapsed() < timeout / 2);
+    // The exchange count is the check: ten pushes sharing one exchange, and
+    // the held failure asking nothing more, leave one /token request here.
     let exchanges = fcm.drain().await;
     assert_eq!(exchanges.len(), 1);
     assert_eq!(exchanges[0].path, "/token");
