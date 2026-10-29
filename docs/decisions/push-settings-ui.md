@@ -216,6 +216,87 @@ The code these were read against is `origin/main` at `2b200ef2a`.
 
 Numbered from 21.
 
+21. **`Handle::restart()` says what it did, as a `Restarted`, not a
+    `Result<RelayState, String>`.** `Started`, `Restarted`, `Stopped`,
+    `StillOff` or `Failed(error)`: the toast words each ("The push relay
+    restarted its listener.", "… didn't start: <error>. Fix it and save
+    again."), and only `Failed` turns the toast amber. The card's state
+    (`RelayState`) is kept beside the running relay under the same mutex, so
+    `view()` can't race a restart. At start, `relay::start` is a restart
+    too, and a `Failed` one is still the error monokulo stops on (decision
+    3); at runtime it never is.
+22. **The relay's settings apply from what was saved, read through the
+    registry, not from the values at start.** `live_settings::FileStore`
+    is the `[relay.*]` tables alone as a store, and `Registry::read` of a
+    restart-only section now gives the stored values (what a restart
+    starts from) rather than the boot snapshot; `push_relay::settings::load`
+    is written over the same `registry()`, so the standalone binary keeps
+    its behaviour and its tests. `Env::with_nested_cli` names an embedded
+    option with its table in a lock's reason (`--relay-server-listen`).
+23. **Form names are `relay:<key>` for the relay's settings and
+    `relay_app_<n>_<part>` for an app's row**, as the engine's are
+    `engine:<key>` and the nodes' `node_<network>_<n>_<part>`; Remove and
+    Add an app are the tab form's `relay_action` buttons (`remove-app:<n>`,
+    `add-app`). The acceptance notes guessed `relay.server.listen` as a
+    name; monokulo's own `server.*` keys would collide with that once the
+    table prefix is dropped, so the prefix stays a separator of its own.
+24. **The handle count is the store's (`HandleStore::count(now)`: rows not
+    yet expired) and is read only while the relay runs.** Off or failed, the
+    chip is left out rather than showing a count of a database nobody has
+    open. "2,314 handles" uses `scaling::thousands`; 0 is "no handles
+    stored".
+25. **The ready chips and the panel's lines come from the parsed config:
+    APNs is ready when the key parsed with both ids, FCM when the account
+    parsed.** The APNs line says which of the ids are saved ("Team ID … and
+    key ID … are saved for it", or what to set under Edit settings), as the
+    approved card does. A secret is the environment's, so the panel says to
+    set it and restart monokulo: a save can't make it go away. "Not set"
+    chips take a new `ui::TagTone::Warning` (the warning tint, the words
+    the warning ink): no existing tone fitted, `Slow` and `Stalled` being a
+    node's. It is in the stylebook and the Solid types (`cargo xtask ui`).
+26. **`relay.enabled` is checked against what the save leaves.** On after
+    the save (as sent, or as it is) and missing `server.public_uri` (as the
+    same save leaves it) or the handle key: refused on the switch, naming
+    what is missing, and on `relay server public uri` too when that is what
+    is missing; nothing written. The refusal opens the card, so the field is
+    there to fill. A save that only turns the relay off is never refused.
+27. **Save order and the restart: engine, relay, monokulo; then restart
+    when the relay's part changed, or the switch did and monokulo's part
+    saved.** A monokulo refusal after the relay's part saved (its file
+    changed on disk under it) still restarts the relay, since what it reads
+    was written, and the toast says partly saved. A save in which nothing
+    relay-related differs from what is saved restarts nothing (tested: the
+    card's "since" doesn't move).
+28. **Reload options file reads the relay's tables first.** A mistake in
+    them reloads nothing, as a mistake in monokulo's own part does. When the
+    relay's reloaded but monokulo's part then has problems, the relay's
+    changes are applied (restarted) and the message says only they were
+    reloaded.
+29. **`relay apns endpoint` stays a URL text field, not a dropdown.** The
+    relay takes any https URL there (a proxy, a test server), and a dropdown
+    of Apple's two would have to grow a third "custom" choice to not lose
+    one; the help names both of Apple's. `relay store path` is declared
+    `editable: false` (moving the database under a running relay is a
+    migration, not a save) and is shown locked with that reason, as
+    monokulo's own `database path` is.
+30. **The apps editor is counted by the page, not by its controls.** Its
+    setting carries `data-counted-by-page` (`views::settings::Field::counted_by_page`),
+    so `admin-settings.js` counts it as the node rows are: a saved app taken
+    out, a new row with anything typed, a saved row edited, one change
+    each. Discard puts the rows back as loaded, or reloads the opened card
+    when a refusal showed them as sent. The setting's own example (its
+    JSON) isn't shown under the rows.
+31. **Relay settings say "Applies when the relay restarts, which saving
+    does."** in place of "Applies after a restart.", `relay.enabled`
+    included (decision 6); the save bar adds "The push relay restarts its
+    listener to read its new settings." while the card is opened. The
+    acceptance notes quoted "Applies after a restart." for the switch; that
+    would ask for a monokulo restart the save makes needless.
+32. **The e2e harness's monokulo gets `relay: Handle::default()`.** The
+    seam's new `AppState` field broke `crates/e2e-harness`, which builds an
+    `AppState` by hand; the workspace clippy run caught it. Its monokulo has
+    no relay to show, as a test state's.
+
 ## The Apps card, the app's page, Remove and the test push (rust-engineer-2)
 
 Numbered from 41.
