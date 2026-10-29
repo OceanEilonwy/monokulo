@@ -507,3 +507,15 @@ named in the decision.
 57. **The crate's version is 0.2.0** (its API changed), and
     `docs/bell.md`, `docs/design.md` §1, §3 and §9, `docs/reports/bell.md`
     and the README say what is built.
+
+58. **A security fix wins over the two-week rule; `crypto-bigint` moves to
+    0.7.10 now** (the owner, 2026-10-29; replaces decisions 3 and 30).
+    New dependencies and upgrades still wait until a release is two weeks
+    old, except when a version in use is yanked or has a security
+    advisory: then it moves at once to the fixed release, after its
+    changelog is read, and what the fix pulls in is held at the oldest
+    version that release accepts. `crypto-bigint` goes 0.7.5 (yanked,
+    RUSTSEC-2026-0387, constant-time leaks under `p256`'s VAPID signing
+    and each ding's key agreement) to 0.7.10, and `ctutils` 0.4.2 to
+    0.4.6, the oldest 0.7.10 accepts. monokulo's lock moves in the same
+    step (its decision 160).
