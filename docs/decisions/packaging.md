@@ -197,3 +197,124 @@ entries in `docs/decisions/push.md` point here (162).
     README says how to clear macOS's quarantine (`xattr -d
     com.apple.quarantine`) and SmartScreen's question, as the release
     notes do for monokulo.
+
+## OpenWrt packages (2026-10-29)
+
+21. **One package per service, its LuCI page inside, exactly as
+    `openwrt/monokulo` is** (the owner's brief): `monokulo-push-relay` and
+    `monokulo-bell`, each with its binary, a procd init script, its UCI
+    config, its keep file, its LuCI view, menu and ACL (the last two named
+    `luci-app-<package>.json`), and its page's backend. What the two init
+    scripts and backends share is written once, in `openwrt/common/`
+    (`service.sh`, `rpcd.uc`), and each package installs its own copy
+    (`/usr/share/<package>/service.sh`, `/usr/share/rpcd/ucode/<package>`),
+    so neither package needs the other. Otherwise: a copy per package,
+    which would drift.
+22. **The three binaries are built in one cargo invocation and one SDK
+    run, into one feed: one `packages.adb` per release and architecture,
+    signed with the one key (`openwrt/keys/monokulo.pem`).** The
+    `openwrt-repo-<release>-<arch>` artifacts, `pages fetch` and pages.yml
+    need no change: the feed the site already publishes now holds three
+    packages. The router page's "Package files" lists each, and the site
+    build fails if a repository lacks one (`install::PACKAGES`), so a feed
+    without the services can't be published by mistake.
+23. **The packages build for aarch64_cortex-a53 (the Flint 2) and x86_64,
+    monokulo's included** (`DEPENDS:=@(aarch64||x86_64)`), as two
+    openwrt.yml matrix entries on the 25.12.5 SDK images. x86_64 is the
+    one CI boots (24); aarch64's proof is the static-link check and the
+    owner's router, as there is no `aarch64_cortex-a53` rootfs image.
+24. **CI boots OpenWrt to test the packages**: openwrt.yml's `test` job
+    (after the build, so release.yml's Pages deploy waits for it too) runs
+    `scripts/test-openwrt.sh` in `openwrt/rootfs:x86-64-25.12.5` with
+    procd as PID 1 (`--privileged`). It trusts the key that signed the
+    build (`dist/throwaway.pem` when no real key did), installs each
+    package by name from the signed repository as the router page says,
+    and covers: the generated secret made on install, root's alone; the
+    firewall rule made off; the service refusing to start without its
+    public address and saying why; UCI settings written into the options
+    file; the start as its own user; the status listener; LuCI's backend
+    through uhttpd's JSON-RPC under a login granted the page's ACL alone
+    (and that ACL refusing procd's `service list` and file reads); a
+    secret set, refused (the generated one, a path) and cleared; a bad
+    value refused by `--check` in the binary's words, both on a reload
+    (still running, same pid) and a restart (not started); a value TOML
+    would choke on reaching the binary as written; an upgrade (`apk fix
+    --reinstall`) keeping settings and secrets; the relay refusing to run
+    beside monokulo's own; the sysupgrade backup list; and removal. monokulo
+    gets install, start, upgrade and removal in the same run.
+25. **A throwaway key is made by the build when there is no real one**,
+    and every package and the index are signed with it, its public half in
+    `dist/throwaway.pem`: a fork's pull request builds a repository the
+    rootfs test can verify (no `--allow-untrusted` anywhere). Before, an
+    unsigned build left the packages unsigned.
+26. **Secrets are a root-only folder `/etc/<package>/secrets/`, one file
+    per variable** (the APNs `.p8` and the FCM JSON are multi-line files),
+    0700/0600, passed to the binary in its environment by procd and by
+    `--check`. The generated one (the relay's handle key, the Bell's VAPID
+    key: 32 random bytes as hex) is made in `postinst`, so it exists to
+    back up from the start, and never replaced.
+27. **The options file is written from UCI at every start, into
+    `/var/etc/<package>/` (memory), as dotted keys with every value a TOML
+    string.** It holds no secret and is rebuilt each time, so nothing is
+    written to flash; dotted keys (`server.public_uri = "…"`) need no table
+    headers, so the order of writing can't make a table twice; a string
+    the binary parses makes a wrong value the binary's own error. Only
+    options that are set are written, so the binary's defaults rule and UCI
+    never repeats them. A value with a control character is refused by the
+    renderer (none is valid).
+28. **A bad setting never stops a running service, and never starts a
+    stopped one.** Each start renders to a new file and runs `--check` on
+    it; on success it replaces the file the service runs on, on failure the
+    reason goes to `/tmp/<package>.check` (LuCI shows it) and a running
+    service is re-registered on its last good file (procd leaves it
+    running), while a stopped one stays stopped. The options file's hash is
+    in the instance's data, so new settings restart it and a refused reload
+    doesn't. Otherwise: the plan's "check then restart" in the page alone,
+    which a `uci commit` by hand or a reload trigger would bypass.
+29. **Save & Apply on each page commits UCI, runs the backend's `check`
+    (the init script's `check`: the same renderer and `--check`), and only
+    then reloads the service**; refused, it shows the binary's output and
+    leaves the service on its earlier settings (28). The page's ACL grants
+    `uci commit` for its own config to do that.
+30. **The page's backend is an rpcd ucode plugin, not a shell one**: rpcd's
+    ucode support ships with LuCI (luci-base needs it), and ucode builds
+    the JSON (the check's output, the service's own status) without shell
+    quoting. Methods: `status`, `check`, `set_secret`, `clear_secret`; it
+    reads procd's state itself, so the page's ACL grants no `service list`,
+    whose instances hold each secret in their environment. It never sets or
+    clears the generated secret (restoring one is a file copied in by
+    hand, as the page says) and takes only the secrets' own names.
+31. **The standalone relay refuses to start while monokulo on the same
+    router has `relay.enabled`** (UCI says monokulo is on, and an awk over
+    its options file finds `enabled = true` in `[relay]` itself), whatever
+    the ports: two relays on one router is a mistake. The reason is in the
+    page's Status row. The relay's reload trigger watches monokulo's UCI
+    too.
+32. **Listen: the relay on the LAN by default, the Bell on this router
+    only** (`listen` is lan, all or loopback, with `port`), as their own
+    defaults lean; the status listeners are fixed at 127.0.0.1:8446 and
+    127.0.0.1:8447, where LuCI's backend reads them.
+33. **A firewall rule per package, `Allow-<package>` from wan to its port,
+    made off** by `/etc/uci-defaults/90-<package>` and removed with the
+    package. Neither binary serves TLS (12), so each page and the docs give
+    the TLS proxy on the router instead (Caddy, with nginx as the other
+    recipe); the packages install no proxy.
+34. **Removal keeps the data folder and the secrets**, the operator's, as
+    monokulo's package does.
+35. **The relay's apps are anonymous UCI sections with a `name` option**:
+    an app's name may hold a hyphen, which a UCI section name can't.
+36. **A test in each crate holds its package to its settings**
+    (`crates/<crate>/tests/openwrt.rs`): every setting the options file
+    takes is written by the init script from a UCI option the LuCI page
+    shows, the secrets of the init script, the page and the backend are
+    the binary's, and the default port and status listener are the
+    binary's own. A new setting fails CI until the package has it.
+37. **monokulo's own LuCI page no longer reads procd's `service list`**,
+    found while testing 30: procd's list (not only its verbose one) shows
+    each instance's environment, so the page fetched monokulo's encryption
+    key into the browser, over LuCI's plain http on most routers. The
+    package now installs the same backend for `status` alone (object
+    `monokulo`), the page reads whether it runs and which build from it,
+    and its ACL grants that instead of `service list` and the version
+    file. The rootfs test holds all three pages' ACLs to refusing `service
+    list`.
