@@ -13,23 +13,11 @@ const { spawn, execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
-const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const BIN = (name) => path.join(REPO_ROOT, 'target', 'debug', name);
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
 
 async function waitFor(url, what, child) {
   const deadline = Date.now() + 30_000;
@@ -46,19 +34,40 @@ async function waitFor(url, what, child) {
   throw new Error(`${what} didn't answer at ${url} within 30s`);
 }
 
-function readyLine(child, marker) {
+/**
+ * Resolves to the rest of the first whole line `child` writes to `stream`
+ * (its stdout or stderr) after `marker`: the address a process bound,
+ * asked for port 0 so no other worker can take it between a pick and the
+ * bind. `hint` ends the error when the line doesn't come.
+ */
+function readyLine(child, stream, marker, { timeout = 10_000, hint = '' } = {}) {
   return new Promise((resolve, reject) => {
     let buffered = '';
-    const timer = setTimeout(() => reject(new Error(`no ${marker} line within 10s`)), 10_000);
-    child.stdout.on('data', (chunk) => {
+    const settle = (finish) => {
+      clearTimeout(timer);
+      stream.off('data', onData);
+      child.off('exit', onExit);
+      finish();
+    };
+    const timer = setTimeout(() => settle(() => reject(new Error(`no ${marker.trim()} line within ${timeout / 1000}s${hint}`))), timeout);
+    const onData = (chunk) => {
       buffered += chunk.toString('utf8');
       const at = buffered.indexOf(marker);
       if (at === -1) return;
-      clearTimeout(timer);
-      resolve(buffered.slice(at + marker.length).split('\n')[0].trim());
-    });
-    child.once('exit', (code) => reject(new Error(`exited (code ${code}) before ${marker}`)));
+      const end = buffered.indexOf('\n', at);
+      if (end === -1) return;
+      settle(() => resolve(buffered.slice(at + marker.length, end).trim()));
+    };
+    const onExit = (code) => settle(() => reject(new Error(`exited (code ${code}) before ${marker.trim()}${hint}`)));
+    stream.on('data', onData);
+    child.once('exit', onExit);
   });
+}
+
+// A piped stream copied into a log file for the life of its process, so the
+// process never blocks on a pipe nobody reads.
+function tee(stream, file) {
+  stream.pipe(fs.createWriteStream(file, { flags: 'a' }));
 }
 
 // The process environment without the services' own settings, so a
@@ -111,18 +120,25 @@ function buildBinaries() {
 }
 
 /**
- * A reverse proxy serving `target` (`http://127.0.0.1:port`) under `prefix`
- * (`/monokulo`) on `port`, as an operator's nginx would: it strips the
- * prefix before passing a request on, streams both ways (server-sent events
- * included) and keeps the Host the browser sent. A request outside the
- * prefix never reaches Monokulo: it's answered 404 and kept in `misses`,
- * so a URL Monokulo gave without its base path shows up.
+ * A reverse proxy serving under `prefix` (`/monokulo`) on a port of its
+ * own, as an operator's nginx would: it strips the prefix before passing a
+ * request on, streams both ways (server-sent events included) and keeps
+ * the Host the browser sent. A request outside the prefix never reaches
+ * Monokulo: it's answered 404 and kept in `misses`, so a URL Monokulo gave
+ * without its base path shows up. It listens before monokulo starts, whose
+ * public_uri names its port; `target(url)` then says where monokulo is
+ * (`http://127.0.0.1:port`), and until then a request is answered 503.
  */
-function startPrefixProxy(port, prefix, target) {
+function startPrefixProxy(prefix) {
   const misses = [];
-  const upstream = new URL(target);
+  let upstream = null;
   const server = http.createServer((request, response) => {
     const url = request.url || '/';
+    if (!upstream) {
+      response.writeHead(503, { 'content-type': 'text/plain' });
+      response.end('Monokulo is not up yet');
+      return;
+    }
     if (url !== prefix && !url.startsWith(prefix + '/') && !url.startsWith(prefix + '?')) {
       misses.push(`${request.method} ${url}`);
       response.writeHead(404, { 'content-type': 'text/plain' });
@@ -145,8 +161,10 @@ function startPrefixProxy(port, prefix, target) {
   });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => resolve({
+    server.listen(0, '127.0.0.1', () => resolve({
+      port: server.address().port,
       misses,
+      target: (url) => { upstream = new URL(url); },
       close: () => new Promise((done) => { server.closeAllConnections(); server.close(() => done()); }),
     }));
   });
@@ -163,15 +181,17 @@ function startPrefixProxy(port, prefix, target) {
 async function startStack(options = {}) {
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mokulo-e2e-'));
-  const log = (name) => fs.openSync(path.join(dir, `${name}.log`), 'a');
+  const logFile = (name) => path.join(dir, `${name}.log`);
+  const log = (name) => fs.openSync(logFile(name), 'a');
   const children = [];
+  let proxy = null;
 
   try {
   const fake = spawn(BIN('fake-monerod'), ['--height', '1000'], { stdio: ['ignore', 'pipe', log('fake-monerod')] });
   children.push(fake);
-  const fakeAddress = await readyLine(fake, 'FAKE_MONEROD_READY ');
+  tee(fake.stdout, logFile('fake-monerod'));
+  const fakeAddress = await readyLine(fake, fake.stdout, 'FAKE_MONEROD_READY ');
 
-  const enginePort = await freePort();
   const engineToken = crypto.randomBytes(32).toString('hex');
   // Each process's options file, in this run's directory: never the
   // user's own in ~/.config, which a spec saving on the admin page would
@@ -179,7 +199,8 @@ async function startStack(options = {}) {
   const engineOptions = path.join(dir, 'engine.toml');
   fs.writeFileSync(engineOptions, [
     '[server]',
-    `bind = "127.0.0.1:${enginePort}"`,
+    // Any free port: the engine says which (ENGINE_LISTENING).
+    'bind = "127.0.0.1:0"',
     // A standalone engine limits monokulo's own calls (those without a
     // store's key) to one budget for the instance, 600 a minute by default.
     // Every spec shares this engine, so status reloads, the Logs and engine
@@ -196,20 +217,25 @@ async function startStack(options = {}) {
   // spec fails against the bug it guards.
   const engine = spawn(process.env.E2E_ENGINE_BIN || BIN('monokulo-engine'), ['--options', engineOptions], {
     env: { ...cleanEnv(), ENGINE_TOKEN: engineToken },
-    stdio: ['ignore', log('engine'), log('engine')],
+    stdio: ['ignore', 'pipe', log('engine')],
   });
   children.push(engine);
-  const engineUrl = `http://127.0.0.1:${enginePort}`;
+  tee(engine.stdout, logFile('engine'));
+  const engineAddress = await readyLine(engine, engine.stdout, 'ENGINE_LISTENING ', {
+    timeout: 30_000,
+    hint: process.env.E2E_ENGINE_BIN ? `; an E2E_ENGINE_BIN built before the engine printed it doesn't` : '',
+  });
+  const engineUrl = `http://${engineAddress}`;
   await waitFor(`${engineUrl}/status`, 'the engine', engine);
 
-  const monokuloPort = await freePort();
-  const proxyPort = options.prefix ? await freePort() : null;
-  const publicUri = options.prefix ? `http://127.0.0.1:${proxyPort}${options.prefix}` : null;
+  proxy = options.prefix ? await startPrefixProxy(options.prefix) : null;
+  const publicUri = proxy ? `http://127.0.0.1:${proxy.port}${options.prefix}` : null;
   const monokuloOptions = path.join(dir, 'monokulo.toml');
   fs.writeFileSync(monokuloOptions, [
     ...(publicUri ? [`public_uri = "${publicUri}"`] : []),
     '[server]',
-    `bind = "127.0.0.1:${monokuloPort}"`,
+    // Any free port: monokulo says which ("Open Monokulo: ...").
+    'bind = "127.0.0.1:0"',
     // The engine is a process of its own here (engine-crash-recovery kills it), so
     // monokulo reaches it remotely, not inside itself.
     '[engine]',
@@ -230,18 +256,20 @@ async function startStack(options = {}) {
       MONOKULO_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
       MONOKULO_ENGINE_TOKEN: engineToken,
     },
-    stdio: ['ignore', log('monokulo'), log('monokulo')],
+    stdio: ['ignore', log('monokulo'), 'pipe'],
   });
   children.push(monokulo);
-  const monokuloUrl = `http://127.0.0.1:${monokuloPort}`;
+  tee(monokulo.stderr, logFile('monokulo'));
+  const monokuloUrl = new URL(await readyLine(monokulo, monokulo.stderr, 'Open Monokulo: ', { timeout: 30_000 })).origin;
   await waitFor(`${monokuloUrl}/`, 'monokulo', monokulo);
+  if (proxy) proxy.target(monokuloUrl);
 
-  var proxy = options.prefix ? await startPrefixProxy(proxyPort, options.prefix, monokuloUrl) : null;
   var fixture = {
     monokulo_url: publicUri || monokuloUrl, direct_url: monokuloUrl, engine_url: engineUrl, fake_monerod: fakeAddress, logs: dir,
     proxy_misses: proxy ? proxy.misses : [],
   };
   } catch (e) {
+    if (proxy) await proxy.close();
     for (const child of children) child.kill('SIGKILL');
     if (!process.env.KEEP_E2E_LOGS) fs.rmSync(dir, { recursive: true, force: true });
     throw e;
@@ -268,7 +296,8 @@ async function startStack(options = {}) {
  */
 async function startFakeNode(nettype) {
   const child = spawn(BIN('fake-monerod'), ['--height', '1000', '--nettype', nettype], { stdio: ['ignore', 'pipe', 'ignore'] });
-  const address = await readyLine(child, 'FAKE_MONEROD_READY ');
+  const address = await readyLine(child, child.stdout, 'FAKE_MONEROD_READY ');
+  child.stdout.resume();
   const stop = () => new Promise((resolve) => {
     if (child.exitCode !== null || child.signalCode !== null) return resolve();
     child.once('exit', () => resolve());
@@ -277,4 +306,4 @@ async function startFakeNode(nettype) {
   return { address, stop };
 }
 
-module.exports = { BIN, buildBinaries, prebuilt, startStack, startFakeNode };
+module.exports = { BIN, buildBinaries, prebuilt, readyLine, tee, startStack, startFakeNode };

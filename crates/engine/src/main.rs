@@ -14,11 +14,13 @@
 // (a listener that can't bind), which is marked where it happens.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 // A boot failure comes before logging is set up: it is told on stderr and
-// ends the process with a failing status.
+// ends the process with a failing status. Once listening, the engine says
+// where on stdout, whatever the logging format.
 #![expect(
     clippy::print_stderr,
+    clippy::print_stdout,
     clippy::exit,
-    reason = "boot failures are reported on stderr and end the process"
+    reason = "boot failures are reported on stderr and end the process; the ready line goes to stdout"
 )]
 
 use engine::cli;
@@ -106,6 +108,10 @@ async fn run(config: EngineConfig) {
     let local = listener.local_addr();
     if let Ok(local) = &local {
         tracing::info!(server.address = %local, "engine listening");
+        // A plain ready line, whatever the logging format, for whatever
+        // started the engine on port 0 to read the port from (the browser
+        // suites' real-stack.js), as fake-monerod prints FAKE_MONEROD_READY.
+        println!("ENGINE_LISTENING {local}");
     } else {
         tracing::info!(server.address = %bind, "engine listening");
     }
