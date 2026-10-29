@@ -17,8 +17,10 @@ test('real challenge solves in JavaScript and continues to the checkout', async 
   expect(page.url()).toContain('monokulo_proof=');
 });
 
-// The one real ten second wait in the suite: waiting is the proof
-// (crates/abuse/src/challenge.rs), so it isn't shortened for a test.
+// The server's side of the wait, that a wait token only redeems once its
+// ten seconds have passed, is pinned where it lives: crates/abuse
+// (challenge.rs) and crates/monokulo's http/abuse.rs. This test checks the
+// page offers a visitor without JavaScript a way on and where it leads.
 test('real challenge offers a ten second no-JavaScript continuation', async ({ browser, page }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   try {
@@ -27,6 +29,9 @@ test('real challenge offers a ten second no-JavaScript continuation', async ({ b
     await expect(plain.getByRole('heading', { name: 'Checking your connection' })).toBeVisible();
     await expect(plain.locator('meta[http-equiv="refresh"]')).toHaveAttribute('content', /^10;url=/);
     await expect(plain.getByRole('link', { name: 'continue' })).toBeVisible();
+    // The refresh and the link are one way on: the same address.
+    const refresh = (await plain.locator('meta[http-equiv="refresh"]').getAttribute('content')).split('url=')[1];
+    expect(refresh, 'the refresh goes where the continue link does').toBe(await plain.getByRole('link', { name: 'continue' }).getAttribute('href'));
     await captureCoverageStage(plain, 'challenge-no-js', test.info());
 
     // Meanwhile, a Tor .onion served over plain HTTP: not a secure
@@ -60,8 +65,10 @@ test('real challenge offers a ten second no-JavaScript continuation', async ({ b
     expect(page.url()).toContain('monokulo_wait=');
     expect(await navigations(), 'continued once, to the wait, at 10.5s').toEqual([{ url: expect.stringContaining('monokulo_wait='), at: start.getTime() + 10500 }]);
 
-    // Without JavaScript the refresh goes on by itself.
-    await expect(plain.locator('#checkout-root')).toBeVisible({ timeout: 20000 });
+    // Without JavaScript the refresh leads to the checkout: followed here
+    // rather than waited out, as the browser would after its ten seconds.
+    await plain.goto(new URL(refresh, fixture.base_url).href);
+    await expect(plain.locator('#checkout-root')).toBeVisible();
   } finally { await context.close(); }
 });
 
