@@ -317,6 +317,15 @@ test('the push relay card works without JavaScript', async ({ browser }) => {
     await expect(card.locator('[data-relay-app]')).toHaveCount(1);
     await expect(page.locator('#settings-toasts .toast-success')).toHaveCount(0);
     await card.locator('input[name="relay_app_0_name"]').fill('monokular-dev');
+    // Saved without an ID, the row is refused, its error under its field
+    // without staggering the other fields: labels and inputs stay in line.
+    await pressSave(page);
+    const refused = card.locator('.relay-app.is-failed');
+    await expect(refused).toContainText('needs an iOS bundle ID or a Firebase project ID, or both.');
+    for (const part of ['label', 'input.mk-input']) {
+      const tops = await refused.locator(part).evaluateAll((all) => all.map((el) => Math.round(el.getBoundingClientRect().top)));
+      expect(new Set(tops).size, `${part} tops ${tops}`).toBe(1);
+    }
     await card.locator('[data-relay-app]').getByRole('button', { name: /^Remove/ }).click();
     await expect(card.locator('[data-relay-app]')).toHaveCount(0);
     await card.getByRole('link', { name: 'Close' }).click();
