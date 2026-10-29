@@ -562,48 +562,6 @@ mod tests {
             .contains("The engine's activity could not be read"));
     }
 
-    /// The stream opens with the history: the live frame and every mark.
-    #[tokio::test]
-    async fn the_stream_opens_with_the_history() {
-        let (_engine, router, cookie) = site().await;
-        let response = get(
-            &router,
-            "/status/engine/events?network=stagenet",
-            Some(&cookie),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let mut body = response.into_body();
-        let mut text = String::new();
-        while !text.contains("\n\n") {
-            let frame = tokio::time::timeout(std::time::Duration::from_secs(10), body.frame())
-                .await
-                .expect("the history within 10 s")
-                .expect("a frame")
-                .unwrap();
-            if let Ok(data) = frame.into_data() {
-                text.push_str(&String::from_utf8_lossy(&data));
-            }
-        }
-        assert!(text.starts_with("event: history\n"), "{text}");
-        let data: serde_json::Value = serde_json::from_str(
-            text.lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(data["marks"].as_array().unwrap().len(), 2);
-        assert_eq!(data["marks"][1]["what"]["kind"], "committed");
-        assert_eq!(data["frame"]["state"]["chain"]["tip"], 3_412_881);
-        assert_eq!(
-            data["frame"]["tuning"]["shares"].as_array().unwrap().len(),
-            5
-        );
-        assert!(data["epoch"]
-            .as_str()
-            .is_some_and(|epoch| !epoch.is_empty()));
-    }
-
     /// Scrubbing and replay answer from the history: before the commit, the
     /// high-water mark was lower; the replay over the commit carries its
     /// effects and mark.
@@ -764,12 +722,13 @@ mod tests {
             .expect("an event within 15 s")
     }
 
-    /// The stream sends the strip's `machine` event at once, after the
-    /// history, and then at most every `machine_every` however many frames
-    /// come between: it is built from the cached `/status`, not per frame.
+    /// The stream opens with the history, its first event: the live frame
+    /// and every mark. It sends the strip's `machine` event at once after
+    /// it, and then at most every `machine_every` however many frames come
+    /// between: it is built from the cached `/status`, not per frame.
     /// Monokulo waits [`MACHINE_EVERY`]; this passes a shorter interval.
     #[tokio::test]
-    async fn the_machine_event_comes_at_once_then_at_most_every_few_seconds() {
+    async fn the_stream_opens_with_the_history_then_the_machine_event_at_most_every_few_seconds() {
         let timing = Timing {
             machine_every: Duration::from_millis(400),
             ..Timing::DEFAULT
@@ -784,7 +743,22 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let mut body = response.into_body();
         let mut buffer = String::new();
-        assert_eq!(read(&mut body, &mut buffer).await.0, "history");
+        let (name, data) = read(&mut body, &mut buffer).await;
+        assert_eq!(name, "history", "the first event");
+        let history: serde_json::Value = serde_json::from_str(&data).unwrap();
+        assert_eq!(history["marks"].as_array().unwrap().len(), 2);
+        assert_eq!(history["marks"][1]["what"]["kind"], "committed");
+        assert_eq!(history["frame"]["state"]["chain"]["tip"], 3_412_881);
+        assert_eq!(
+            history["frame"]["tuning"]["shares"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert!(history["epoch"]
+            .as_str()
+            .is_some_and(|epoch| !epoch.is_empty()));
         let (name, data) = read(&mut body, &mut buffer).await;
         assert_eq!(name, "machine");
         let machine: serde_json::Value = serde_json::from_str(&data).unwrap();
