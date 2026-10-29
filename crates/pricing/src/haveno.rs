@@ -95,8 +95,8 @@ pub struct HavenoRateProvider {
 
 #[derive(Debug, Default)]
 struct Cache {
-    tickers: Option<(HashMap<String, Book>, std::time::Instant)>,
-    depth: HashMap<String, (Depth, std::time::Instant)>,
+    tickers: Option<(HashMap<String, Book>, tokio::time::Instant)>,
+    depth: HashMap<String, (Depth, tokio::time::Instant)>,
 }
 
 /// A two-sided, uncrossed, positive best bid and best ask.
@@ -244,7 +244,7 @@ impl HavenoRateProvider {
         };
         if tickers_stale {
             match self.fetch_tickers().await {
-                Ok(books) => cache.tickers = Some((books, std::time::Instant::now())),
+                Ok(books) => cache.tickers = Some((books, tokio::time::Instant::now())),
                 // The books fetched before, while not too old to use: a
                 // provider down or rate limited for a while doesn't stop
                 // orders.
@@ -291,7 +291,7 @@ impl HavenoRateProvider {
                     Ok(depth) => {
                         cache
                             .depth
-                            .insert(key.clone(), (depth, std::time::Instant::now()));
+                            .insert(key.clone(), (depth, tokio::time::Instant::now()));
                     }
                     Err(error)
                         if cache.depth.get(&key).is_some_and(|(_, fetched_at)| {
