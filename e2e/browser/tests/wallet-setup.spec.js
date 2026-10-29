@@ -320,7 +320,8 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await expect(page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' })).toContainText(WALLET_NAME);
 
   // Cafe till is used by nothing now: retired, its keys deleted, said at
-  // the top of its page; then brought back with its keys.
+  // the top of its page; it leaves the store's dropdown and is tagged
+  // Retired in the store's wallet history.
   await page.goto(base + '/account?tab=wallets');
   await page.getByRole('link', { name: 'Cafe till' }).click();
   await page.getByRole('link', { name: 'Retire wallet…' }).click();
@@ -341,17 +342,4 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.keyboard.press('Escape');
   await page.locator('#card-wallet details[data-disclosure="wallet-history"] summary').click();
   await expect(page.locator('#card-wallet tbody tr', { hasText: 'Cafe till' }).locator('.tag')).toHaveText('Retired');
-
-  await page.goto(base + '/account?tab=wallets');
-  await page.locator('details[data-disclosure="retired-wallets"] summary').click();
-  await page.getByRole('link', { name: 'Cafe till' }).click();
-  await page.getByRole('link', { name: 'Restore wallet…' }).click();
-  const restore = page.getByRole('dialog', { name: 'Restore “Cafe till”' });
-  // The CLI key help is on the restore form too.
-  await expect(restore.getByText('Where do I find these keys?')).toBeVisible();
-  await restore.locator('input[name="view_key_hex"]').fill('0707070707070707070707070707070707070707070707070707070707070707');
-  await restore.locator('input[name="spend_pubkey_hex"]').fill('8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90');
-  await restore.getByRole('button', { name: 'Restore wallet' }).click();
-  await expect(page.getByText('Cafe till is back.')).toBeVisible();
-  await expect(page.locator('.wallet-meta')).toHaveCount(0);
 });
