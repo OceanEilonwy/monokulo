@@ -55,12 +55,7 @@ mod tests {
     fn built(scratch: &Scratch) -> (PathBuf, String) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let site = scratch.join("site");
-        install::tests::repo(
-            &site,
-            "25.12",
-            "aarch64_cortex-a53",
-            "monokulo-0.1.0-r1.apk",
-        );
+        install::tests::repo(&site, "25.12", "aarch64_cortex-a53", "0.1.0-r1");
         write(&site, "https://github.com/Owner/monokulo").unwrap();
         docs::write(root, &site, "https://docs.monokulo.com", GITHUB_URL).unwrap();
         // The API's part, from its fixture: the explorer the homepage links.

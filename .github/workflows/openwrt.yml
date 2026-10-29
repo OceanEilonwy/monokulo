@@ -1,18 +1,23 @@
-# The OpenWrt packages: monokulo (the engine inside it) and its LuCI page in
-# one signed .apk, and a signed apk repository holding it, for each OpenWrt
-# release and CPU architecture in the build matrix below (today one: 25.12 on
-# the GL.iNet Flint 2, mediatek/filogic, aarch64_cortex-a53). The build is
+# The OpenWrt packages, each a signed .apk carrying its LuCI page: monokulo
+# (the engine inside it), monokulo-push-relay and monokulo-bell; and one
+# signed apk repository holding all three, for each OpenWrt release and CPU
+# architecture in the build matrix below (25.12 on the GL.iNet Flint 2,
+# mediatek/filogic, aarch64_cortex-a53; and 25.12 on x86_64). The build is
 # scripts/build-openwrt.sh; the docs page with install instructions is
 # built by pages.yml.
 #
 # release.yml runs it on main and version tags, after every test passed; a
 # pull request runs it only when it changes the package itself. Each matrix
 # entry builds and uploads as artifacts
-#   monokulo-openwrt-<release>-<arch>   the .apk, the repository index
+#   monokulo-openwrt-<release>-<arch>   the .apk files, the repository index
 #                                       (packages.adb), the public key
 #                                       (monokulo.pem) and SHA256SUMS
 #   openwrt-repo-<release>-<arch>       the signed apk repository (the .apk
-#                                       and packages.adb)
+#                                       files and packages.adb)
+# The test job then boots OpenWrt's x86_64 rootfs in Docker and installs,
+# runs, upgrades and removes the x86_64 packages there
+# (scripts/test-openwrt.sh). There is no aarch64_cortex-a53 rootfs image:
+# that build's proof is its static-link check, and the router.
 # On main, release.yml's Pages job publishes that run's openwrt-repo-* artifacts
 # (pages.yml, which lays out the site); routers use it as their package
 # repository (Settings > Pages > Source: GitHub Actions).
@@ -28,7 +33,10 @@ on:
   pull_request:
     paths:
       - 'openwrt/**'
+      - 'crates/push-relay/**'
+      - 'crates/monokulo-bell/**'
       - 'scripts/build-openwrt.sh'
+      - 'scripts/test-openwrt.sh'
       - '.github/workflows/openwrt.yml'
   workflow_call:
   workflow_dispatch:
@@ -59,6 +67,12 @@ jobs:
             sdk_image: openwrt/sdk:mediatek-filogic-25.12.5
             rust_target: aarch64-unknown-linux-musl
             toolchain_prefix: aarch64-openwrt-linux-musl
+          # PCs, and x86_64 virtual machines (the test job boots this one).
+          - release: '25.12'
+            arch: x86_64
+            sdk_image: openwrt/sdk:x86-64-25.12.5
+            rust_target: x86_64-unknown-linux-musl
+            toolchain_prefix: x86_64-openwrt-linux-musl
     env:
       SDK_IMAGE: ${{ matrix.sdk_image }}
       OPENWRT_ARCH: ${{ matrix.arch }}
@@ -88,7 +102,7 @@ jobs:
           SIGNED: ${{ secrets.APK_SIGNING_KEY != '' }}
         run: |
           {
-            echo "## OpenWrt package (${{ matrix.release }}, ${{ matrix.arch }})"
+            echo "## OpenWrt packages (${{ matrix.release }}, ${{ matrix.arch }})"
             echo
             echo "| File | Size |"
             echo "| --- | ---: |"
@@ -110,6 +124,7 @@ jobs:
             dist/packages.adb
             dist/monokulo.pem
             dist/SHA256SUMS
+            dist/throwaway.pem
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
@@ -119,3 +134,25 @@ jobs:
           # Every Pages deploy republishes the newest from a Release run on
           # main that passed, so it must outlast the gap between them.
           retention-days: 90
+
+  test:
+    # The x86_64 packages on OpenWrt itself: its official rootfs image booted
+    # in Docker (procd, ubus, rpcd, uhttpd), the packages installed by name
+    # from the signed repository, set up through UCI and LuCI's backend,
+    # started, refused a bad setting, upgraded and removed.
+    name: test the openwrt packages (25.12, x86_64)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: monokulo-openwrt-25.12-x86_64
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: openwrt-repo-25.12-x86_64
+          path: dist/repo
+      - name: Install, run, upgrade and remove them in OpenWrt
+        run: scripts/test-openwrt.sh dist

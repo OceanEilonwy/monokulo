@@ -1,30 +1,33 @@
 #!/bin/sh
-# Build the monokulo package (.apk) for one OpenWrt release and CPU
+# Build the OpenWrt packages (.apk) for one OpenWrt release and CPU
 # architecture (by default 25.12 on the GL.iNet Flint 2: mediatek/filogic,
-# aarch64_cortex-a53) and a signed apk repository holding
-# it. Publishing it, and the page that explains how to install it, belong to
-# the Pages site (`cargo xtask pages`).
+# aarch64_cortex-a53) and a signed apk repository holding them: monokulo
+# (the engine inside it), monokulo-push-relay and monokulo-bell, each with
+# its LuCI page. Publishing them, and the page that explains how to
+# install them, belong to the Pages site (`cargo xtask pages`).
 #
-# monokulo, with the engine inside it, is cross-compiled here with cargo. Its C
-# parts (SQLite, aws-lc) are compiled with the gcc from the official OpenWrt
-# SDK image, so they are built exactly as OpenWrt builds C. The same SDK (in
-# Docker) then packages the binary, the init script and the LuCI page,
-# signs the packages and the repository index.
+# The three binaries are cross-compiled here with cargo, in one build.
+# Their C parts (SQLite, aws-lc) are compiled with the gcc from the official
+# OpenWrt SDK image, so they are built exactly as OpenWrt builds C. The same
+# SDK (in Docker) then packages each binary with its init script and LuCI
+# page, and signs the packages and the repository index.
 #
 # Needs: docker, rustup (the nightly rust-toolchain.toml names), Node 24 and
 # npm (monokulo's build script builds the POS app), openssl.
 #
 # Output:
-#   dist/          the package, the repository index and the public key,
+#   dist/          the packages, the repository index and the public key,
 #                  for installing by hand (CI uploads these as an artifact)
-#   dist/repo/     the signed apk repository: the package and packages.adb
+#   dist/repo/     the signed apk repository: the packages and packages.adb
+#   dist/throwaway.pem  the public half of the throwaway key, when one
+#                  signed them (scripts/test-openwrt.sh trusts it)
 #
 # Signing key (must match openwrt/keys/monokulo.pem), first found wins:
 #   $APK_SIGNING_KEY       the PEM itself (how CI passes the secret)
 #   $MONOKULO_SIGNING_KEY  path to the PEM
 #   ~/.config/kringle/apk-signing-key.pem   (the same key signs kringle)
-# Without one the packages are signed with a throwaway key: fine for testing,
-# but routers that trust monokulo.pem will refuse them.
+# Without one the packages are signed with a throwaway key, made here: fine
+# for testing, but routers that trust monokulo.pem will refuse them.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -37,7 +40,9 @@ TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-aarch64-openwrt-linux-musl}"  # the SDK co
 triple=$(printf '%s' "$TARGET" | tr - _)
 TRIPLE=$(printf '%s' "$triple" | tr '[:lower:]' '[:upper:]')
 PUBKEY=openwrt/keys/monokulo.pem
-PKG=openwrt/monokulo
+# Each package, named as its binary (its crate's [[bin]]) and its folder in
+# openwrt/.
+PKGS="monokulo monokulo-push-relay monokulo-bell"
 
 # The package version is the crate's; the release number is the commit
 # count, so every build from main upgrades the one before it.
@@ -58,6 +63,8 @@ if [ -n "$key" ]; then
 	fi
 else
 	echo "warning: no signing key, so the packages are signed with a throwaway key" >&2
+	key=$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null)
+	throwaway=1
 fi
 
 # The SDK's cross toolchain, copied out of its image once per image tag.
@@ -109,17 +116,25 @@ rustup target add "$TARGET"
 	# As release.yml builds it: monokulo's links to its source name the commit.
 	export MONOKULO_GIT_COMMIT="$COMMIT"
 	# The engine is built into monokulo (its default `embedded-engine`
-	# feature), so there is one binary to ship, with the engine's default
-	# `zmq` feature: a node's ZMQ announcements wake the scan at once.
+	# feature), so there is one binary to ship for it, with the engine's
+	# default `zmq` feature: a node's ZMQ announcements wake the scan at
+	# once. The relay and the Bell are binaries of their own crates.
 	cargo build --release --locked --target "$TARGET" \
-		-p monokulo --bin monokulo
+		-p monokulo --bin monokulo \
+		-p push-relay --bin monokulo-push-relay \
+		-p monokulo-bell --bin monokulo-bell
 )
-if ! file "target/$TARGET/release/monokulo" | grep -q 'statically linked'; then
-	echo "error: monokulo isn't a static executable, so it won't run on OpenWrt:" >&2
-	file "target/$TARGET/release/monokulo" >&2
-	exit 1
-fi
-install -m 0755 "target/$TARGET/release/monokulo" "$PKG/files/monokulo"
+for pkg in $PKGS; do
+	bin="target/$TARGET/release/$pkg"
+	# x86_64's musl target links a static PIE, aarch64's a plain static
+	# executable: either runs on OpenWrt, a dynamic one doesn't.
+	if ! file "$bin" | grep -Eq 'statically linked|static-pie linked'; then
+		echo "error: $pkg isn't a static executable, so it won't run on OpenWrt:" >&2
+		file "$bin" >&2
+		exit 1
+	fi
+	install -m 0755 "$bin" "openwrt/$pkg/files/$pkg"
+done
 
 rm -rf dist
 mkdir -p dist/repo
@@ -134,7 +149,7 @@ set -- -v "$PWD/openwrt:/feed:ro" -v "$PWD/dist:/dist"
 
 # The key reaches the container through the environment (-e APK_KEY without a
 # value), never on docker's command line where other local users could see it.
-APK_KEY="$key" docker run --rm -e APK_KEY \
+APK_KEY="$key" docker run --rm -e APK_KEY -e PKGS="$PKGS" \
 	-e MONOKULO_VERSION="$VERSION" -e MONOKULO_RELEASE="$PKG_RELEASE" -e MONOKULO_COMMIT="$COMMIT" \
 	"$@" "$SDK_IMAGE" sh -euc '
 	[ -x ./setup.sh ] && [ ! -f rules.mk ] && ./setup.sh
@@ -142,41 +157,48 @@ APK_KEY="$key" docker run --rm -e APK_KEY \
 	# Remove the private key from the (possibly persistent) SDK tree on exit.
 	trap "rm -f private-key.pem" EXIT
 	rm -f private-key.pem public-key.pem
-	if [ -n "$APK_KEY" ]; then
-		(umask 077 && printf "%s\n" "$APK_KEY" > private-key.pem)
-		openssl ec -in private-key.pem -pubout -out public-key.pem 2>/dev/null
-	fi
+	(umask 077 && printf "%s\n" "$APK_KEY" > private-key.pem)
+	openssl ec -in private-key.pem -pubout -out public-key.pem 2>/dev/null
 
-	# Only our own feed: the package needs nothing built from the others, so
+	# Only our own feed: the packages need nothing built from the others, so
 	# the build never waits on git.openwrt.org.
 	grep -q "^src-link monokulo " feeds.conf.default || echo "src-link monokulo /feed" >> feeds.conf.default
 	./scripts/feeds update monokulo
-	./scripts/feeds install monokulo
+	./scripts/feeds install $PKGS
 	make defconfig
 	# Rebuild ours from scratch each time; drop earlier versions from the repository.
 	rm -rf bin/packages/*/monokulo build_dir/target-*/monokulo-*
-	make package/monokulo/compile -j"$(nproc)" \
-		MONOKULO_VERSION="$MONOKULO_VERSION" MONOKULO_RELEASE="$MONOKULO_RELEASE" \
-		MONOKULO_COMMIT="$MONOKULO_COMMIT"
+	for pkg in $PKGS; do
+		make "package/$pkg/compile" -j"$(nproc)" \
+			MONOKULO_VERSION="$MONOKULO_VERSION" MONOKULO_RELEASE="$MONOKULO_RELEASE" \
+			MONOKULO_COMMIT="$MONOKULO_COMMIT"
+	done
 	# The SDK builds packages unsigned (only the index is signed). Sign them too,
 	# so a downloaded .apk installs directly (apk add, or LuCI Upload Package)
 	# on any router that trusts monokulo.pem.
-	if [ -n "$APK_KEY" ]; then
-		mkdir -p /tmp/monokulo-keys
-		cp public-key.pem /tmp/monokulo-keys/monokulo.pem
-		for f in bin/packages/*/monokulo/*.apk; do
-			staging_dir/host/bin/apk --allow-untrusted adbsign --sign-key private-key.pem "$f"
-			staging_dir/host/bin/apk --keys-dir /tmp/monokulo-keys verify "$f"
-		done
-	fi
+	mkdir -p /tmp/monokulo-keys
+	cp public-key.pem /tmp/monokulo-keys/monokulo.pem
+	for f in bin/packages/*/monokulo/*.apk; do
+		staging_dir/host/bin/apk --allow-untrusted adbsign --sign-key private-key.pem "$f"
+		staging_dir/host/bin/apk --keys-dir /tmp/monokulo-keys verify "$f"
+	done
+	# One index over the three packages, signed with the same key.
 	make package/index
 	cp bin/packages/*/monokulo/* /dist/repo/
 '
 
-apk=$(basename "$(ls dist/repo/monokulo-*.apk)")
-cp "dist/repo/$apk" dist/repo/packages.adb dist/
+cp dist/repo/*.apk dist/repo/packages.adb dist/
 cp "$PUBKEY" dist/monokulo.pem
-(cd dist && sha256sum "$apk" packages.adb monokulo.pem > SHA256SUMS)
+if [ -n "${throwaway:-}" ]; then
+	printf '%s\n' "$key" | openssl ec -pubout 2>/dev/null >dist/throwaway.pem
+fi
+for pkg in $PKGS; do
+	ls dist/"$pkg"-[0-9]*.apk >/dev/null || {
+		echo "error: the SDK built no $pkg package" >&2
+		exit 1
+	}
+done
+(cd dist && sha256sum ./*.apk packages.adb monokulo.pem | sed 's| \./| |' > SHA256SUMS)
 
 
 ls -l dist dist/repo
