@@ -1130,6 +1130,83 @@ async fn a_test_push_from_the_page_is_sent_recorded_and_limited() {
     assert_eq!(wrong.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// A test push that is its target's last allowed failure in a row deletes
+/// the target, and the push with it, as any push does: the redirect carries
+/// what the toast says, since nothing is left to read back; a link carrying
+/// anything but those words shows no toast.
+#[tokio::test]
+async fn a_test_push_that_drops_its_target_still_says_how_it_went() {
+    let (state, _engine) = state_with_engine("").await;
+    let router = build_router(state.clone());
+    let (id, cookie) = store(&router).await;
+    let app = connected_app(&state, &id, "monokular", "Front counter");
+    let alerts = target(
+        &state,
+        &app,
+        "alerts",
+        Kind::Encrypted,
+        "https://10.1.2.3/secret-path",
+    );
+    let limit = state.settings.push.load().target_failure_limit;
+    for _ in 1..limit {
+        attempted(&state, &id, &app, &alerts, 502);
+    }
+
+    let sent = router
+        .clone()
+        .oneshot(form_post(
+            &format!("{}/test-push", app_page(&id, &app)),
+            Some(&cookie),
+            &[("target", alerts.as_str()), ("event", "sale.paid")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(sent.status(), StatusCode::SEE_OTHER);
+    let to = location(&sent);
+    assert_eq!(
+        to,
+        format!(
+            "{}?dropped=limit&host=10.1.2.3&trouble=private-address#card-push-targets",
+            app_page(&id, &app)
+        )
+    );
+    assert!(
+        state
+            .db
+            .lock()
+            .get_push_target(&app, &alerts)
+            .unwrap()
+            .is_none(),
+        "dropped"
+    );
+    let html = body_text(get(&router, &to, &cookie).await).await;
+    assert!(html.contains("Test push failed."), "the toast");
+    assert!(
+        html.contains(&format!(
+            "10.1.2.3: refused: a private address (its {limit}th failure in a row), so the target was dropped; the app registers again when it next opens."
+        )),
+        "why"
+    );
+    assert!(!html.contains("secret-path"), "no endpoint");
+
+    for forged in [
+        "?dropped=limit&host=%3Cscript%3E&status=502",
+        "?dropped=anything&host=10.1.2.3",
+        "?dropped=limit",
+    ] {
+        let html = body_text(
+            get(
+                &router,
+                &format!("{}{forged}", app_page(&id, &app)),
+                &cookie,
+            )
+            .await,
+        )
+        .await;
+        assert!(!html.contains("Test push failed."), "{forged}");
+    }
+}
+
 /// The test push lands on a push service (a stub on this machine, which
 /// `webhooks.allow_private_urls` lets it reach) and the page's toast says
 /// it was delivered, by whom and how fast.

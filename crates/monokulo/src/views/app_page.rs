@@ -9,7 +9,9 @@
 //!
 //! Every action is a plain form POST that comes back here (`303`) with
 //! what happened in the query (`?removed=1`, `?tested=<push id>`), read
-//! back from the database for the toast: nothing needs JavaScript. With
+//! back from the database for the toast (or, for a test push that deleted
+//! its target and so itself, `?dropped=…` carrying what the toast says,
+//! in words of a closed set): nothing needs JavaScript. With
 //! it (fixi), Recent pushes asks again every few seconds while its newest
 //! push is still to be sent, for a minute at most.
 
@@ -110,23 +112,90 @@ pub fn short_answer(status: Option<u16>, error: Option<&str>) -> String {
         return status.to_string();
     }
     let Some(error) = error else {
-        return "no answer".to_owned();
+        return Trouble::NoAnswer.words().to_owned();
     };
-    let lower = error.to_ascii_lowercase();
-    if lower.contains("timed out") || lower.contains("no answer within") {
-        "timed out".into()
-    } else if lower.contains("private or loopback") {
-        "refused: a private address".into()
-    } else if lower.contains("onion") {
-        "refused: an onion address".into()
-    } else if lower.contains("refused") {
-        "connection refused".into()
-    } else if lower.contains("resolve") || lower.contains("dns") {
-        "host not found".into()
-    } else if lower.contains("could not connect") || lower.contains("connect") {
-        "could not connect".into()
-    } else {
-        error.split(':').next().unwrap_or(error).trim().to_owned()
+    match Trouble::of(error) {
+        Some(trouble) => trouble.words().to_owned(),
+        None => error.split(':').next().unwrap_or(error).trim().to_owned(),
+    }
+}
+
+/// What went wrong with an attempt nothing answered, of the kinds a page
+/// names: what [`short_answer`] says, and what a redirect may carry (by
+/// [`Trouble::key`]), since it is one of these words and never the
+/// error's own text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trouble {
+    NoAnswer,
+    TimedOut,
+    PrivateAddress,
+    OnionAddress,
+    ConnectionRefused,
+    HostNotFound,
+    CouldNotConnect,
+}
+
+impl Trouble {
+    const ALL: [Trouble; 7] = [
+        Trouble::NoAnswer,
+        Trouble::TimedOut,
+        Trouble::PrivateAddress,
+        Trouble::OnionAddress,
+        Trouble::ConnectionRefused,
+        Trouble::HostNotFound,
+        Trouble::CouldNotConnect,
+    ];
+
+    /// The kind of `error`, a failed attempt's words; `None` when it's
+    /// none of these.
+    pub fn of(error: &str) -> Option<Trouble> {
+        let lower = error.to_ascii_lowercase();
+        Some(
+            if lower.contains("timed out") || lower.contains("no answer within") {
+                Trouble::TimedOut
+            } else if lower.contains("private or loopback") {
+                Trouble::PrivateAddress
+            } else if lower.contains("onion") {
+                Trouble::OnionAddress
+            } else if lower.contains("refused") {
+                Trouble::ConnectionRefused
+            } else if lower.contains("resolve") || lower.contains("dns") {
+                Trouble::HostNotFound
+            } else if lower.contains("could not connect") || lower.contains("connect") {
+                Trouble::CouldNotConnect
+            } else {
+                return None;
+            },
+        )
+    }
+
+    pub fn words(self) -> &'static str {
+        match self {
+            Trouble::NoAnswer => "no answer",
+            Trouble::TimedOut => "timed out",
+            Trouble::PrivateAddress => "refused: a private address",
+            Trouble::OnionAddress => "refused: an onion address",
+            Trouble::ConnectionRefused => "connection refused",
+            Trouble::HostNotFound => "host not found",
+            Trouble::CouldNotConnect => "could not connect",
+        }
+    }
+
+    /// Its name in a URL's query.
+    pub fn key(self) -> &'static str {
+        match self {
+            Trouble::NoAnswer => "no-answer",
+            Trouble::TimedOut => "timed-out",
+            Trouble::PrivateAddress => "private-address",
+            Trouble::OnionAddress => "onion-address",
+            Trouble::ConnectionRefused => "connection-refused",
+            Trouble::HostNotFound => "host-not-found",
+            Trouble::CouldNotConnect => "could-not-connect",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Trouble> {
+        Trouble::ALL.into_iter().find(|t| t.key() == key)
     }
 }
 
@@ -669,6 +738,125 @@ pub fn tested_toast(push: &PushDeliveryRow, host: &str, clock: &Clock) -> Toast 
     }
 }
 
+/// A test push whose attempt deleted its target, and so the push itself:
+/// what its toast says, carried in the redirect (`?dropped=…`) since
+/// nothing of it is left to read back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DroppedTest {
+    /// The target's host.
+    pub host: String,
+    pub why: DroppedWhy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DroppedWhy {
+    /// Its push service said the subscription is gone.
+    Gone,
+    /// Its failure was the target's last allowed in a row: answered with
+    /// this status, or, nothing answering, this trouble (`None` when it
+    /// was none [`Trouble`] names).
+    FailureLimit {
+        status: Option<u16>,
+        trouble: Option<Trouble>,
+    },
+}
+
+impl DroppedTest {
+    /// A test push to `host` whose attempt deleted its target.
+    pub fn of(host: &str, dropped: crate::push::delivery::TargetDropped) -> DroppedTest {
+        use crate::push::delivery::TargetDropped;
+        let why = match dropped {
+            TargetDropped::Gone => DroppedWhy::Gone,
+            TargetDropped::FailureLimit { status, error } => DroppedWhy::FailureLimit {
+                status,
+                trouble: Trouble::of(&error),
+            },
+        };
+        DroppedTest {
+            host: host.to_owned(),
+            why,
+        }
+    }
+
+    /// The query that carries it (without `?`).
+    pub fn query(&self) -> String {
+        let host = url::form_urlencoded::byte_serialize(self.host.as_bytes()).collect::<String>();
+        match self.why {
+            DroppedWhy::Gone => format!("dropped=gone&host={host}"),
+            DroppedWhy::FailureLimit { status, trouble } => {
+                let mut query = format!("dropped=limit&host={host}");
+                if let Some(status) = status {
+                    query.push_str(&format!("&status={status}"));
+                } else if let Some(trouble) = trouble {
+                    query.push_str(&format!("&trouble={}", trouble.key()));
+                }
+                query
+            }
+        }
+    }
+
+    /// Read back from a query's fields: `None` unless `dropped` is one
+    /// of its words and `host` a host, so a link can't make the toast say
+    /// anything else.
+    pub fn from_query(
+        dropped: &str,
+        host: &str,
+        status: Option<u16>,
+        trouble: Option<&str>,
+    ) -> Option<DroppedTest> {
+        let host = url::Host::parse(host).ok()?.to_string();
+        let why = match dropped {
+            "gone" => DroppedWhy::Gone,
+            "limit" => DroppedWhy::FailureLimit {
+                status,
+                trouble: if status.is_some() {
+                    None
+                } else {
+                    trouble.and_then(Trouble::from_key)
+                },
+            },
+            _ => return None,
+        };
+        Some(DroppedTest { host, why })
+    }
+}
+
+/// `1st`, `2nd`, `3rd`, `20th`, `21st`.
+fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// The toast after a test push that deleted its target.
+pub fn dropped_toast(dropped: &DroppedTest, failure_limit: u32) -> Toast {
+    let host = &dropped.host;
+    let what = match dropped.why {
+        DroppedWhy::Gone => {
+            format!("{host} says the app's subscription is gone, so the target was removed")
+        }
+        DroppedWhy::FailureLimit { status, trouble } => {
+            let answer = match (status, trouble) {
+                (Some(status), _) => format!("{host} answered {status}"),
+                (None, Some(trouble)) => format!("{host}: {}", trouble.words()),
+                (None, None) => format!("{host}: it failed"),
+            };
+            format!(
+                "{answer} (its {} failure in a row), so the target was dropped",
+                ordinal(failure_limit)
+            )
+        }
+    };
+    Toast::new(ToastKind::Error, "Test push failed.").line(format!(
+        "{what}; the app registers again when it next opens."
+    ))
+}
+
 /// The toast after Remove.
 pub fn removed_toast() -> Toast {
     Toast::new(ToastKind::Success, "Push target removed.")
@@ -694,5 +882,66 @@ mod tests {
             "refused: a private address"
         );
         assert_eq!(short_answer(None, None), "no answer");
+    }
+
+    #[test]
+    fn a_dropped_test_push_round_trips_through_its_query_in_closed_words() {
+        let read = |query: &str| {
+            let fields: std::collections::HashMap<String, String> =
+                url::form_urlencoded::parse(query.as_bytes())
+                    .into_owned()
+                    .collect();
+            DroppedTest::from_query(
+                fields.get("dropped").map_or("", String::as_str),
+                fields.get("host").map_or("", String::as_str),
+                fields.get("status").and_then(|s| s.parse().ok()),
+                fields.get("trouble").map(String::as_str),
+            )
+        };
+        for dropped in [
+            DroppedTest {
+                host: "push.example.test".into(),
+                why: DroppedWhy::Gone,
+            },
+            DroppedTest {
+                host: "127.0.0.1".into(),
+                why: DroppedWhy::FailureLimit {
+                    status: Some(502),
+                    trouble: None,
+                },
+            },
+            DroppedTest {
+                host: "[::1]".into(),
+                why: DroppedWhy::FailureLimit {
+                    status: None,
+                    trouble: Some(Trouble::TimedOut),
+                },
+            },
+            DroppedTest {
+                host: "push.example.test".into(),
+                why: DroppedWhy::FailureLimit {
+                    status: None,
+                    trouble: None,
+                },
+            },
+        ] {
+            assert_eq!(read(&dropped.query()), Some(dropped));
+        }
+        assert_eq!(read("dropped=limit&host=a%20b"), None, "not a host");
+        assert_eq!(
+            read("dropped=limit&host=h.test&trouble=call+us"),
+            Some(DroppedTest {
+                host: "h.test".into(),
+                why: DroppedWhy::FailureLimit {
+                    status: None,
+                    trouble: None
+                },
+            }),
+            "words of its own aren't said"
+        );
+        assert_eq!(ordinal(20), "20th");
+        assert_eq!(ordinal(21), "21st");
+        assert_eq!(ordinal(12), "12th");
+        assert_eq!(ordinal(3), "3rd");
     }
 }

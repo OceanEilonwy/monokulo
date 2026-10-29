@@ -298,7 +298,8 @@ fn by_target(due: Vec<DuePush>) -> Vec<Vec<DuePush>> {
 /// one attempt made exactly as the worker makes each of a batch's
 /// ([`run_delivery_tick`]), through the same client, budget and outbound
 /// rules. For a test push from the store's app page, sent while the
-/// merchant waits; one that fails is tried again by the worker.
+/// merchant waits; one that fails is tried again by the worker. Says
+/// whether the attempt deleted its target, and its pushes with it.
 pub async fn send_now(
     db: &Database,
     client: &PushClient,
@@ -306,7 +307,7 @@ pub async fn send_now(
     config: &PushConfig,
     reach: Reach,
     clock: &dyn Clock,
-) -> Result<(), DbError> {
+) -> Result<Option<TargetDropped>, DbError> {
     client.budget.set_limit(config.per_store_per_minute);
     let done =
         tracing::Instrument::instrument(deliver(client, push, config, reach, clock), span(push))
@@ -329,20 +330,35 @@ fn span(push: &DuePush) -> tracing::Span {
     )
 }
 
+/// A push's target that recording its attempt deleted, and its pushes
+/// with it: what the push service answered, for a page to say why once
+/// nothing in the database can.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetDropped {
+    /// The push service said the subscription is gone.
+    Gone,
+    /// This attempt's failure reached the target's limit of failures in a
+    /// row.
+    FailureLimit { status: Option<u16>, error: String },
+}
+
 /// Records what became of `push`: given up on, put off, its target gone,
-/// or its attempt (which may drop its target at the failure limit).
+/// or its attempt (which may drop its target at the failure limit); and
+/// whether its target was deleted.
 async fn record(
     db: &Database,
     push: &DuePush,
     done: Done,
     config: &PushConfig,
     clock: &dyn Clock,
-) -> Result<(), DbError> {
+) -> Result<Option<TargetDropped>, DbError> {
     let (id, target) = (push.id, push.target.clone());
     let written = match done {
         Done::GaveUp(reason) => {
             let at = clock.now();
-            db.write(move |db| db.give_up_push(id, at, &reason)).await
+            db.write(move |db| db.give_up_push(id, at, &reason))
+                .await
+                .map(|()| None)
         }
         Done::Deferred(until) => {
             tracing::info!(
@@ -350,7 +366,9 @@ async fn record(
                 push_target.id = %target.id,
                 "the store's pushes for this minute are spent; put off"
             );
-            db.write(move |db| db.defer_push(id, until)).await
+            db.write(move |db| db.defer_push(id, until))
+                .await
+                .map(|()| None)
         }
         Done::Gone => {
             let deleted = db
@@ -369,9 +387,15 @@ async fn record(
                 ),
                 Err(_) => {}
             }
-            deleted.map(|_| ())
+            deleted.map(|deleted| deleted.then_some(TargetDropped::Gone))
         }
         Done::Attempted(attempt) => {
+            // Kept for saying why, should this attempt delete its target.
+            let status = attempt.status;
+            let error = match &attempt.result {
+                PushResult::Delivered => String::new(),
+                PushResult::Failed { error, .. } => error.clone(),
+            };
             let after = db
                 .write(move |db| db.record_push_attempt(id, &target, &attempt))
                 .await;
@@ -383,7 +407,10 @@ async fn record(
                     "a push target failed too many times in a row; deleted"
                 );
             }
-            after.map(|_| ())
+            after.map(|after| match after {
+                TargetAfter::Kept => None,
+                TargetAfter::Deleted => Some(TargetDropped::FailureLimit { status, error }),
+            })
         }
     };
     if let Err(e) = &written {
