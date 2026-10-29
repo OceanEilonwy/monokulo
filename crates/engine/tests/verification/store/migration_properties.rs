@@ -375,11 +375,52 @@ fn upgrade_from(
     accesses.load(Ordering::SeqCst)
 }
 
+/// Runs `row` for every one of `rows` on up to eight threads, so a sweep
+/// whose rows share nothing takes a share of the machine instead of one
+/// core. A failing row's panic is raised again with `name(row)` in front.
+fn on_threads<T: Sync>(rows: &[T], name: impl Fn(&T) -> String + Sync, row: impl Fn(&T) + Sync) {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .clamp(1, 8);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|first| {
+                let (name, row) = (&name, &row);
+                scope.spawn(move || {
+                    for each in rows.iter().skip(first).step_by(threads) {
+                        let ran =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| row(each)));
+                        if let Err(panic) = ran {
+                            let message = panic
+                                .downcast_ref::<String>()
+                                .map(String::as_str)
+                                .or_else(|| panic.downcast_ref::<&str>().copied())
+                                .unwrap_or("a panic without a message");
+                            panic!("{}: {message}", name(each));
+                        }
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            if let Err(panic) = worker.join() {
+                std::panic::resume_unwind(panic);
+            }
+        }
+    });
+}
+
 #[test]
 fn every_historic_schema_upgrades_with_existing_money_and_work() {
-    for version in 1..=MIGRATIONS.len() {
-        upgrade(version, 42, "legacy payload", None);
-    }
+    // Every version owns its file and connection, so they run side by side.
+    let versions: Vec<usize> = (1..=MIGRATIONS.len()).collect();
+    on_threads(
+        &versions,
+        |version| format!("version {version}"),
+        |&version| {
+            upgrade(version, 42, "legacy payload", None);
+        },
+    );
 }
 
 #[test]
@@ -391,9 +432,15 @@ fn every_reached_upgrade_fault_recovers_without_partial_schema() {
     let version = MIGRATIONS.len() - 1;
     let image = historic(version, 42, "fault sweep");
     let count = upgrade_from(&image, version, 42, "fault sweep", Some(usize::MAX));
-    for at in 0..count {
-        upgrade_from(&image, version, 42, "fault sweep", Some(at));
-    }
+    // Every fault owns its file and connection, so they run side by side.
+    let faults: Vec<usize> = (0..count).collect();
+    on_threads(
+        &faults,
+        |at| format!("fault {at}"),
+        |&at| {
+            upgrade_from(&image, version, 42, "fault sweep", Some(at));
+        },
+    );
 }
 
 #[test]
