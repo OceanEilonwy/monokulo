@@ -20,10 +20,10 @@ till, "add_tender": true adds it first if it's missing, as a merchant adding
 it in Clover's dashboard would (FAKE_CLOVER_DENY_TENDER_WRITE doesn't stop it).
 
 With FAKE_CLOVER_WEBHOOK_URL (a Bell's bell.public_uri followed by
-/v1/clover/webhook) and FAKE_CLOVER_AUTH_CODE (its
-MONOKULO_BELL_CLOVER_AUTH_CODE) set, each sale is sent there as a P: CREATE
+/v1/clover/sandbox/webhook, or another environment's) and FAKE_CLOVER_AUTH_CODE
+(that environment's code, such as MONOKULO_BELL_CLOVER_SANDBOX_AUTH_CODE) set, each sale is sent there as a P: CREATE
 webhook with X-Clover-Auth, and each refund as a P: UPDATE. The Bell's
-bell.clover.application_id must be FAKE_CLOVER_APP_ID (default FAKECLOVERAPP).
+bell.clover.<environment>.application_id must be FAKE_CLOVER_APP_ID (default FAKECLOVERAPP).
 
 The cashier's side and QA's switches:
 

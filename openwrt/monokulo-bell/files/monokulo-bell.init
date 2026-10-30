@@ -18,10 +18,10 @@ EXTRA_HELP="	secrets	Make the VAPID key if there is none yet (done on install)
 
 NAME=monokulo-bell
 PAGE="Services > Bell"
-# The VAPID key is made on install; each point of sale's (Square's webhook
-# signature key, Clover's Auth Code) is set in LuCI, or written into the
-# secrets folder by hand.
-SECRETS="MONOKULO_BELL_VAPID_KEY MONOKULO_BELL_SQUARE_WEBHOOK_KEY MONOKULO_BELL_CLOVER_AUTH_CODE"
+# The VAPID key is made on install; each integration's (a Square
+# environment's webhook signature key, a Clover environment's Auth Code) is
+# set in LuCI, or written into the secrets folder by hand.
+SECRETS="MONOKULO_BELL_VAPID_KEY MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY MONOKULO_BELL_CLOVER_NORTH_AMERICA_AUTH_CODE MONOKULO_BELL_CLOVER_EUROPE_AUTH_CODE MONOKULO_BELL_CLOVER_LATIN_AMERICA_AUTH_CODE MONOKULO_BELL_CLOVER_SANDBOX_AUTH_CODE"
 GENERATED_SECRET=MONOKULO_BELL_VAPID_KEY
 GENERATED_WHY="the tills' push subscriptions are made for it, and refuse a new key's dings."
 # Written again at each start and holding no secret, so kept in memory.
@@ -37,7 +37,7 @@ STATUS_LISTEN=127.0.0.1:8447
 # The main section's settings: the setting's key, its UCI option and the
 # option's kind. bell.listen (port and listen),
 # bell.store_path (data_dir) and status.listen are written apart, and each
-# point of sale's settings from its own section (SQUARE_MAP, CLOVER_MAP).
+# integration's settings from its own section (INTEGRATION_MAP).
 OPTIONS_MAP='
 bell.public_uri public_uri value
 bell.trusted_proxies trusted_proxy list
@@ -50,22 +50,43 @@ logging.level log_level value
 logging.format log_format value
 '
 
-# Each point of sale's section, the same options in each.
-SQUARE_MAP='
-bell.square.application_id application_id value
-bell.square.environment environment value
-bell.square.api_url api_url value
+# Each integration (a point of sale's environment) is a section of its point
+# of sale's type named <point of sale>_<environment>, such as
+# `config square 'square_sandbox'` or `config clover 'clover_europe'` (UCI
+# names a section once whatever its type, so Square's and Clover's sandboxes
+# need their point of sale in the name), written into its table,
+# [bell.<point of sale>.<environment>]; POS.ENV stands for that. The same
+# options in each.
+INTEGRATION_MAP='
+bell.POS.ENV.application_id application_id value
+bell.POS.ENV.api_url api_url value
 '
-CLOVER_MAP='
-bell.clover.application_id application_id value
-bell.clover.environment environment value
-bell.clover.api_url api_url value
-'
+SQUARE_ENVIRONMENTS="production sandbox"
+CLOVER_ENVIRONMENTS="north_america europe latin_america sandbox"
 
 . /usr/share/monokulo-bell/service.sh
 
+# render_integration <section> <point of sale> <its environments>: the
+# section's table, or a refusal naming the section when its name isn't one
+# of the point of sale's environments.
+render_integration() {
+	local section="$1" pos="$2" environments="$3" environment
+	for environment in $environments; do
+		if [ "$section" = "${pos}_$environment" ]; then
+			toml_options "$section" "$(printf '%s\n' "$INTEGRATION_MAP" | sed "s/POS\.ENV/$pos.$environment/")" ||
+				RENDER_FAILED=1
+			return 0
+		fi
+	done
+	echo "the $pos section '$section' in /etc/config/$NAME isn't named for one of $pos's environments: name it ${pos}_<environment>, one of: $environments" >&2
+	RENDER_FAILED=1
+}
+
 render_more() {
-	toml_options square "$SQUARE_MAP" && toml_options clover "$CLOVER_MAP"
+	RENDER_FAILED=0
+	config_foreach render_integration square square "$SQUARE_ENVIRONMENTS"
+	config_foreach render_integration clover clover "$CLOVER_ENVIRONMENTS"
+	[ "$RENDER_FAILED" = 0 ]
 }
 
 # The Bell has nothing it must not run beside.

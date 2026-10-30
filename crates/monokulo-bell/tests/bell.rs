@@ -10,7 +10,8 @@ use serde_json::json;
 use support::*;
 
 /// The public key `/v1/info` gives is the one `MONOKULO_BELL_VAPID_KEY`'s
-/// private key makes, with the application and its environment.
+/// private key makes, with each integration's application under its
+/// point of sale and environment.
 #[tokio::test]
 async fn info_shows_the_application_and_the_public_key_of_the_vapid_key() {
     let bell = TestBell::without_square(&[]).await;
@@ -25,24 +26,79 @@ async fn info_shows_the_application_and_the_public_key_of_the_vapid_key() {
         answered.json(),
         json!({
             "points_of_sale": {
-                "square": {"application_id": APPLICATION_ID, "environment": "production"},
+                "square": {"production": {"application_id": APPLICATION_ID}},
             },
             "vapid_public_key": public.to_base64url(),
             "version": env!("CARGO_PKG_VERSION"),
         })
     );
-    let sandbox = TestBell::without_square(&[
-        ("bell.square.environment", "sandbox"),
-        ("bell.square.application_id", "sandbox-sq0idb-MonokularTest"),
-    ])
-    .await;
+    let sandbox = TestBell::start_with(&[("square.sandbox", &unreachable_url())], &[]).await;
     let answered = sandbox
         .call(Request::get("/v1/info").body(Body::empty()).unwrap())
         .await;
     assert_eq!(
-        answered.json()["points_of_sale"]["square"],
-        json!({"application_id": "sandbox-sq0idb-MonokularTest", "environment": "sandbox"})
+        answered.json()["points_of_sale"],
+        json!({"square": {"sandbox": {"application_id": SANDBOX_APPLICATION_ID}}})
     );
+}
+
+/// A Bell serving Square's production and its sandbox at once takes each
+/// one's webhooks at its own URL, signed with its own subscription's key
+/// for that URL, and no other.
+#[tokio::test]
+async fn each_square_environment_takes_webhooks_signed_with_its_own_key() {
+    let bell = TestBell::start_with(
+        &[
+            ("square.production", &unreachable_url()),
+            ("square.sandbox", &unreachable_url()),
+        ],
+        &[],
+    )
+    .await;
+    let body = payment_webhook("payment.updated", "APPROVED", MERCHANT, LOCATION);
+    let sandbox_signed = sign_with(SANDBOX_WEBHOOK_KEY, SANDBOX_WEBHOOK_URL, &body);
+    let answered = bell
+        .call(webhook_request_to(
+            SANDBOX_WEBHOOK_PATH,
+            &body,
+            Some(&sandbox_signed),
+        ))
+        .await;
+    assert_eq!(answered.status, StatusCode::OK, "{}", answered.text());
+    let production_signed = sign(WEBHOOK_URL, &body);
+    assert_eq!(
+        bell.call(webhook_request(&body, Some(&production_signed)))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    for (path, signature) in [
+        // The sandbox's key, sent to production.
+        (WEBHOOK_PATH, sandbox_signed.clone()),
+        // The sandbox's key for production's URL.
+        (
+            WEBHOOK_PATH,
+            sign_with(SANDBOX_WEBHOOK_KEY, WEBHOOK_URL, &body),
+        ),
+        // Production's, sent to the sandbox.
+        (SANDBOX_WEBHOOK_PATH, production_signed.clone()),
+        (SANDBOX_WEBHOOK_PATH, sign(SANDBOX_WEBHOOK_URL, &body)),
+    ] {
+        let answered = bell
+            .call(webhook_request_to(path, &body, Some(&signature)))
+            .await;
+        assert_eq!(answered.status, StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(answered.problem(), "invalid-signature");
+    }
+    // The old path is no integration's.
+    let old = bell
+        .call(webhook_request_to(
+            "/v1/square/webhook",
+            &body,
+            Some(&production_signed),
+        ))
+        .await;
+    assert_eq!(old.status, StatusCode::NOT_FOUND);
 }
 
 /// Square's signature over the webhook URL and the body is what lets a
@@ -65,11 +121,22 @@ async fn a_webhook_is_taken_only_with_squares_signature_for_this_url() {
         webhook_request(&body, Some(&sign(&format!("{WEBHOOK_URL}?a=1"), &body))),
         webhook_request(
             &body,
-            Some(&sign("https://other.example.org/v1/square/webhook", &body)),
+            Some(&sign(
+                "https://other.example.org/v1/square/production/webhook",
+                &body,
+            )),
         ),
         webhook_request(
             &body,
-            Some(&sign("http://bell.example.org/v1/square/webhook", &body)),
+            Some(&sign(
+                "http://bell.example.org/v1/square/production/webhook",
+                &body,
+            )),
+        ),
+        // The URL a Bell of one environment had.
+        webhook_request(
+            &body,
+            Some(&sign("https://bell.example.org/v1/square/webhook", &body)),
         ),
     ];
     for request in refused {
@@ -97,7 +164,10 @@ async fn the_webhook_url_follows_the_public_address_as_written() {
     let answered = under
         .call(webhook_request(
             &body,
-            Some(&sign("https://example.org/bell/v1/square/webhook", &body)),
+            Some(&sign(
+                "https://example.org/bell/v1/square/production/webhook",
+                &body,
+            )),
         ))
         .await;
     assert_eq!(answered.status, StatusCode::OK, "{}", answered.text());
@@ -520,44 +590,58 @@ fn info() -> Request<Body> {
     Request::get("/v1/info").body(Body::empty()).unwrap()
 }
 
-/// `/v1/info` lists the points of sale this Bell serves, each with its
-/// application and environment, Square first when both are.
+/// `/v1/info` lists the integrations this Bell serves by point of sale and
+/// environment, each with its application: Square first, and each point
+/// of sale's environments in their fixed order, whatever order they are
+/// set in; one with none is left out.
 #[tokio::test]
-async fn info_lists_the_points_of_sale_this_bell_serves() {
-    let clover = TestBell::clover(
-        &unreachable_url(),
-        &[("bell.clover.environment", "sandbox")],
-    )
-    .await;
+async fn info_lists_the_integrations_this_bell_serves() {
+    let clover = TestBell::start_with(&[("clover.sandbox", &unreachable_url())], &[]).await;
     assert_eq!(
         clover.call(info()).await.json()["points_of_sale"],
-        json!({"clover": {"application_id": CLOVER_APP_ID, "environment": "sandbox"}})
+        json!({"clover": {"sandbox": {"application_id": CLOVER_APP_ID}}})
     );
-    let both = TestBell::start_with(
-        Points {
-            square: Some(&unreachable_url()),
-            clover: Some(&unreachable_url()),
-        },
+    let url = unreachable_url();
+    let many = TestBell::start_with(
+        &[
+            ("clover.sandbox", &url),
+            ("square.sandbox", &url),
+            ("clover.europe", &url),
+            ("square.production", &url),
+            ("clover.north_america", &url),
+        ],
         &[],
     )
     .await;
-    let answered = both.call(info()).await;
+    let answered = many.call(info()).await;
     assert_eq!(
         answered.json()["points_of_sale"],
         json!({
-            "square": {"application_id": APPLICATION_ID, "environment": "production"},
-            "clover": {"application_id": CLOVER_APP_ID, "environment": "north_america"},
+            "square": {
+                "production": {"application_id": APPLICATION_ID},
+                "sandbox": {"application_id": SANDBOX_APPLICATION_ID},
+            },
+            "clover": {
+                "north_america": {"application_id": CLOVER_APP_ID},
+                "europe": {"application_id": CLOVER_APP_ID},
+                "sandbox": {"application_id": CLOVER_APP_ID},
+            },
         })
     );
     let text = answered.text();
-    assert!(
-        text.find("\"square\"").unwrap() < text.find("\"clover\"").unwrap(),
-        "{text}"
-    );
-    for gone in [
-        "square_application_id",
-        "\"environment\":\"production\",\"vapid",
-    ] {
+    let order: Vec<usize> = [
+        "\"square\"",
+        "\"production\"",
+        "\"sandbox\"",
+        "\"clover\"",
+        "\"north_america\"",
+        "\"europe\"",
+    ]
+    .iter()
+    .map(|key| text.find(key).unwrap())
+    .collect();
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+    for gone in ["square_application_id", "latin_america", "\"environment\""] {
         assert!(!text.contains(gone), "{text}");
     }
 }
@@ -608,9 +692,15 @@ async fn a_registration_for_a_point_of_sale_that_is_off_is_refused() {
             "clover",
             CLOVER_TOKEN,
             CLOVER_MERCHANT,
-            "square",
+            "Square production",
         ),
-        (&clover_bell, "square", TOKEN, LOCATION, "clover"),
+        (
+            &clover_bell,
+            "square",
+            TOKEN,
+            LOCATION,
+            "Clover north_america",
+        ),
     ] {
         let answered = bell
             .call(registration_at(
@@ -629,7 +719,7 @@ async fn a_registration_for_a_point_of_sale_that_is_off_is_refused() {
         assert_eq!(answered.problem(), "invalid-request");
         let detail = answered.json()["detail"].as_str().unwrap().to_owned();
         assert!(
-            detail.contains(&format!("this Bell runs {runs}")),
+            detail.contains(&format!("this Bell runs {runs}.")),
             "{detail}"
         );
         assert!(!answered.text().contains(token));
@@ -640,6 +730,160 @@ async fn a_registration_for_a_point_of_sale_that_is_off_is_refused() {
         assert!(!log.contains(token), "{log}");
     }
     assert!(square_bell.rows().is_empty() && clover_bell.rows().is_empty());
+}
+
+/// A registration for an environment that is off, of a point of sale
+/// that is on, is refused naming every integration this Bell runs; one
+/// naming an environment its point of sale doesn't have, or none, is
+/// refused as malformed. Neither token is used.
+#[tokio::test]
+async fn a_registration_for_an_integration_that_is_off_is_refused() {
+    let square = Stub::square().await;
+    let clover = Stub::clover().await;
+    let bell = TestBell::start_with(
+        &[
+            ("square.production", &square.url()),
+            ("square.sandbox", &square.url()),
+            ("clover.europe", &clover.url()),
+        ],
+        &[],
+    )
+    .await;
+    let till = Till {
+        keys: push::encrypt::ReceiverKeys::generate(),
+        endpoint: "https://push.example.org/push/1".to_owned(),
+    };
+    let subscription = till.subscription();
+    for (pos, environment, token, location, says) in [
+        (
+            "clover",
+            "north_america",
+            CLOVER_TOKEN,
+            CLOVER_MERCHANT,
+            "Clover north_america isn't an integration this Bell serves: this Bell runs Square production and sandbox, and Clover europe.",
+        ),
+        (
+            "clover",
+            "sandbox",
+            CLOVER_TOKEN,
+            CLOVER_MERCHANT,
+            "Clover sandbox isn't an integration this Bell serves",
+        ),
+        (
+            "square",
+            "europe",
+            TOKEN,
+            LOCATION,
+            "environment must be one of Square's: production, sandbox.",
+        ),
+        (
+            "clover",
+            "production",
+            CLOVER_TOKEN,
+            CLOVER_MERCHANT,
+            "environment must be one of Clover's: north_america, europe, latin_america, sandbox.",
+        ),
+        (
+            "square",
+            "Production",
+            TOKEN,
+            LOCATION,
+            "environment must be",
+        ),
+    ] {
+        let answered = bell
+            .call(registration_in(
+                pos,
+                environment,
+                token,
+                location,
+                &subscription,
+            ))
+            .await;
+        assert_eq!(answered.status, StatusCode::BAD_REQUEST, "{environment}");
+        assert_eq!(answered.problem(), "invalid-request");
+        let detail = answered.json()["detail"].as_str().unwrap().to_owned();
+        assert!(detail.contains(says), "{says}: {detail}");
+    }
+    // No environment at all: the body isn't a registration.
+    let answered = bell
+        .call(json_request(
+            Method::POST,
+            "/v1/register",
+            json!({
+                "point_of_sale": "square",
+                "access_token": TOKEN,
+                "location_id": LOCATION,
+                "subscription": subscription,
+            }),
+        ))
+        .await;
+    assert_eq!(answered.status, StatusCode::BAD_REQUEST);
+    assert!(
+        answered.text().contains("environment"),
+        "{}",
+        answered.text()
+    );
+    assert!(square.drain().await.is_empty() && clover.drain().await.is_empty());
+    assert!(bell.rows().is_empty());
+}
+
+/// Two Clover environments at once: each takes webhooks with its own Auth
+/// Code alone, and says which it was in the verification code's line.
+#[tokio::test]
+async fn each_clover_environment_takes_its_own_auth_code() {
+    let (_guard, log) = capture_log();
+    let bell = TestBell::start_with(
+        &[
+            ("clover.north_america", &unreachable_url()),
+            ("clover.sandbox", &unreachable_url()),
+        ],
+        &[],
+    )
+    .await;
+    let body = clover_webhook(CLOVER_MERCHANT, &clover_payment(), "UPDATE");
+    for (path, code, status) in [
+        (CLOVER_WEBHOOK_PATH, CLOVER_AUTH_CODE, StatusCode::OK),
+        (
+            CLOVER_SANDBOX_WEBHOOK_PATH,
+            CLOVER_SANDBOX_AUTH_CODE,
+            StatusCode::OK,
+        ),
+        (
+            CLOVER_SANDBOX_WEBHOOK_PATH,
+            CLOVER_AUTH_CODE,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            CLOVER_WEBHOOK_PATH,
+            CLOVER_SANDBOX_AUTH_CODE,
+            StatusCode::UNAUTHORIZED,
+        ),
+    ] {
+        let answered = bell.call(clover_request_to(path, &body, Some(code))).await;
+        assert_eq!(answered.status, status, "{path}: {}", answered.text());
+    }
+    let code = "5a237ce7-9866-4f04-bac6-7ddb5524cdea";
+    let handshake = format!("{{\"verificationCode\":\"{code}\"}}");
+    let answered = bell
+        .call(clover_request_to(
+            CLOVER_SANDBOX_WEBHOOK_PATH,
+            &handshake,
+            None,
+        ))
+        .await;
+    assert_eq!(answered.status, StatusCode::OK);
+    let line = log
+        .text()
+        .lines()
+        .find(|line| line.contains(code))
+        .map(str::to_owned)
+        .unwrap();
+    assert!(
+        line.contains("Clover sandbox webhook verification code")
+            && line.contains("the sandbox app's developer dashboard"),
+        "{line}"
+    );
 }
 
 /// A Clover webhook is taken only with the app's Auth Code, byte for byte:
@@ -718,7 +962,7 @@ async fn the_clover_handshake_logs_its_code_and_nothing_else_does() {
     assert_eq!(lines.len(), 1, "{}", log.text());
     assert!(lines[0].contains("INFO"), "{}", lines[0]);
     assert!(
-        lines[0].contains("Clover webhook verification code"),
+        lines[0].contains("Clover north_america webhook verification code"),
         "{}",
         lines[0]
     );

@@ -24,12 +24,13 @@ use subtle::ConstantTimeEq as _;
 use crate::pos::{
     self, AccessToken, BodyError, LocationId, MerchantId, PaymentId, PointOfSale, ProofError, Ring,
 };
-use crate::settings::{CloverApplicationId, CloverEnvironment, ServiceUrl};
+use crate::pos::{CloverEnvironment, Integration};
+use crate::settings::{CloverApplicationId, ServiceUrl};
 
 /// The header carrying the app's Auth Code on every webhook.
 pub const AUTH_HEADER: &str = "x-clover-auth";
 
-/// The Clover app's Auth Code (`MONOKULO_BELL_CLOVER_AUTH_CODE`): the
+/// A Clover app's Auth Code (`MONOKULO_BELL_CLOVER_<ENVIRONMENT>_AUTH_CODE`): the
 /// whole of a webhook's authentication, as Clover signs nothing (decision 49).
 #[derive(Clone, PartialEq)]
 pub struct AuthCode(Secret);
@@ -161,12 +162,13 @@ enum UpdateType {
 
 /// What `body` is: the handshake, if it is exactly one; else a batch, of
 /// which a payment's `CREATE` rings, at its merchant, which is its own
-/// location (decision 50). Updates, deletes and every other object are dropped:
+/// location in `integration` (decision 50). Updates, deletes and every other object are dropped:
 /// with no status in the body, a payment's update could be a refund or a
 /// void days later. A batch of another app than `application_id` is
 /// [`Incoming::OtherApplication`].
 pub fn read_webhook(
     body: &[u8],
+    integration: Integration,
     application_id: &CloverApplicationId,
 ) -> Result<Incoming, BodyError> {
     if let Some(code) = read_verification(body) {
@@ -183,7 +185,7 @@ pub fn read_webhook(
             if let (Object::Payment(payment_id), UpdateType::Create) = (update.object, update.kind)
             {
                 rings.push(Ring {
-                    point_of_sale: PointOfSale::Clover,
+                    integration,
                     payment_id,
                     location_id: LocationId::from(merchant_id.clone()),
                     merchant_id: merchant_id.clone(),
@@ -247,8 +249,8 @@ impl Clover {
         &self.application_id
     }
 
-    pub fn environment(&self) -> CloverEnvironment {
-        self.environment
+    pub fn integration(&self) -> Integration {
+        Integration::Clover(self.environment)
     }
 
     /// Checks a webhook's `X-Clover-Auth` header.
@@ -258,7 +260,7 @@ impl Clover {
 
     /// What a webhook's `body`, its header checked, is.
     pub fn read_webhook(&self, body: &[u8]) -> Result<Incoming, BodyError> {
-        read_webhook(body, &self.application_id)
+        read_webhook(body, self.integration(), &self.application_id)
     }
 
     /// Checks `merchant` is `token`'s, asked of Clover
@@ -308,6 +310,9 @@ mod tests {
         AuthCode::new(Secret::new(CODE))
     }
 
+    /// The integration the tests' batches come to.
+    const NA: Integration = Integration::Clover(CloverEnvironment::NorthAmerica);
+
     fn app() -> CloverApplicationId {
         CloverApplicationId::parse("MONOKULARBELL").unwrap()
     }
@@ -351,7 +356,7 @@ mod tests {
 
     fn ring(merchant: &str, payment: &str) -> Ring {
         Ring {
-            point_of_sale: PointOfSale::Clover,
+            integration: NA,
             payment_id: PaymentId::try_from(payment.to_owned()).unwrap(),
             merchant_id: MerchantId::try_from(merchant.to_owned()).unwrap(),
             location_id: LocationId::try_from(merchant.to_owned()).unwrap(),
@@ -367,7 +372,7 @@ mod tests {
             serde_json::json!({"CLVMERCHANT01": [{"objectId": "P:PAYMENT00001", "type": "CREATE", "ts": 1_761_600_000_000_u64}]}),
         );
         assert_eq!(
-            read_webhook(body.as_bytes(), &app()),
+            read_webhook(body.as_bytes(), NA, &app()),
             Ok(Incoming::Updates(vec![ring(
                 "CLVMERCHANT01",
                 "PAYMENT00001"
@@ -395,7 +400,7 @@ mod tests {
                 ],
             }),
         );
-        let Ok(Incoming::Updates(mut rings)) = read_webhook(body.as_bytes(), &app()) else {
+        let Ok(Incoming::Updates(mut rings)) = read_webhook(body.as_bytes(), NA, &app()) else {
             panic!("a batch");
         };
         // A batch's merchants come in no order.
@@ -427,7 +432,7 @@ mod tests {
                 serde_json::json!({"CLVMERCHANT01": [{"objectId": object, "type": kind, "ts": 1}]}),
             );
             assert_eq!(
-                read_webhook(body.as_bytes(), &app()),
+                read_webhook(body.as_bytes(), NA, &app()),
                 Ok(Incoming::Updates(Vec::new())),
                 "{object} {kind}"
             );
@@ -441,7 +446,7 @@ mod tests {
             serde_json::json!({"CLVMERCHANT01": [{"objectId": "P:PAYMENT00001", "type": "CREATE", "ts": 1}]}),
         );
         assert_eq!(
-            read_webhook(body.as_bytes(), &app()),
+            read_webhook(body.as_bytes(), NA, &app()),
             Ok(Incoming::OtherApplication)
         );
     }
@@ -454,7 +459,7 @@ mod tests {
         let expected = VerificationCode::try_from(CODE.to_owned()).unwrap();
         assert_eq!(read_verification(body.as_bytes()), Some(expected.clone()));
         assert_eq!(
-            read_webhook(body.as_bytes(), &app()),
+            read_webhook(body.as_bytes(), NA, &app()),
             Ok(Incoming::Verification(expected))
         );
         for bad in [
@@ -481,7 +486,7 @@ mod tests {
             "MONOKULARBELL",
             serde_json::json!({"CLVMERCHANT01": [{"objectId": "P:not/a/payment", "type": "CREATE"}]}),
         );
-        let error = read_webhook(body.as_bytes(), &app())
+        let error = read_webhook(body.as_bytes(), NA, &app())
             .unwrap_err()
             .to_string();
         assert!(!error.contains("not/a/payment"), "{error}");
@@ -490,11 +495,11 @@ mod tests {
             "MONOKULARBELL",
             serde_json::json!({"not/a/merchant": [{"objectId": "P:PAYMENT00001", "type": "CREATE"}]}),
         );
-        let error = read_webhook(body.as_bytes(), &app())
+        let error = read_webhook(body.as_bytes(), NA, &app())
             .unwrap_err()
             .to_string();
         assert!(!error.contains("not/a/merchant"), "{error}");
-        let error = read_webhook(b"{\"appId\": \"MONOKULARBELL\", 4111}", &app())
+        let error = read_webhook(b"{\"appId\": \"MONOKULARBELL\", 4111}", NA, &app())
             .unwrap_err()
             .to_string();
         assert!(!error.contains("4111"), "{error}");

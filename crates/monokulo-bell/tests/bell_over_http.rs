@@ -32,6 +32,7 @@ async fn registration_over_http_keeps_the_merchant_square_names() {
         serde_json::json!({
             "registration_id": id,
             "point_of_sale": "square",
+            "environment": "production",
             "application_id": APPLICATION_ID,
         })
     );
@@ -455,32 +456,92 @@ async fn a_full_location_refuses_another_till_over_http() {
         .await;
 }
 
-/// The sandbox's Bell asks the Square `bell.square.api_url` names, as it
-/// would the sandbox's own.
+/// A sandbox registration is proved by the Square its own table's
+/// `api_url` names, never production's, and answered with the sandbox's
+/// application.
 #[tokio::test]
-async fn a_sandbox_bell_asks_the_square_it_is_pointed_at_over_http() {
-    let square = Stub::square().await;
+async fn a_sandbox_registration_asks_the_sandboxes_square_over_http() {
+    let production = Stub::square().await;
+    let sandbox = Stub::square().await;
     let push = Stub::push_service().await;
-    let bell = TestBell::start(
-        &square.url(),
+    let bell = TestBell::start_with(
         &[
-            ("bell.square.environment", "sandbox"),
-            ("bell.square.application_id", "sandbox-sq0idb-MonokularTest"),
+            ("square.production", &production.url()),
+            ("square.sandbox", &sandbox.url()),
         ],
+        &[],
     )
     .await;
+    let till = Till::at(&push, "front");
     let answered = bell
-        .register(TOKEN, LOCATION, &Till::at(&push, "front"))
+        .call(registration_in(
+            "square",
+            "sandbox",
+            TOKEN,
+            LOCATION,
+            &till.subscription(),
+        ))
         .await;
     assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+    assert_eq!(answered.json()["environment"], "sandbox");
+    assert_eq!(answered.json()["application_id"], SANDBOX_APPLICATION_ID);
     assert_eq!(
-        answered.json()["application_id"],
-        "sandbox-sq0idb-MonokularTest"
-    );
-    assert_eq!(
-        square.next().await.path,
+        sandbox.next().await.path,
         format!("/v2/locations/{LOCATION}")
     );
+    assert!(production.drain().await.is_empty());
+}
+
+/// The same merchant and location ids registered in Square's sandbox and
+/// in its production are kept apart: a production payment dings the
+/// production till alone, a sandbox payment (signed with the sandbox's
+/// key, to its URL) the sandbox till alone.
+#[tokio::test]
+async fn sandbox_and_production_registrations_never_ding_each_other_over_http() {
+    let square = Stub::square().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::start_with(
+        &[
+            ("square.production", &square.url()),
+            ("square.sandbox", &square.url()),
+        ],
+        &[],
+    )
+    .await;
+    let production_till = Till::at(&push, "production");
+    let sandbox_till = Till::at(&push, "sandbox");
+    bell.registered(TOKEN, LOCATION, &production_till).await;
+    let answered = bell
+        .call(registration_in(
+            "square",
+            "sandbox",
+            TOKEN,
+            LOCATION,
+            &sandbox_till.subscription(),
+        ))
+        .await;
+    assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+    assert_eq!(bell.rows().len(), 2);
+    push.drain().await;
+
+    // The same payment id in both: two payments, one in each.
+    let payment = "PmtSameIdInBothEnvironments01";
+    let body = payment_webhook_of(payment, "payment.created", "COMPLETED", MERCHANT, LOCATION);
+    assert_eq!(bell.webhook(&body).await.status, StatusCode::OK);
+    let dinged: Vec<String> = push.drain().await.into_iter().map(|d| d.path).collect();
+    assert_eq!(dinged, ["/push/production"]);
+
+    let answered = bell
+        .call(webhook_request_to(
+            SANDBOX_WEBHOOK_PATH,
+            &body,
+            Some(&sign_with(SANDBOX_WEBHOOK_KEY, SANDBOX_WEBHOOK_URL, &body)),
+        ))
+        .await;
+    assert_eq!(answered.status, StatusCode::OK, "{}", answered.text());
+    bell.bell.dings_sent().await;
+    let dinged: Vec<String> = push.drain().await.into_iter().map(|d| d.path).collect();
+    assert_eq!(dinged, ["/push/sandbox"]);
 }
 
 /// A Square that redirects isn't followed: the merchant's token goes to
@@ -1110,6 +1171,7 @@ async fn a_clover_registration_over_http_proves_the_merchant_with_its_token() {
         serde_json::json!({
             "registration_id": id,
             "point_of_sale": "clover",
+            "environment": "north_america",
             "application_id": CLOVER_APP_ID,
         })
     );
@@ -1512,10 +1574,10 @@ async fn square_and_clover_are_separate_rooms_over_http() {
     let clover = Stub::clover().await;
     let push = Stub::push_service().await;
     let bell = TestBell::start_with(
-        Points {
-            square: Some(&square.url()),
-            clover: Some(&clover.url()),
-        },
+        &[
+            ("square.production", &square.url()),
+            ("clover.north_america", &clover.url()),
+        ],
         &[("bell.dings_per_merchant_per_minute", "2")],
     )
     .await;
@@ -1592,10 +1654,10 @@ async fn a_square_till_moves_to_clover_only_with_its_keys_over_http() {
     let clover = Stub::clover().await;
     let push = Stub::push_service().await;
     let bell = TestBell::start_with(
-        Points {
-            square: Some(&square.url()),
-            clover: Some(&clover.url()),
-        },
+        &[
+            ("square.production", &square.url()),
+            ("clover.north_america", &clover.url()),
+        ],
         &[],
     )
     .await;
@@ -1662,7 +1724,15 @@ async fn the_status_says_how_the_last_ding_went_and_nothing_private_over_http() 
             "listen": "127.0.0.1:8445",
             "public_uri": PUBLIC_URI,
             "registrations": { "stored": 0 },
-            "points_of_sale": { "square": "ready", "clover": "off" },
+            "points_of_sale": {
+                "square": { "production": "ready", "sandbox": "off" },
+                "clover": {
+                    "north_america": "off",
+                    "europe": "off",
+                    "latin_america": "off",
+                    "sandbox": "off",
+                },
+            },
             "last_ding": null,
         })
     );

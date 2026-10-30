@@ -20,7 +20,8 @@ use sha2::Sha256;
 use crate::pos::{
     self, AccessToken, BodyError, LocationId, MerchantId, PaymentId, PointOfSale, ProofError,
 };
-use crate::settings::{ApplicationId, ServiceUrl, SquareEnvironment};
+use crate::pos::{Integration, SquareEnvironment};
+use crate::settings::{ApplicationId, ServiceUrl};
 
 /// The header carrying a webhook's signature.
 pub const SIGNATURE_HEADER: &str = "x-square-hmacsha256-signature";
@@ -212,8 +213,8 @@ impl Square {
         &self.application_id
     }
 
-    pub fn environment(&self) -> SquareEnvironment {
-        self.environment
+    pub fn integration(&self) -> Integration {
+        Integration::Square(self.environment)
     }
 
     /// The URL Square must send webhooks to: it signs them for it.

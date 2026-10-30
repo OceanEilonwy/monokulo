@@ -1,25 +1,30 @@
-//! What the Bell has to do with any point of sale: which one, the ids a
-//! registration and a webhook carry, the payment a webhook asks it to ring,
-//! and why a till's token couldn't prove its location.
+//! What the Bell has to do with any point of sale: which one, and which of
+//! its environments (an [`Integration`]), the ids a registration and a
+//! webhook carry, the payment a webhook asks it to ring, and why a till's
+//! token couldn't prove its location.
 //!
 //! Each point of sale is an adapter of its own ([`crate::square`],
 //! [`crate::clover`]) behind a `match` on [`PointOfSale`], not a trait
 //! object (`docs/decisions/bell.md`, decision 43): the two check their webhooks in
 //! different kinds of way, and the compiler lists every place a third must
-//! touch.
+//! touch. A Bell runs an adapter for each integration that is on, several
+//! environments of one point of sale at once (decision 75).
 
 use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap as _;
+use serde::{Deserialize, Serialize, Serializer};
 use zeroize::Zeroizing;
+
+use crate::settings::ServiceUrl;
 
 /// A point of sale the Bell can serve. Its wire name, the one spelling
 /// everywhere: a registration's `point_of_sale`, `/v1/info`'s keys, a
-/// ding's `wake`, the problem slugs (`clover-refused`), the webhook path
-/// (`/v1/clover/webhook`) and the settings table (`[bell.clover]`).
+/// ding's `wake`, the problem slugs (`clover-refused`), the webhook paths
+/// (`/v1/clover/…/webhook`) and the settings tables (`[bell.clover.…]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PointOfSale {
@@ -47,14 +52,6 @@ impl PointOfSale {
         }
     }
 
-    /// Where its webhooks come, under `bell.public_uri`.
-    pub const fn webhook_path(self) -> &'static str {
-        match self {
-            PointOfSale::Square => "/v1/square/webhook",
-            PointOfSale::Clover => "/v1/clover/webhook",
-        }
-    }
-
     /// What a ding for one of its payments says, before it is encrypted:
     /// which point of sale to ask (decision 53).
     pub const fn wake(self) -> &'static [u8] {
@@ -68,6 +65,215 @@ impl PointOfSale {
 impl fmt::Display for PointOfSale {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// Which Square an application is in: production, or the sandbox for
+/// testing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SquareEnvironment {
+    Production,
+    Sandbox,
+}
+
+impl SquareEnvironment {
+    /// Every one, in the order the Bell lists them.
+    pub const ALL: [SquareEnvironment; 2] =
+        [SquareEnvironment::Production, SquareEnvironment::Sandbox];
+
+    /// The wire name: a registration's `environment`, and the last part
+    /// of its settings table (`[bell.square.sandbox]`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SquareEnvironment::Production => "production",
+            SquareEnvironment::Sandbox => "sandbox",
+        }
+    }
+
+    /// The environment's API.
+    pub fn api_url(self) -> ServiceUrl {
+        // Both parse; the tests load each environment.
+        live_settings::parsed_default(match self {
+            SquareEnvironment::Production => "https://connect.squareup.com",
+            SquareEnvironment::Sandbox => "https://connect.squareupsandbox.com",
+        })
+    }
+}
+
+/// Which Clover an app is in: a region's, or the sandbox. Each is a
+/// developer dashboard and an API of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CloverEnvironment {
+    NorthAmerica,
+    Europe,
+    LatinAmerica,
+    Sandbox,
+}
+
+impl CloverEnvironment {
+    /// Every one, in the order the Bell lists them.
+    pub const ALL: [CloverEnvironment; 4] = [
+        CloverEnvironment::NorthAmerica,
+        CloverEnvironment::Europe,
+        CloverEnvironment::LatinAmerica,
+        CloverEnvironment::Sandbox,
+    ];
+
+    /// The wire name, as [`SquareEnvironment::as_str`]'s.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CloverEnvironment::NorthAmerica => "north_america",
+            CloverEnvironment::Europe => "europe",
+            CloverEnvironment::LatinAmerica => "latin_america",
+            CloverEnvironment::Sandbox => "sandbox",
+        }
+    }
+
+    /// The environment's API (the till signs in on its web host, which the
+    /// Bell never visits).
+    pub fn api_url(self) -> ServiceUrl {
+        // Each parses; the tests load each environment.
+        live_settings::parsed_default(match self {
+            CloverEnvironment::NorthAmerica => "https://api.clover.com",
+            CloverEnvironment::Europe => "https://api.eu.clover.com",
+            CloverEnvironment::LatinAmerica => "https://api.la.clover.com",
+            CloverEnvironment::Sandbox => "https://apisandbox.dev.clover.com",
+        })
+    }
+}
+
+/// An integration: one environment of one point of sale, with an
+/// application of its own there. It is what a Bell turns on (its settings
+/// table, `[bell.square.sandbox]`), takes webhooks for
+/// (`/v1/square/sandbox/webhook`) and keeps registrations apart by: a
+/// sandbox merchant is never a production one (decision 75).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Integration {
+    Square(SquareEnvironment),
+    Clover(CloverEnvironment),
+}
+
+impl Integration {
+    /// Every integration, in the order the Bell lists them: Square's, then
+    /// Clover's, each in its environments' order.
+    pub const ALL: [Integration; 6] = [
+        Integration::Square(SquareEnvironment::Production),
+        Integration::Square(SquareEnvironment::Sandbox),
+        Integration::Clover(CloverEnvironment::NorthAmerica),
+        Integration::Clover(CloverEnvironment::Europe),
+        Integration::Clover(CloverEnvironment::LatinAmerica),
+        Integration::Clover(CloverEnvironment::Sandbox),
+    ];
+
+    pub const fn point_of_sale(self) -> PointOfSale {
+        match self {
+            Integration::Square(_) => PointOfSale::Square,
+            Integration::Clover(_) => PointOfSale::Clover,
+        }
+    }
+
+    /// The environment's wire name.
+    pub const fn environment(self) -> &'static str {
+        match self {
+            Integration::Square(environment) => environment.as_str(),
+            Integration::Clover(environment) => environment.as_str(),
+        }
+    }
+
+    /// The integration of `pos` named `environment`, if it has one.
+    pub fn of(pos: PointOfSale, environment: &str) -> Option<Integration> {
+        Integration::ALL.into_iter().find(|integration| {
+            integration.point_of_sale() == pos && integration.environment() == environment
+        })
+    }
+
+    /// Where its webhooks come, under `bell.public_uri`.
+    pub const fn webhook_path(self) -> &'static str {
+        match self {
+            Integration::Square(SquareEnvironment::Production) => "/v1/square/production/webhook",
+            Integration::Square(SquareEnvironment::Sandbox) => "/v1/square/sandbox/webhook",
+            Integration::Clover(CloverEnvironment::NorthAmerica) => {
+                "/v1/clover/north_america/webhook"
+            }
+            Integration::Clover(CloverEnvironment::Europe) => "/v1/clover/europe/webhook",
+            Integration::Clover(CloverEnvironment::LatinAmerica) => {
+                "/v1/clover/latin_america/webhook"
+            }
+            Integration::Clover(CloverEnvironment::Sandbox) => "/v1/clover/sandbox/webhook",
+        }
+    }
+}
+
+/// The integration in words, for problems and log lines: `Square sandbox`,
+/// `Clover north_america`.
+impl fmt::Display for Integration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.point_of_sale().title(), self.environment())
+    }
+}
+
+/// `integrations` in words, each point of sale once with its environments:
+/// `Square production and sandbox, and Clover europe`.
+pub fn in_words(integrations: impl IntoIterator<Item = Integration>) -> String {
+    let integrations: Vec<Integration> = integrations.into_iter().collect();
+    let groups: Vec<String> = PointOfSale::ALL
+        .into_iter()
+        .filter_map(|pos| {
+            let environments: Vec<&str> = Integration::ALL
+                .into_iter()
+                .filter(|integration| {
+                    integration.point_of_sale() == pos && integrations.contains(integration)
+                })
+                .map(Integration::environment)
+                .collect();
+            (!environments.is_empty()).then(|| format!("{} {}", pos.title(), listed(&environments)))
+        })
+        .collect();
+    groups.join(", and ")
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn listed(words: &[&str]) -> String {
+    match words {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// Values by integration, as JSON nests them: `{"square": {"sandbox": …}}`,
+/// in [`Integration::ALL`]'s order whatever order they come in (a map
+/// would sort them), a point of sale with none left out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ByIntegration<V>(pub Vec<(Integration, V)>);
+
+impl<V: Serialize> Serialize for ByIntegration<V> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        /// One point of sale's environments, in order.
+        struct Environments<'a, V>(Vec<&'a (Integration, V)>);
+
+        impl<V: Serialize> Serialize for Environments<'_, V> {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut map = serializer.serialize_map(Some(self.0.len()))?;
+                for (integration, value) in &self.0 {
+                    map.serialize_entry(integration.environment(), value)?;
+                }
+                map.end()
+            }
+        }
+
+        let mut map = serializer.serialize_map(None)?;
+        for pos in PointOfSale::ALL {
+            let environments: Vec<&(Integration, V)> = Integration::ALL
+                .iter()
+                .filter(|integration| integration.point_of_sale() == pos)
+                .filter_map(|integration| self.0.iter().find(|(i, _)| i == integration))
+                .collect();
+            if !environments.is_empty() {
+                map.serialize_entry(pos.as_str(), &Environments(environments))?;
+            }
+        }
+        map.end()
     }
 }
 
@@ -219,7 +425,7 @@ impl fmt::Debug for AccessToken {
 /// or more times.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ring {
-    pub point_of_sale: PointOfSale,
+    pub integration: Integration,
     pub payment_id: PaymentId,
     pub merchant_id: MerchantId,
     pub location_id: LocationId,
@@ -317,7 +523,6 @@ mod tests {
             let json = serde_json::to_string(&pos).unwrap();
             assert_eq!(json, format!("\"{}\"", pos.as_str()));
             assert_eq!(serde_json::from_str::<PointOfSale>(&json).unwrap(), pos);
-            assert_eq!(pos.webhook_path(), format!("/v1/{}/webhook", pos.as_str()));
             assert_eq!(
                 pos.wake(),
                 format!("{{\"wake\":\"{}\"}}", pos.as_str()).as_bytes()
@@ -327,6 +532,83 @@ mod tests {
             assert_eq!(bad.parse::<PointOfSale>(), Err(UnknownPointOfSale), "{bad}");
             assert!(serde_json::from_str::<PointOfSale>(&format!("\"{bad}\"")).is_err());
         }
+    }
+
+    /// Each integration is its point of sale's and one of its environments,
+    /// named once, its webhooks at a path of its own.
+    #[test]
+    fn an_integration_is_a_point_of_sale_and_an_environment() {
+        for integration in Integration::ALL {
+            let (pos, environment) = (integration.point_of_sale(), integration.environment());
+            assert_eq!(Integration::of(pos, environment), Some(integration));
+            assert_eq!(
+                integration.webhook_path(),
+                format!("/v1/{pos}/{environment}/webhook")
+            );
+        }
+        assert_eq!(
+            Integration::ALL
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                "Square production",
+                "Square sandbox",
+                "Clover north_america",
+                "Clover europe",
+                "Clover latin_america",
+                "Clover sandbox",
+            ]
+        );
+        // A name is its own point of sale's alone, as written.
+        assert_eq!(Integration::of(PointOfSale::Square, "europe"), None);
+        assert_eq!(Integration::of(PointOfSale::Clover, "production"), None);
+        assert_eq!(Integration::of(PointOfSale::Square, "Production"), None);
+    }
+
+    #[test]
+    fn integrations_are_said_a_point_of_sale_at_a_time() {
+        assert_eq!(
+            in_words([
+                Integration::Clover(CloverEnvironment::Europe),
+                Integration::Square(SquareEnvironment::Sandbox),
+                Integration::Square(SquareEnvironment::Production),
+            ]),
+            "Square production and sandbox, and Clover europe"
+        );
+        assert_eq!(
+            in_words([
+                Integration::Clover(CloverEnvironment::Sandbox),
+                Integration::Clover(CloverEnvironment::NorthAmerica),
+                Integration::Clover(CloverEnvironment::LatinAmerica),
+            ]),
+            "Clover north_america, latin_america and sandbox"
+        );
+        assert_eq!(in_words([]), "");
+    }
+
+    /// Nested by point of sale, in the fixed order whatever order the
+    /// values come in, a point of sale with none left out.
+    #[test]
+    fn values_by_integration_nest_in_a_fixed_order() {
+        let values = ByIntegration(vec![
+            (Integration::Clover(CloverEnvironment::Sandbox), 4),
+            (Integration::Square(SquareEnvironment::Sandbox), 2),
+            (Integration::Clover(CloverEnvironment::NorthAmerica), 3),
+        ]);
+        assert_eq!(
+            serde_json::to_string(&values).unwrap(),
+            r#"{"square":{"sandbox":2},"clover":{"north_america":3,"sandbox":4}}"#
+        );
+        let clover = ByIntegration(vec![(Integration::Clover(CloverEnvironment::Europe), 1)]);
+        assert_eq!(
+            serde_json::to_string(&clover).unwrap(),
+            r#"{"clover":{"europe":1}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ByIntegration::<u8>(Vec::new())).unwrap(),
+            "{}"
+        );
     }
 
     #[test]

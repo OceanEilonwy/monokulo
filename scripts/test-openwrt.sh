@@ -287,30 +287,42 @@ eventually "the relay starts again once monokulo's relay is off" ". /tmp/t.sh; r
 check "monokulo's relay.enabled is read from its own table only" \
 	". /etc/init.d/monokulo-push-relay; printf '[relay.server]\nenabled = true\n[other]\nenabled = true\n# [relay]\n' >/tmp/r.toml; ! monokulo_relay_on /tmp/r.toml && printf '[ relay ]\n  enabled = true # on\n' >/tmp/r.toml && monokulo_relay_on /tmp/r.toml && printf '[relay]\nenabled = false\n' >/tmp/r.toml && ! monokulo_relay_on /tmp/r.toml"
 
-# The Bell: Square on, its webhook key set as LuCI does.
+# The Bell: Square's sandbox on, its webhook key set as LuCI does.
 service_basics monokulo-bell MONOKULO_BELL_VAPID_KEY 8445
 x "uci -q batch >/dev/null" <<'EOF'
 set monokulo-bell.main.public_uri='https://bell.example.org'
 set monokulo-bell.main.allow_private_endpoints='0'
-set monokulo-bell.square.application_id='sandbox-sq0idb-abcdefghijklmnopqrstuv'
-set monokulo-bell.square.environment='sandbox'
+set monokulo-bell.square_sandbox.application_id='sandbox-sq0idb-abcdefghijklmnopqrstuv'
 commit monokulo-bell
 EOF
-check "LuCI's check of the Bell says Square needs its webhook key" \
-	". /tmp/t.sh; rpc monokulo-bell check | jsonfilter -e '@.output' | grep -q MONOKULO_BELL_SQUARE_WEBHOOK_KEY"
-check "LuCI sets Square's webhook key, and its status says it is set" \
-	". /tmp/t.sh; [ \"\$(rpc monokulo-bell set_secret '{\"name\":\"MONOKULO_BELL_SQUARE_WEBHOOK_KEY\",\"value\":\"a-signature-key\"}' | jsonfilter -e '@.ok')\" = true ] && [ \"\$(rpc monokulo-bell status | jsonfilter -e '@.secrets.MONOKULO_BELL_SQUARE_WEBHOOK_KEY')\" = true ]"
+check "LuCI's check of the Bell says Square's sandbox needs its webhook key" \
+	". /tmp/t.sh; rpc monokulo-bell check | jsonfilter -e '@.output' | grep -q MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY"
+check "LuCI sets Square sandbox's webhook key, and its status says it is set" \
+	". /tmp/t.sh; [ \"\$(rpc monokulo-bell set_secret '{\"name\":\"MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY\",\"value\":\"a-signature-key\"}' | jsonfilter -e '@.ok')\" = true ] && [ \"\$(rpc monokulo-bell status | jsonfilter -e '@.secrets.MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY')\" = true ]"
 service_runs monokulo-bell /var/etc/monokulo-bell/bell.toml 8447 127.0.0.1:8445
-check "the Bell's options file holds the UCI settings, Square's in its table" \
-	"f=/var/etc/monokulo-bell/bell.toml; grep -qx 'bell.square.environment = \"sandbox\"' \$f && grep -qx 'bell.allow_private_endpoints = \"false\"' \$f && grep -qx 'bell.store_path = \"/srv/monokulo-bell/bell.db\"' \$f && ! grep -q clover \$f"
-check "the Bell's status says Square is on and Clover off" \
-	"s=\$(uclient-fetch -q -O - http://127.0.0.1:8447/status); [ \"\$(echo \"\$s\" | jsonfilter -e '@.points_of_sale.square')\" = ready ] && [ \"\$(echo \"\$s\" | jsonfilter -e '@.points_of_sale.clover')\" = off ]"
+check "the Bell's options file holds the UCI settings, Square sandbox's in its table" \
+	"f=/var/etc/monokulo-bell/bell.toml; grep -qx 'bell.square.sandbox.application_id = \"sandbox-sq0idb-abcdefghijklmnopqrstuv\"' \$f && grep -qx 'bell.allow_private_endpoints = \"false\"' \$f && grep -qx 'bell.store_path = \"/srv/monokulo-bell/bell.db\"' \$f && ! grep -q clover \$f"
+check "the Bell's status says Square's sandbox is on and the others off" \
+	"s=\$(uclient-fetch -q -O - http://127.0.0.1:8447/status); [ \"\$(echo \"\$s\" | jsonfilter -e '@.points_of_sale.square.sandbox')\" = ready ] && [ \"\$(echo \"\$s\" | jsonfilter -e '@.points_of_sale.square.production')\" = off ] && [ \"\$(echo \"\$s\" | jsonfilter -e '@.points_of_sale.clover.north_america')\" = off ]"
 refuses_bad_value monokulo-bell timeout_ms 50 bell.timeout_ms
 refuses_data_dir monokulo-bell
 check "LuCI clears a secret" \
-	". /tmp/t.sh; [ \"\$(rpc monokulo-bell clear_secret '{\"name\":\"MONOKULO_BELL_SQUARE_WEBHOOK_KEY\"}' | jsonfilter -e '@.ok')\" = true ] && [ ! -e /etc/monokulo-bell/secrets/MONOKULO_BELL_SQUARE_WEBHOOK_KEY ] && [ \"\$(rpc monokulo-bell check | jsonfilter -e '@.ok')\" = false ]"
-x '. /tmp/t.sh; rpc monokulo-bell set_secret "{\"name\":\"MONOKULO_BELL_SQUARE_WEBHOOK_KEY\",\"value\":\"a-signature-key\"}" >/dev/null'
+	". /tmp/t.sh; [ \"\$(rpc monokulo-bell clear_secret '{\"name\":\"MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY\"}' | jsonfilter -e '@.ok')\" = true ] && [ ! -e /etc/monokulo-bell/secrets/MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY ] && [ \"\$(rpc monokulo-bell check | jsonfilter -e '@.ok')\" = false ]"
+x '. /tmp/t.sh; rpc monokulo-bell set_secret "{\"name\":\"MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY\",\"value\":\"a-signature-key\"}" >/dev/null'
 upgrade_keeps monokulo-bell public_uri
+# An install from before the integrations: one section per point of sale,
+# with its environment, and its secret under the old name.
+x "uci -q batch >/dev/null" <<'EOF'
+set monokulo-bell.clover=clover
+set monokulo-bell.clover.application_id='MONOKULARBELL'
+set monokulo-bell.clover.environment='europe'
+commit monokulo-bell
+EOF
+x 'printf %s 9f2d4a8c-6b1e-4f3a-9c7d-2e5b8a1f4c6d >/etc/monokulo-bell/secrets/MONOKULO_BELL_CLOVER_AUTH_CODE'
+check "an upgrade renames the old Clover section and its secret for its environment" \
+	"apk fix --reinstall monokulo-bell && [ \"\$(uci get monokulo-bell.clover_europe)\" = clover ] && [ \"\$(uci get monokulo-bell.clover_europe.application_id)\" = MONOKULARBELL ] && ! uci -q get monokulo-bell.clover && ! uci -q get monokulo-bell.clover_europe.environment && [ -s /etc/monokulo-bell/secrets/MONOKULO_BELL_CLOVER_EUROPE_AUTH_CODE ] && [ ! -e /etc/monokulo-bell/secrets/MONOKULO_BELL_CLOVER_AUTH_CODE ]"
+eventually "the Bell runs on the renamed section, Clover europe on" \
+	". /tmp/t.sh; running monokulo-bell && [ \"\$(uclient-fetch -q -O - http://127.0.0.1:8447/status | jsonfilter -e '@.points_of_sale.clover.europe')\" = ready ]"
 
 # --- removal -----------------------------------------------------------------
 

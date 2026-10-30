@@ -4,7 +4,7 @@
 # Install, as root, from the unzipped folder:
 #   install -m 755 monokulo-bell /usr/local/bin/
 #   install -d /etc/monokulo
-#   install -m 644 bell.toml /etc/monokulo/bell.toml    # then set bell.public_uri and a point of sale
+#   install -m 644 bell.toml /etc/monokulo/bell.toml    # then set bell.public_uri and an integration
 #   install -m 600 /dev/null /etc/monokulo/monokulo-bell.env
 #   printf "MONOKULO_BELL_VAPID_KEY='%s'\n" "$(openssl rand -hex 32)" >> /etc/monokulo/monokulo-bell.env
 #   install -m 644 service/monokulo-bell.service /etc/systemd/system/
@@ -12,10 +12,14 @@
 #
 # The environment file (root's alone: systemd reads it before the service
 # starts) holds the secrets, one VARIABLE='value' each (single quotes keep a
-# value as it is), each point of sale's set when, and only when, it is on:
+# value as it is), each integration's set when, and only when, it is on:
 #   MONOKULO_BELL_VAPID_KEY='<64 hex characters>'     # required; keep it: the tills' subscriptions are made for it
-#   MONOKULO_BELL_SQUARE_WEBHOOK_KEY='<the subscription's signature key>'   # Square
-#   MONOKULO_BELL_CLOVER_AUTH_CODE='<the app's Auth Code>'                  # Clover
+#   MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY='<the subscription's signature key>'   # [bell.square.production]
+#   MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY='<the subscription's signature key>'      # [bell.square.sandbox]
+#   MONOKULO_BELL_CLOVER_NORTH_AMERICA_AUTH_CODE='<the app's Auth Code>'              # [bell.clover.north_america]
+#   MONOKULO_BELL_CLOVER_EUROPE_AUTH_CODE='<the app's Auth Code>'                     # [bell.clover.europe]
+#   MONOKULO_BELL_CLOVER_LATIN_AMERICA_AUTH_CODE='<the app's Auth Code>'              # [bell.clover.latin_america]
+#   MONOKULO_BELL_CLOVER_SANDBOX_AUTH_CODE='<the app's Auth Code>'                    # [bell.clover.sandbox]
 #
 # Each start runs --check first, so a bad setting stops it with the reason:
 # `systemctl status monokulo-bell` and `journalctl -u monokulo-bell` show

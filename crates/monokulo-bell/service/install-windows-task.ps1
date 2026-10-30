@@ -17,12 +17,16 @@ is none, registers the task "monokulo-bell" and starts it. Run it again
 after an upgrade: it keeps the options, secrets and registrations.
 
 Each secret is a file in the secrets folder named for its variable, which
-only administrators and LOCAL SERVICE can read; a point of sale's is there
+only administrators and LOCAL SERVICE can read; an integration's is there
 when, and only when, it is on:
-    MONOKULO_BELL_VAPID_KEY            made on install; keep a copy
-    MONOKULO_BELL_SQUARE_WEBHOOK_KEY   the Square subscription's signature key
-    MONOKULO_BELL_CLOVER_AUTH_CODE     the Clover app's Auth Code
-Set bell.public_uri and a point of sale in bell.toml, then restart it:
+    MONOKULO_BELL_VAPID_KEY                       made on install; keep a copy
+    MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY   the Square production subscription's signature key
+    MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY      the Square sandbox subscription's signature key
+    MONOKULO_BELL_CLOVER_NORTH_AMERICA_AUTH_CODE  the Clover north_america app's Auth Code
+    MONOKULO_BELL_CLOVER_EUROPE_AUTH_CODE         the Clover europe app's Auth Code
+    MONOKULO_BELL_CLOVER_LATIN_AMERICA_AUTH_CODE  the Clover latin_america app's Auth Code
+    MONOKULO_BELL_CLOVER_SANDBOX_AUTH_CODE        the Clover sandbox app's Auth Code
+Set bell.public_uri and an integration in bell.toml, then restart it:
     Stop-ScheduledTask monokulo-bell; Start-ScheduledTask monokulo-bell
 
 The windows service manager isn't used: the Bell speaks no service control
