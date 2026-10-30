@@ -9,3 +9,8 @@ crates/ui/solid/** linguist-generated=true
 xtask/src/pages/docs/webhook-vectors.json text eol=lf
 xtask/src/pages/docs/webhooks.md text eol=lf
 apps/engine/test/fixtures.json text eol=lf
+# Shell scripts and the OpenWrt packages' files run on Linux and routers,
+# where a CR breaks them, and tests read the init scripts line by line: LF
+# on every checkout.
+*.sh text eol=lf
+openwrt/** text eol=lf
