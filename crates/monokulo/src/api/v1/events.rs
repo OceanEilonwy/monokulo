@@ -115,7 +115,9 @@ fn sale_doc(kind: SaleKind) -> &'static str {
             "An app made the order, or the payment it had no longer counts (it was spent twice); it waits for the payment."
         }
         SaleKind::Seen => "The payment is in the pool, not yet in a block.",
-        SaleKind::Confirming => "The payment is in a block, with too few confirmations yet.",
+        SaleKind::Confirming => {
+            "The payment is in a block, with too few confirmations yet. Sent once, as it reaches its first block: read the order for its `confirmations` as more arrive."
+        }
         SaleKind::Paid => "Paid in full (or more), with enough confirmations.",
         SaleKind::Partial => {
             "Less than the amount has arrived; the rest can still come before it expires."
