@@ -375,6 +375,36 @@ async fn a_sale_event_links_its_order() {
     assert_eq!(body_json(order).await["order_id"], order_id);
 }
 
+/// An order says how far its payment has got and how far it must go: the
+/// confirmations it has and the store's threshold for it, read with any
+/// key. An app counts a confirming sale ("Confirming · 4 of 10") by reading
+/// its order again: the store's event stream says only when the status
+/// changes, never each confirmation.
+#[tokio::test]
+async fn an_order_says_its_confirmations_of_the_stores_threshold() {
+    let engine = engine().await;
+    let fixture = fixture(engine.router(), PUBLIC_URI, &Recorder::default()).await;
+    fixture
+        .state
+        .engine
+        .client
+        .set_confirmations_required(&credentials::auth::RawToken::presented(&fixture.sk), 3)
+        .await
+        .unwrap();
+    let made = make_order(&fixture, &fixture.ak).await;
+    assert_eq!(made["confirmations"], 0, "{made}");
+    assert_eq!(made["confirmations_required"], 3, "{made}");
+    let href = made["_links"]["self"]["href"].as_str().unwrap();
+    for key in [&fixture.ak, &fixture.pk, &fixture.sk] {
+        let read = body_json(get(&fixture.router, href, Some(key)).await).await;
+        assert_eq!(read["confirmations"], 0, "{read}");
+        assert_eq!(
+            read["confirmations_required"], 3,
+            "the threshold it was made with: {read}"
+        );
+    }
+}
+
 /// Behind a reverse proxy that serves Monokulo under a path
 /// (`public_uri = "https://shop.example/monokulo"`), every link, form
 /// target and `Location` the API gives, and the handshakes' `api`, start

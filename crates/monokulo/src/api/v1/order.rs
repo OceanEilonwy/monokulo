@@ -49,9 +49,12 @@ struct Body {
     description: Option<String>,
     /// Whether the checkout shows the payer `merchant_order_id`.
     show_merchant_order_id: bool,
-    /// Confirmations the payment has.
+    /// Confirmations the payment has. It grows a block at a time while the
+    /// order is `confirming`, with no sale event for each: read the order
+    /// again, or follow `mk:order-events`, to count them.
     confirmations: u64,
-    /// Confirmations it needs to count as paid.
+    /// Confirmations it needs to count as paid: the store's threshold for
+    /// its amount, as the order was made with it.
     confirmations_required: u64,
     /// When it was made, in Unix seconds.
     created_at: i64,
