@@ -72,8 +72,9 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(page.locator('#machine-age')).toHaveText(/^live · \d+ s ago$/);
   await expect(page.locator('#machine-live .live-dot')).toBeVisible();
   await expect(page.locator('#d-scanning')).toHaveAttribute('open', '');
-  const age = async () => Number((await page.locator('#machine-age').textContent()).match(/\d+/)[0]);
-  const reportedAge = await age();
+  // When the shown report was made, from its age in whole seconds.
+  const reportedAt = async () => Date.now() - 1000 * Number((await page.locator('#machine-age').textContent()).match(/\d+/)[0]);
+  const firstReport = await reportedAt();
 
   // The legend opens from the (?) and closes with Escape.
   await page.locator('#engine-help summary').click();
@@ -116,10 +117,11 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await timingDetails.locator('summary').click();
   await captureCoverageStage(page, 'engine-live', test.info(), shot);
   // Each machine event draws the strip again with the engine's newer
-  // report: the age goes back down when one comes.
-  let last = reportedAge;
-  await expect.poll(async () => { const now = await age(); const fresher = now < last; last = now; return fresher; },
-    { message: 'a newer report arrived', timeout: 20_000, intervals: [500] }).toBe(true);
+  // report. Compared by when each was made, not by the age going down:
+  // events every half second can hold the age at 0 s throughout. Two
+  // seconds clear the rounding of both ages.
+  await expect.poll(async () => await reportedAt() - firstReport,
+    { message: 'a newer report arrived', timeout: 20_000, intervals: [500] }).toBeGreaterThan(2000);
   await captureCoverageStage(page, 'engine-strip', test.info(), shot);
 
   // The reorg, gone to from its event (live, it can begin and end within
