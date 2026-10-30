@@ -8,7 +8,7 @@
 
   The README beside this folder says how to install it (Run it as a service,
   macOS). Put the secrets in place of the REPLACE values below and delete the
-  lines of a point of sale that is off: this file is root's alone (mode 600)
+  lines of an integration that is off: this file is root's alone (mode 600)
   because it holds them. Every setting: https://docs.monokulo.com/bell/
 -->
 <plist version="1.0">
@@ -29,10 +29,18 @@
 	<dict>
 		<key>MONOKULO_BELL_VAPID_KEY</key>
 		<string>REPLACE: 64 hex characters</string>
-		<key>MONOKULO_BELL_SQUARE_WEBHOOK_KEY</key>
-		<string>REPLACE: the Square subscription's signature key</string>
-		<key>MONOKULO_BELL_CLOVER_AUTH_CODE</key>
-		<string>REPLACE: the Clover app's Auth Code</string>
+		<key>MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY</key>
+		<string>REPLACE: the Square production subscription's signature key</string>
+		<key>MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY</key>
+		<string>REPLACE: the Square sandbox subscription's signature key</string>
+		<key>MONOKULO_BELL_CLOVER_NORTH_AMERICA_AUTH_CODE</key>
+		<string>REPLACE: the Clover north_america app's Auth Code</string>
+		<key>MONOKULO_BELL_CLOVER_EUROPE_AUTH_CODE</key>
+		<string>REPLACE: the Clover europe app's Auth Code</string>
+		<key>MONOKULO_BELL_CLOVER_LATIN_AMERICA_AUTH_CODE</key>
+		<string>REPLACE: the Clover latin_america app's Auth Code</string>
+		<key>MONOKULO_BELL_CLOVER_SANDBOX_AUTH_CODE</key>
+		<string>REPLACE: the Clover sandbox app's Auth Code</string>
 	</dict>
 	<key>RunAtLoad</key>
 	<true/>

@@ -7,8 +7,8 @@ at once), locations, payments, orders and refunds. Ring up a sale with:
     curl -X POST localhost:8738/fake/sale -d '{"items":[["Flat white, oat milk",2,450],["Almond croissant",1,375]]}'
 
 With FAKE_SQUARE_WEBHOOK_URL (a Bell's bell.public_uri followed by
-/v1/square/webhook) and FAKE_SQUARE_WEBHOOK_KEY (its
-MONOKULO_BELL_SQUARE_WEBHOOK_KEY) set, each sale is also sent there as a
+/v1/square/sandbox/webhook, or production's) and FAKE_SQUARE_WEBHOOK_KEY (that
+environment's key: MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY, or production's) set, each sale is also sent there as a
 signed payment.created webhook, as Square sends it.
 
 Standard library only. Not Square: shapes follow its API reference closely

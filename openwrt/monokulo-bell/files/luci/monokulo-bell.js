@@ -7,8 +7,9 @@
 
 // Services > Bell: whether monokulo-bell, the Monokular Bell, runs and what
 // it is doing (from its own status listener), its secrets (set or not,
-// never their values) and every setting it starts with, a card per point
-// of sale. Save & Apply checks the settings with the Bell's own --check
+// never their values) and every setting it starts with, a card per
+// integration (a point of sale's environment), the ones beyond production
+// behind a disclosure. Save & Apply checks the settings with the Bell's own --check
 // before it restarts the Bell, and shows the Bell's words when it refuses
 // them. The backend is the package's rpcd plugin (ubus object
 // monokulo-bell).
@@ -25,15 +26,53 @@ var callUciCommit = rpc.declare({ object: 'uci', method: 'commit', params: [ 'co
 var callRestart = rpc.declare({ object: NAME, method: 'restart', expect: { result: false } });
 var callReload = rpc.declare({ object: NAME, method: 'reload', expect: { result: false } });
 
-// Each secret, by its variable. The VAPID key is made on install and never
-// set here.
-var SECRETS = [
-	{ name: 'MONOKULO_BELL_VAPID_KEY', label: _('VAPID key'), generated: true,
-	  help: _('Made on install. It signs every ding, and the tills’ push subscriptions are made for its public key: <strong>back it up</strong> (<code>scp root@router:/etc/monokulo-bell/secrets/MONOKULO_BELL_VAPID_KEY .</code>). Under another key every till’s subscription refuses the Bell’s dings.') },
-	{ name: 'MONOKULO_BELL_SQUARE_WEBHOOK_KEY', label: _('Square webhook signature key'),
-	  help: _('The signature key of the Square application’s webhook subscription, from the Developer Console’s Webhooks page. Set when, and only when, Square’s application ID is.') },
-	{ name: 'MONOKULO_BELL_CLOVER_AUTH_CODE', label: _('Clover Auth Code'),
-	  help: _('The Clover app’s Auth Code, from the developer dashboard’s Webhooks page. Set when, and only when, Clover’s App ID is.') }
+// The VAPID key, made on install and never set here.
+var VAPID = { name: 'MONOKULO_BELL_VAPID_KEY', label: _('VAPID key'), generated: true,
+	help: _('Made on install. It signs every ding, and the tills’ push subscriptions are made for its public key: <strong>back it up</strong> (<code>scp root@router:/etc/monokulo-bell/secrets/MONOKULO_BELL_VAPID_KEY .</code>). Under another key every till’s subscription refuses the Bell’s dings.') };
+
+// Each integration (a point of sale's environment): its UCI section, named
+// <point of sale>_<environment>, its secret by its variable, and where its
+// API is unless set.
+var SQUARE = {
+	title: _('Square'), id: _('Application ID'),
+	idHelp: _('The application whose webhooks this Bell receives in this environment, and which the tills sign in through, from the Developer Console.'),
+	secret: _('webhook signature key'),
+	secretHelp: _('The signature key of this application’s webhook subscription, from the Developer Console’s Webhooks page. Set when, and only when, the application ID is.')
+};
+var CLOVER = {
+	title: _('Clover'), id: _('App ID'),
+	idHelp: _('The app whose webhooks this Bell receives in this environment, and which the tills sign in through: its App ID, 13 letters and digits, from this environment’s developer dashboard.'),
+	secret: _('Auth Code'),
+	secretHelp: _('This app’s Auth Code, from the developer dashboard’s Webhooks page. Set when, and only when, the App ID is.')
+};
+var INTEGRATIONS = {
+	square_production: { pos: SQUARE, wire: [ 'square', 'production' ], name: _('production'),
+		placeholder: 'sq0idp-…', api: 'https://connect.squareup.com',
+		secret: 'MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY' },
+	square_sandbox: { pos: SQUARE, wire: [ 'square', 'sandbox' ], name: _('sandbox'),
+		placeholder: 'sandbox-sq0idb-…', api: 'https://connect.squareupsandbox.com',
+		secret: 'MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY' },
+	clover_north_america: { pos: CLOVER, wire: [ 'clover', 'north_america' ], name: _('North America'),
+		placeholder: 'ABCDEFGHJKMNP', api: 'https://api.clover.com',
+		secret: 'MONOKULO_BELL_CLOVER_NORTH_AMERICA_AUTH_CODE' },
+	clover_europe: { pos: CLOVER, wire: [ 'clover', 'europe' ], name: _('Europe'),
+		placeholder: 'ABCDEFGHJKMNP', api: 'https://api.eu.clover.com',
+		secret: 'MONOKULO_BELL_CLOVER_EUROPE_AUTH_CODE' },
+	clover_latin_america: { pos: CLOVER, wire: [ 'clover', 'latin_america' ], name: _('Latin America'),
+		placeholder: 'ABCDEFGHJKMNP', api: 'https://api.la.clover.com',
+		secret: 'MONOKULO_BELL_CLOVER_LATIN_AMERICA_AUTH_CODE' },
+	clover_sandbox: { pos: CLOVER, wire: [ 'clover', 'sandbox' ], name: _('sandbox'),
+		placeholder: 'ABCDEFGHJKMNP', api: 'https://apisandbox.dev.clover.com',
+		secret: 'MONOKULO_BELL_CLOVER_SANDBOX_AUTH_CODE' }
+};
+
+// How the integrations' cards are grouped: most operators use production
+// alone, so the others are behind a disclosure, closed unless one in it is
+// set or on (decision 80).
+var GROUPS = [
+	{ members: [ 'square_production', 'clover_north_america' ] },
+	{ title: _('More Clover regions'), members: [ 'clover_europe', 'clover_latin_america' ] },
+	{ title: _('Sandbox (for developers)'), members: [ 'square_sandbox', 'clover_sandbox' ] }
 ];
 
 // Where a build's commit link points.
@@ -129,22 +168,108 @@ function clearSecret(secret) {
 	});
 }
 
-// A point of sale's card: its application, environment and API address.
-function pointOfSale(m, section, title, lead, id, environments) {
-	var s = m.section(form.NamedSection, section, section, title, lead);
-	s.addremove = false;
+// A secret's line: its name, whether it is set, and (unless it is made on
+// install) its Set, Replace and Clear buttons.
+function secretRow(secret, set) {
+	var buttons = [];
+	if (!secret.generated) {
+		buttons.push(E('button', {
+			'class': 'cbi-button cbi-button-action',
+			'click': ui.createHandlerFn(this, setSecret, secret)
+		}, [ set[secret.name] ? _('Replace…') : _('Set…') ]));
+		if (set[secret.name])
+			buttons.push(' ', E('button', {
+				'class': 'cbi-button cbi-button-remove',
+				'click': ui.createHandlerFn(this, clearSecret, secret)
+			}, [ _('Clear') ]));
+	}
+	return E('div', { 'style': 'margin-bottom:1em' }, [
+		E('strong', {}, [ secret.label ]), ' ',
+		E('code', {}, [ secret.name ]), ': ',
+		set[secret.name] ? _('set') : _('not set'), ' ',
+		E('span', {}, buttons),
+		E('div', { 'class': 'cbi-value-description' }, secret.help)
+	]);
+}
 
-	var o = s.option(form.Value, 'application_id', id.label, id.help);
-	o.placeholder = id.placeholder;
+// Whether the running Bell says the integration is on, from its status:
+// true, false, or null when it isn't running.
+function served(st, integration) {
+	var p = (st.running && st.status && st.status.points_of_sale) || null;
+	if (!p)
+		return null;
+	return ((p[integration.wire[0]] || {})[integration.wire[1]]) === 'ready';
+}
 
-	o = s.option(form.ListValue, 'environment', _('Environment'), environments.help);
-	o.value('', environments.byDefault);
-	environments.values.forEach(function(v) { o.value(v[0], v[1]); });
+// An integration's card: whether it is on, its application, its API
+// address and its secret. Its section is made with Add when the config
+// doesn't have it yet, and Delete turns the integration off.
+function integrationCard(m, st, sid) {
+	var integration = INTEGRATIONS[sid], pos = integration.pos;
+	var title = pos.title + ' ' + integration.name;
+	var secret = { name: integration.secret, label: title + ' ' + pos.secret, help: pos.secretHelp };
+	var s = m.section(form.NamedSection, sid, integration.wire[0], title);
+	s.addremove = true;
+
+	var o = s.option(form.DummyValue, '_state', _('State'));
+	o.cfgvalue = function() {
+		var on = served(st, integration);
+		if (on == null)
+			return _('The Bell isn’t running');
+		return on ? _('On: the Bell serves it') : _('Off: set its application ID and secret to turn it on');
+	};
+
+	o = s.option(form.DummyValue, '_webhook', _('Webhook URL'),
+		_('Where this environment’s webhooks go: enter it in the point of sale’s webhook settings for this application, exactly.'));
+	o.cfgvalue = function() {
+		var base = (uci.get(NAME, 'main', 'public_uri') || 'https://bell.example.org').replace(/\/+$/, '');
+		return base + '/v1/' + integration.wire[0] + '/' + integration.wire[1] + '/webhook';
+	};
+
+	o = s.option(form.Value, 'application_id', pos.id, pos.idHelp);
+	o.placeholder = integration.placeholder;
 
 	o = s.option(form.Value, 'api_url', _('API address'),
 		_('Where its API is, instead of the environment’s own: for a stand-in while developing. https, or http on this router. Leave empty.'));
-	o.placeholder = environments.api;
+	o.placeholder = integration.api;
+
+	o = s.option(form.DummyValue, '_secret', _('Secret'));
+	o.rawhtml = true;
+	o.cfgvalue = function() {
+		return secretRow(secret, st.secrets || {});
+	};
+
+	// Marked, so its card can be moved into its group once rendered.
+	var render = s.render;
+	s.render = function() {
+		return Promise.resolve(render.apply(this, arguments)).then(function(node) {
+			node.setAttribute('data-integration', sid);
+			return node;
+		});
+	};
 	return s;
+}
+
+// The rendered map with each group's cards together, the ones after the
+// first inside a <details> that starts open when one of its integrations
+// has an application ID or is on, so nothing set is hidden.
+function grouped(st, node) {
+	GROUPS.forEach(function(group) {
+		var cards = group.members.map(function(sid) {
+			return node.querySelector('[data-integration="' + sid + '"]');
+		}).filter(function(card) { return card != null; });
+		if (!group.title || !cards.length)
+			return;
+		var open = group.members.some(function(sid) {
+			return !!uci.get(NAME, sid, 'application_id') || served(st, INTEGRATIONS[sid]) === true;
+		});
+		var details = E('details', open ? { 'open': '' } : {}, [
+			E('summary', { 'style': 'cursor:pointer' }, [ E('h3', { 'style': 'display:inline' }, [ group.title ]) ])
+		]);
+		cards[0].parentNode.insertBefore(details, cards[0]);
+		cards.forEach(function(card) { details.appendChild(card); });
+	});
+	return node;
 }
 
 return view.extend({
@@ -214,41 +339,13 @@ return view.extend({
 					return _('None since it started');
 				return ago(last.at) + ': ' + (OUTCOMES[last.outcome] || last.outcome);
 			};
-
-			o = s.option(form.DummyValue, '_ready', _('Points of sale'));
-			o.cfgvalue = function() {
-				var p = own.points_of_sale || {};
-				var say = function(state) { return state === 'ready' ? _('on') : _('off'); };
-				return _('Square %s · Clover %s').format(say(p.square), say(p.clover));
-			};
 		}
 
 		o = s.option(form.DummyValue, '_secrets', _('Secrets'),
-			_('Kept in <code>/etc/monokulo-bell/secrets/</code>, root’s alone, one file per secret. This page never shows them.'));
+			_('Kept in <code>/etc/monokulo-bell/secrets/</code>, root’s alone, one file per secret. This page never shows them. Each integration’s is on its card below.'));
 		o.rawhtml = true;
 		o.cfgvalue = function() {
-			var set = st.secrets || {};
-			return E('div', {}, SECRETS.map(function(secret) {
-				var buttons = [];
-				if (!secret.generated) {
-					buttons.push(E('button', {
-						'class': 'cbi-button cbi-button-action',
-						'click': ui.createHandlerFn(this, setSecret, secret)
-					}, [ set[secret.name] ? _('Replace…') : _('Set…') ]));
-					if (set[secret.name])
-						buttons.push(' ', E('button', {
-							'class': 'cbi-button cbi-button-remove',
-							'click': ui.createHandlerFn(this, clearSecret, secret)
-						}, [ _('Clear') ]));
-				}
-				return E('div', { 'style': 'margin-bottom:1em' }, [
-					E('strong', {}, [ secret.label ]), ' ',
-					E('code', {}, [ secret.name ]), ': ',
-					set[secret.name] ? _('set') : _('not set'), ' ',
-					E('span', {}, buttons),
-					E('div', { 'class': 'cbi-value-description' }, secret.help)
-				]);
-			}));
+			return secretRow(VAPID, st.secrets || {});
 		};
 
 		o = s.option(form.Button, '_restart', _('Restart'),
@@ -278,7 +375,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Value, 'public_uri', _('Public address'),
-			_('The https address the points of sale and the tills reach this Bell at, such as https://bell.example.org. Each point of sale’s webhooks go to it followed by /v1/square/webhook or /v1/clover/webhook; Square’s subscription must name that URL exactly. Required.'));
+			_('The https address the points of sale and the tills reach this Bell at, such as https://bell.example.org. Each integration’s webhooks go to it followed by /v1/<point of sale>/<environment>/webhook, as its card says; Square’s subscription must name that URL exactly. Required.'));
 		o.placeholder = 'https://bell.example.org';
 
 		o = s.option(form.Value, 'port', _('Port'),
@@ -334,21 +431,11 @@ return view.extend({
 			_('Let a till register a push endpoint on a loopback, private or link-local address, such as a push service on this network. Off, every ding goes to a public address only. Never an onion address.'));
 		o.default = '0';
 
-		// The points of sale
-		pointOfSale(m, 'square', _('Square'),
-			_('Set the application ID to serve Square tills, and its webhook signature key under Secrets.'),
-			{ label: _('Application ID'), placeholder: 'sq0idp-…',
-			  help: _('The Square application whose webhooks this Bell receives, and which the tills sign in through: sq0idp-… in production, sandbox-sq0idb-… in the sandbox.') },
-			{ help: _('Which Square the application is in.'), byDefault: _('Production'),
-			  values: [ [ 'sandbox', _('Sandbox, for testing') ] ], api: 'https://connect.squareup.com' });
-
-		pointOfSale(m, 'clover', _('Clover'),
-			_('Set the App ID to serve Clover tills, and its Auth Code under Secrets.'),
-			{ label: _('App ID'), placeholder: 'ABCDEFGHJKMNP',
-			  help: _('The Clover app whose webhooks this Bell receives, and which the tills sign in through: its App ID, 13 letters and digits, from the developer dashboard of the environment below.') },
-			{ help: _('Which Clover the app is in: the region its merchants are in, or the sandbox. One Bell serves one.'), byDefault: _('North America'),
-			  values: [ [ 'europe', _('Europe') ], [ 'latin_america', _('Latin America') ], [ 'sandbox', _('Sandbox, for testing') ] ],
-			  api: 'https://api.clover.com' });
+		// The integrations, a card each, in their groups' order: the Bell
+		// serves every one whose application ID and secret are set, at once.
+		GROUPS.forEach(function(group) {
+			group.members.forEach(function(sid) { integrationCard(m, st, sid); });
+		});
 
 		// Logging
 		s = m.section(form.NamedSection, 'main', NAME, _('Logging'),
@@ -364,7 +451,18 @@ return view.extend({
 		o.value('json', _('JSON'));
 		o.value('pretty', _('Pretty'));
 
-		return m.render();
+		// Grouped each time the map is drawn: at first, and again when a
+		// Save redraws it.
+		if (typeof m.renderContents === 'function') {
+			var renderContents = m.renderContents;
+			m.renderContents = function() {
+				return Promise.resolve(renderContents.apply(this, arguments)).then(function(node) {
+					return grouped(st, node);
+				});
+			};
+			return m.render();
+		}
+		return m.render().then(function(node) { return grouped(st, node); });
 	},
 
 	// Save, commit, then --check: restart on the new settings only if the

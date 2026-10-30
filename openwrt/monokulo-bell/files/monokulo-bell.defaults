@@ -1,4 +1,69 @@
 #!/bin/sh
+# shellcheck shell=ash
+
+SECRETS_DIR=/etc/monokulo-bell/secrets
+
+# upper <word>: the word in capitals, as a secret's variable has it.
+upper() {
+	echo "$1" | tr abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ
+}
+
+# An install from before the Bell served several environments at once had
+# one section per point of sale, `config square 'square'` and
+# `config clover 'clover'`, with an environment option, and one secret file
+# each. Each becomes its integration's: a section with an application_id is
+# renamed for its environment (Square's by its id's prefix, Clover's by its
+# environment option, north_america unless set) and loses that option, an
+# empty one goes, and the old secret file takes its integration's name.
+# Run again, it finds nothing to do; a section or secret file of the new
+# name already there is never overwritten.
+#
+# migrate <point of sale> <old secret> <its new name, ENV for the environment>
+migrate() {
+	local pos="$1" old="$2" new="$3" id environment
+	if [ "$(uci -q get "monokulo-bell.$pos")" = "$pos" ]; then
+		id=$(uci -q get "monokulo-bell.$pos.application_id")
+		if [ -z "$id" ]; then
+			uci -q delete "monokulo-bell.$pos"
+		else
+			case "$pos" in
+			square)
+				case "$id" in
+				sandbox-sq0idb-*) environment=sandbox ;;
+				*) environment=production ;;
+				esac
+				;;
+			clover)
+				environment=$(uci -q get "monokulo-bell.$pos.environment")
+				environment=${environment:-north_america}
+				;;
+			esac
+			if uci -q get "monokulo-bell.${pos}_$environment" >/dev/null; then
+				# Both written by hand: the operator's to sort out, and the
+				# Bell's check names the old section.
+				logger -t monokulo-bell "kept the old $pos section beside ${pos}_$environment: move its settings by hand"
+			else
+				uci -q delete "monokulo-bell.$pos.environment"
+				uci -q rename "monokulo-bell.$pos=${pos}_$environment"
+			fi
+		fi
+	fi
+	[ -n "$environment" ] || case "$pos" in
+	square) environment=production ;;
+	clover) environment=north_america ;;
+	esac
+	new="$SECRETS_DIR/$(echo "$new" | sed "s/ENV/$(upper "$environment")/")"
+	if [ -e "$SECRETS_DIR/$old" ] && [ ! -e "$new" ]; then
+		mv "$SECRETS_DIR/$old" "$new"
+	fi
+}
+
+if [ -f /etc/config/monokulo-bell ]; then
+	migrate square MONOKULO_BELL_SQUARE_WEBHOOK_KEY MONOKULO_BELL_SQUARE_ENV_WEBHOOK_KEY
+	migrate clover MONOKULO_BELL_CLOVER_AUTH_CODE MONOKULO_BELL_CLOVER_ENV_AUTH_CODE
+	uci -q commit monokulo-bell
+fi
+
 # A traffic rule that lets the internet reach the Bell's port, made off:
 # turn it on in Network > Firewall > Traffic Rules once the Bell is set up.
 # Behind a TLS proxy on this router, open the proxy's 443 instead.

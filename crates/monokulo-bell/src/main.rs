@@ -98,8 +98,10 @@ fn main() {
             Err(e) => stop(e),
         }
     }
-    // Anything wrong in the file stops the Bell here, line by line.
+    // Anything wrong in the file stops the Bell here, line by line, a
+    // setting replaced since (decision 76) with what replaced it.
     let values = OptionsFile::at(&start.options)
+        .with_renamed(settings::REPLACED)
         .read(settings::ALL)
         .unwrap_or_else(|e| stop(e));
     if start.check {

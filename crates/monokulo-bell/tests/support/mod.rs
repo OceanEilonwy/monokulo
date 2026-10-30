@@ -32,11 +32,19 @@ use tower::ServiceExt as _;
 
 /// Where the Bell says it is, in every test.
 pub const PUBLIC_URI: &str = "https://bell.example.org";
-/// What Square signs its webhooks for, at [`PUBLIC_URI`].
-pub const WEBHOOK_URL: &str = "https://bell.example.org/v1/square/webhook";
+/// What Square signs its production webhooks for, at [`PUBLIC_URI`].
+pub const WEBHOOK_URL: &str = "https://bell.example.org/v1/square/production/webhook";
+pub const WEBHOOK_PATH: &str = "/v1/square/production/webhook";
 pub const APPLICATION_ID: &str = "sq0idp-MonokularTest";
-/// The webhook subscription's signature key (Square's documented one).
+/// The production webhook subscription's signature key (Square's
+/// documented one).
 pub const WEBHOOK_KEY: &str = "Ibxx_5AKakO-3qeNVR61Dw";
+/// Square's sandbox: its application, its subscription's own key, and
+/// the URL it signs for.
+pub const SANDBOX_APPLICATION_ID: &str = "sandbox-sq0idb-MonokularTest";
+pub const SANDBOX_WEBHOOK_KEY: &str = "Sbxx_5AKakO-3qeNVR61Dw";
+pub const SANDBOX_WEBHOOK_URL: &str = "https://bell.example.org/v1/square/sandbox/webhook";
+pub const SANDBOX_WEBHOOK_PATH: &str = "/v1/square/sandbox/webhook";
 /// The Bell's VAPID private key, as the environment gives it.
 pub const VAPID_HEX: &str = "4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d";
 
@@ -50,9 +58,14 @@ pub const OTHER_MERCHANT: &str = "6SSW7HV8K2ST5";
 pub const OTHER_TOKEN: &str = "EAAAl-merchant-two-access-token-9876543210";
 pub const OTHER_MERCHANTS_LOCATION: &str = "S8GWD5R9QB376";
 
-/// The Clover app the Bell serves, and its Auth Code.
+/// The Clover app the Bell serves, in every environment, and its Auth
+/// Code in North America; each other environment's is its own
+/// ([`integration`]).
 pub const CLOVER_APP_ID: &str = "MONOKULARBELL";
 pub const CLOVER_AUTH_CODE: &str = "9f2d4a8c-6b1e-4f3a-9c7d-2e5b8a1f4c6d";
+pub const CLOVER_SANDBOX_AUTH_CODE: &str = "5a1e0c2b-7d3f-4e8a-b6c9-1f0e2d3c4b5a";
+pub const CLOVER_WEBHOOK_PATH: &str = "/v1/clover/north_america/webhook";
+pub const CLOVER_SANDBOX_WEBHOOK_PATH: &str = "/v1/clover/sandbox/webhook";
 /// The merchants the stand-in Clover knows, by their access tokens. A
 /// Clover merchant is its own location.
 pub const CLOVER_MERCHANT: &str = "CLVMERCHANT01";
@@ -332,19 +345,49 @@ pub fn completed_payment() -> String {
     payment_webhook("payment.created", "COMPLETED", MERCHANT, LOCATION)
 }
 
-/// Which points of sale a [`TestBell`] serves, and where each one's API
-/// is.
-#[derive(Clone, Copy, Default)]
-pub struct Points<'a> {
-    pub square: Option<&'a str>,
-    pub clover: Option<&'a str>,
+/// An integration's application, its secret's variable and the secret, by
+/// its table under `[bell]` (`square.sandbox`).
+pub fn integration(table: &str) -> (&'static str, &'static str, &'static str) {
+    match table {
+        "square.production" => (
+            APPLICATION_ID,
+            "MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY",
+            WEBHOOK_KEY,
+        ),
+        "square.sandbox" => (
+            SANDBOX_APPLICATION_ID,
+            "MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY",
+            SANDBOX_WEBHOOK_KEY,
+        ),
+        "clover.north_america" => (
+            CLOVER_APP_ID,
+            "MONOKULO_BELL_CLOVER_NORTH_AMERICA_AUTH_CODE",
+            CLOVER_AUTH_CODE,
+        ),
+        "clover.europe" => (
+            CLOVER_APP_ID,
+            "MONOKULO_BELL_CLOVER_EUROPE_AUTH_CODE",
+            "e0000000-0000-4000-8000-00000000e0e0",
+        ),
+        "clover.latin_america" => (
+            CLOVER_APP_ID,
+            "MONOKULO_BELL_CLOVER_LATIN_AMERICA_AUTH_CODE",
+            "1a000000-0000-4000-8000-0000000001a0",
+        ),
+        "clover.sandbox" => (
+            CLOVER_APP_ID,
+            "MONOKULO_BELL_CLOVER_SANDBOX_AUTH_CODE",
+            CLOVER_SANDBOX_AUTH_CODE,
+        ),
+        other => panic!("no integration {other}"),
+    }
 }
 
 /// A Bell built as the process builds it, from options file `values` over
-/// these: at [`PUBLIC_URI`], for [`APPLICATION_ID`] with Square at
-/// `square_url` and, when asked, [`CLOVER_APP_ID`] with Clover, each
-/// point of sale's secret set; private push endpoints allowed (the
-/// stand-ins are on loopback), its database in a directory of its own.
+/// these: at [`PUBLIC_URI`], serving the integrations it is started with,
+/// each with its application and secret set ([`integration`]) and its API
+/// at the stand-in given; private push endpoints allowed (the stand-ins
+/// are on loopback), its database in a directory of its own.
 pub struct TestBell {
     pub bell: Bell,
     pub router: axum::Router,
@@ -352,32 +395,19 @@ pub struct TestBell {
 }
 
 impl TestBell {
-    /// A Bell serving Square alone, at `square_url`.
+    /// A Bell serving Square production alone, at `square_url`.
     pub async fn start(square_url: &str, values: &[(&str, &str)]) -> TestBell {
-        TestBell::start_with(
-            Points {
-                square: Some(square_url),
-                clover: None,
-            },
-            values,
-        )
-        .await
+        TestBell::start_with(&[("square.production", square_url)], values).await
     }
 
-    /// A Bell serving Clover alone, at `clover_url`.
+    /// A Bell serving Clover north_america alone, at `clover_url`.
     pub async fn clover(clover_url: &str, values: &[(&str, &str)]) -> TestBell {
-        TestBell::start_with(
-            Points {
-                square: None,
-                clover: Some(clover_url),
-            },
-            values,
-        )
-        .await
+        TestBell::start_with(&[("clover.north_america", clover_url)], values).await
     }
 
-    /// A Bell serving the points of sale `points` names.
-    pub async fn start_with(points: Points<'_>, values: &[(&str, &str)]) -> TestBell {
+    /// A Bell serving each integration `serving` names by its table, with
+    /// its API at the address beside it.
+    pub async fn start_with(serving: &[(&str, &str)], values: &[(&str, &str)]) -> TestBell {
         let dir = std::env::temp_dir().join(format!(
             "monokulo-bell-test-{}-{}",
             std::process::id(),
@@ -393,21 +423,14 @@ impl TestBell {
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .collect();
         let mut vars = vec![("MONOKULO_BELL_VAPID_KEY", VAPID_HEX)];
-        if let Some(square_url) = points.square {
+        for (table, api_url) in serving {
+            let (application_id, variable, secret) = integration(table);
             stored.insert(
-                "bell.square.application_id".to_owned(),
-                APPLICATION_ID.to_owned(),
+                format!("bell.{table}.application_id"),
+                application_id.to_owned(),
             );
-            stored.insert("bell.square.api_url".to_owned(), square_url.to_owned());
-            vars.push(("MONOKULO_BELL_SQUARE_WEBHOOK_KEY", WEBHOOK_KEY));
-        }
-        if let Some(clover_url) = points.clover {
-            stored.insert(
-                "bell.clover.application_id".to_owned(),
-                CLOVER_APP_ID.to_owned(),
-            );
-            stored.insert("bell.clover.api_url".to_owned(), clover_url.to_owned());
-            vars.push(("MONOKULO_BELL_CLOVER_AUTH_CODE", CLOVER_AUTH_CODE));
+            stored.insert(format!("bell.{table}.api_url"), (*api_url).to_owned());
+            vars.push((variable, secret));
         }
         for (key, value) in values {
             stored.insert((*key).to_owned(), (*value).to_owned());
@@ -612,9 +635,25 @@ pub fn registration(token: &str, location: &str, subscription: &Value) -> Reques
     registration_at("square", token, location, subscription)
 }
 
-/// A registration at `point_of_sale`, as a till sends it.
+/// A registration at `point_of_sale`, in its first environment
+/// (production, north_america), as a till sends it.
 pub fn registration_at(
     point_of_sale: &str,
+    token: &str,
+    location: &str,
+    subscription: &Value,
+) -> Request<Body> {
+    let environment = match point_of_sale {
+        "clover" => "north_america",
+        _ => "production",
+    };
+    registration_in(point_of_sale, environment, token, location, subscription)
+}
+
+/// A registration at `point_of_sale` in `environment`, as a till sends it.
+pub fn registration_in(
+    point_of_sale: &str,
+    environment: &str,
     token: &str,
     location: &str,
     subscription: &Value,
@@ -624,6 +663,7 @@ pub fn registration_at(
         "/v1/register",
         json!({
             "point_of_sale": point_of_sale,
+            "environment": environment,
             "access_token": token,
             "location_id": location,
             "subscription": subscription,
@@ -646,29 +686,45 @@ pub fn unregistration(id: &str) -> Request<Body> {
         .unwrap()
 }
 
-/// Square's signature of `body` sent to `url`: base64 of HMAC-SHA256 over
-/// the URL and the body, keyed with [`WEBHOOK_KEY`].
+/// Square's signature of `body` sent to `url`, keyed with [`WEBHOOK_KEY`],
+/// the production subscription's.
 pub fn sign(url: &str, body: &str) -> String {
-    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(WEBHOOK_KEY.as_bytes()).unwrap();
+    sign_with(WEBHOOK_KEY, url, body)
+}
+
+/// Square's signature of `body` sent to `url`: base64 of HMAC-SHA256 over
+/// the URL and the body, keyed with `key`.
+pub fn sign_with(key: &str, url: &str, body: &str) -> String {
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes()).unwrap();
     mac.update(url.as_bytes());
     mac.update(body.as_bytes());
     STANDARD.encode(mac.finalize().into_bytes())
 }
 
+/// A `POST` of `body` to Square production's webhook path, with
+/// `signature` when there is one.
 pub fn webhook_request(body: &str, signature: Option<&str>) -> Request<Body> {
-    let mut request =
-        Request::post("/v1/square/webhook").header(header::CONTENT_TYPE, "application/json");
+    webhook_request_to(WEBHOOK_PATH, body, signature)
+}
+
+/// A `POST` of `body` to `path`, as Square sends it, with `signature`.
+pub fn webhook_request_to(path: &str, body: &str, signature: Option<&str>) -> Request<Body> {
+    let mut request = Request::post(path).header(header::CONTENT_TYPE, "application/json");
     if let Some(signature) = signature {
         request = request.header("x-square-hmacsha256-signature", signature);
     }
     request.body(Body::from(body.to_owned())).unwrap()
 }
 
-/// A `POST /v1/clover/webhook` of `body`, with `auth` as its
+/// A `POST /v1/clover/north_america/webhook` of `body`, with `auth` as its
 /// `X-Clover-Auth` header when there is one.
 pub fn clover_request(body: &str, auth: Option<&str>) -> Request<Body> {
-    let mut request =
-        Request::post("/v1/clover/webhook").header(header::CONTENT_TYPE, "application/json");
+    clover_request_to(CLOVER_WEBHOOK_PATH, body, auth)
+}
+
+/// A `POST` of `body` to `path`, as Clover sends it, with `auth`.
+pub fn clover_request_to(path: &str, body: &str, auth: Option<&str>) -> Request<Body> {
+    let mut request = Request::post(path).header(header::CONTENT_TYPE, "application/json");
     if let Some(auth) = auth {
         request = request.header("x-clover-auth", auth);
     }

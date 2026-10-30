@@ -1,6 +1,6 @@
 //! What `monokulo-bell` says of itself on its status listener
 //! (`status.listen`, `GET /status`, [`service_runtime::status`]): its
-//! addresses, how many registrations it holds, which points of sale are
+//! addresses, how many registrations it holds, which integrations are
 //! on and how the last ding went. Counts, times and readiness only: no
 //! token, endpoint, payment, merchant or location.
 
@@ -10,6 +10,7 @@ use serde::Serialize;
 use service_runtime::status::Event;
 
 use crate::Bell;
+use crate::pos::{ByIntegration, Integration};
 
 /// What became of a ding, as the status names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -25,7 +26,7 @@ pub enum Dinged {
     Failed,
 }
 
-/// Whether a point of sale is served.
+/// Whether an integration is served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Served {
@@ -56,22 +57,17 @@ pub struct Report {
     /// `bell.public_uri`.
     pub public_uri: String,
     pub registrations: Registrations,
-    pub points_of_sale: PointsOfSale,
+    /// Every integration, by point of sale and environment.
+    pub points_of_sale: ByIntegration<Served>,
     /// The last ding sent since the Bell started.
     pub last_ding: Option<Event<Dinged>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Registrations {
-    /// Every point of sale's; `None` when the database couldn't be read
+    /// Every integration's; `None` when the database couldn't be read
     /// (said in the log).
     pub stored: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct PointsOfSale {
-    pub square: Served,
-    pub clover: Served,
 }
 
 impl Bell {
@@ -93,10 +89,17 @@ impl Bell {
             listen,
             public_uri: shared.public_uri.as_str().to_owned(),
             registrations: Registrations { stored },
-            points_of_sale: PointsOfSale {
-                square: shared.adapters.square.is_some().into(),
-                clover: shared.adapters.clover.is_some().into(),
-            },
+            points_of_sale: ByIntegration(
+                Integration::ALL
+                    .into_iter()
+                    .map(|integration| {
+                        (
+                            integration,
+                            shared.adapters.get(integration).is_some().into(),
+                        )
+                    })
+                    .collect(),
+            ),
             last_ding: shared.dings.last(),
         }
     }

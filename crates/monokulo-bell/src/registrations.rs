@@ -2,15 +2,15 @@
 //! dings. A till registers its Web Push subscription for one location (a
 //! Square location, or a Clover merchant, which is its own one location),
 //! once the merchant's token has shown the point of sale that the location
-//! is theirs; the registration keeps the point of sale, the merchant and
-//! location it named, the subscription, and how its dings have gone. It lives in the Bell's own
-//! SQLite file (`bell.store_path`), and nothing else does.
+//! is theirs; the registration keeps its integration (the point of sale and
+//! its environment), the merchant and location it named, the subscription,
+//! and how its dings have gone. It lives in the Bell's own SQLite file (`bell.store_path`), and nothing else does.
 //!
 //! One subscription is one registration: registered again (a till moved
 //! to another location, or its app started again), its row is updated,
 //! keeping its id. An endpoint alone proves nothing (a push service, a
 //! distributor's log or a shared server can show it), so only its own
-//! merchant at its own point of sale, or a caller holding its keys, may
+//! merchant in its own integration, or a caller holding its keys, may
 //! change its registration.
 
 use std::fmt;
@@ -22,17 +22,19 @@ use rand::Rng as _;
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use subtle::ConstantTimeEq as _;
 
-use crate::pos::{LocationId, MerchantId, PointOfSale};
+use crate::pos::{Integration, LocationId, MerchantId};
 
-/// The registrations table and its index, then the point of sale.
+/// The registrations table and its index, then the point of sale, then its
+/// environment.
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_registrations.sql")),
     (2, include_str!("../migrations/0002_point_of_sale.sql")),
+    (3, include_str!("../migrations/0003_environment.sql")),
 ];
 
 /// The most registrations one location may have: a shop has a till or a
 /// few, and each is a push per payment. A bound, so one merchant's token
-/// can't fill the database. Counted within a point of sale.
+/// can't fill the database. Counted within an integration.
 pub const MAX_PER_LOCATION: u32 = 32;
 
 /// A registration's id: `br_` and 32 random hex digits, what the till
@@ -86,7 +88,7 @@ impl FromStr for RegistrationId {
 /// is the merchant's.
 #[derive(Debug, Clone)]
 pub struct NewRegistration {
-    pub point_of_sale: PointOfSale,
+    pub integration: Integration,
     pub merchant_id: MerchantId,
     pub location_id: LocationId,
     pub subscription: Subscription,
@@ -128,8 +130,8 @@ pub enum StoreError {
 pub enum RegisterError {
     #[error("the location has {MAX_PER_LOCATION} registrations already")]
     Full,
-    /// The endpoint is registered for another merchant (or the same id at
-    /// another point of sale), and the keys given aren't the ones it was
+    /// The endpoint is registered for another merchant (or the same id in
+    /// another integration), and the keys given aren't the ones it was
     /// registered with.
     #[error("the endpoint is another merchant's registration")]
     Taken,
@@ -172,9 +174,9 @@ impl RegistrationStore {
     /// Registers `new`'s subscription for its location at `now`: a new
     /// registration, or its existing one moved there with its keys
     /// replaced and its failures forgotten. An existing one moves only for
-    /// its own merchant at its own point of sale, or for a caller giving
+    /// its own merchant in its own integration, or for a caller giving
     /// the auth secret it was registered with (a till signed in to another
-    /// account, or to another point of sale): otherwise
+    /// account, or to another point of sale or environment): otherwise
     /// [`RegisterError::Taken`], and it is left as it was. Refused when
     /// the location has [`MAX_PER_LOCATION`] others.
     pub async fn register(
@@ -193,19 +195,22 @@ impl RegistrationStore {
                 .map_err(StoreError::from)?;
                 let endpoint = new.subscription.endpoint.as_str();
                 let auth = new.subscription.keys.auth.to_base64url();
-                let pos = new.point_of_sale.as_str();
-                let existing: Option<(String, String, String)> = transaction
+                let pos = new.integration.point_of_sale().as_str();
+                let environment = new.integration.environment();
+                let existing: Option<(String, String, String, String)> = transaction
                     .query_row(
-                        "SELECT point_of_sale, merchant_id, auth FROM registrations WHERE endpoint = ?1",
+                        "SELECT point_of_sale, environment, merchant_id, auth FROM registrations WHERE endpoint = ?1",
                         params![endpoint],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .optional()
                     .map_err(StoreError::from)?;
-                if let Some((stored_pos, merchant_id, stored_auth)) = existing {
+                if let Some((stored_pos, stored_environment, merchant_id, stored_auth)) = existing {
                     // Compared in constant time: the secret is the proof.
                     let holds_keys: bool = stored_auth.as_bytes().ct_eq(auth.as_bytes()).into();
-                    let same_merchant = stored_pos == pos && merchant_id == new.merchant_id.as_str();
+                    let same_merchant = stored_pos == pos
+                        && stored_environment == environment
+                        && merchant_id == new.merchant_id.as_str();
                     if !same_merchant && !holds_keys {
                         return Err(RegisterError::Taken);
                     }
@@ -213,9 +218,9 @@ impl RegistrationStore {
                 let others: u32 = transaction
                     .query_row(
                         "SELECT COUNT(*) FROM registrations
-                         WHERE point_of_sale = ?1 AND merchant_id = ?2 AND location_id = ?3
-                           AND endpoint != ?4",
-                        params![pos, new.merchant_id.as_str(), new.location_id.as_str(), endpoint],
+                         WHERE point_of_sale = ?1 AND environment = ?2 AND merchant_id = ?3
+                           AND location_id = ?4 AND endpoint != ?5",
+                        params![pos, environment, new.merchant_id.as_str(), new.location_id.as_str(), endpoint],
                         |row| row.get(0),
                     )
                     .map_err(StoreError::from)?;
@@ -225,11 +230,12 @@ impl RegistrationStore {
                 let id: String = transaction
                     .query_row(
                         "INSERT INTO registrations
-                             (id, point_of_sale, merchant_id, location_id, endpoint, p256dh, auth,
-                              created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                             (id, point_of_sale, environment, merchant_id, location_id, endpoint, p256dh,
+                              auth, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                          ON CONFLICT (endpoint)
                          DO UPDATE SET point_of_sale = excluded.point_of_sale,
+                                       environment = excluded.environment,
                                        merchant_id = excluded.merchant_id,
                                        location_id = excluded.location_id,
                                        p256dh = excluded.p256dh,
@@ -239,6 +245,7 @@ impl RegistrationStore {
                         params![
                             id.as_str(),
                             pos,
+                            environment,
                             new.merchant_id.as_str(),
                             new.location_id.as_str(),
                             endpoint,
@@ -283,11 +290,11 @@ impl RegistrationStore {
             .await
     }
 
-    /// Every registration of `merchant_id`'s location `location_id` at
-    /// `point_of_sale`.
+    /// Every registration of `merchant_id`'s location `location_id` in
+    /// `integration`.
     pub async fn at_location(
         &self,
-        point_of_sale: PointOfSale,
+        integration: Integration,
         merchant_id: &MerchantId,
         location_id: &LocationId,
     ) -> Result<Vec<Registration>, StoreError> {
@@ -296,12 +303,14 @@ impl RegistrationStore {
             .run(move |connection| {
                 let mut statement = connection.prepare_cached(
                     "SELECT id, endpoint, p256dh, auth FROM registrations
-                     WHERE point_of_sale = ?1 AND merchant_id = ?2 AND location_id = ?3
+                     WHERE point_of_sale = ?1 AND environment = ?2 AND merchant_id = ?3
+                       AND location_id = ?4
                      ORDER BY created_at, id",
                 )?;
                 let rows = statement.query_map(
                     params![
-                        point_of_sale.as_str(),
+                        integration.point_of_sale().as_str(),
+                        integration.environment(),
                         merchant_id.as_str(),
                         location_id.as_str()
                     ],
@@ -392,6 +401,12 @@ pub(crate) mod tests {
     use super::*;
     use push::encrypt::ReceiverKeys;
 
+    use crate::pos::{CloverEnvironment, SquareEnvironment};
+
+    const SQUARE: Integration = Integration::Square(SquareEnvironment::Production);
+    const SANDBOX: Integration = Integration::Square(SquareEnvironment::Sandbox);
+    const CLOVER: Integration = Integration::Clover(CloverEnvironment::NorthAmerica);
+
     const NOW: i64 = 1_800_000_000;
 
     pub(crate) fn temp_path(tag: &str) -> std::path::PathBuf {
@@ -420,17 +435,17 @@ pub(crate) mod tests {
     }
 
     fn new(merchant_id: &str, location_id: &str, endpoint: &str) -> NewRegistration {
-        at(PointOfSale::Square, merchant_id, location_id, endpoint)
+        at(SQUARE, merchant_id, location_id, endpoint)
     }
 
     fn at(
-        point_of_sale: PointOfSale,
+        integration: Integration,
         merchant_id: &str,
         location_id: &str,
         endpoint: &str,
     ) -> NewRegistration {
         NewRegistration {
-            point_of_sale,
+            integration,
             merchant_id: merchant(merchant_id),
             location_id: location(location_id),
             subscription: subscription(endpoint),
@@ -477,12 +492,12 @@ pub(crate) mod tests {
         let again = store.register(moved, NOW + 1).await.unwrap();
         assert_eq!(again, first);
         let at_l1 = store
-            .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
+            .at_location(SQUARE, &merchant("M1"), &location("L1"))
             .await
             .unwrap();
         assert_eq!(at_l1.iter().map(|r| &r.id).collect::<Vec<_>>(), [&other]);
         let at_l2 = store
-            .at_location(PointOfSale::Square, &merchant("M1"), &location("L2"))
+            .at_location(SQUARE, &merchant("M1"), &location("L2"))
             .await
             .unwrap();
         assert_eq!(at_l2.len(), 1);
@@ -509,7 +524,7 @@ pub(crate) mod tests {
         let taken = store.register(new("M2", "L9", till), NOW + 1).await;
         assert!(matches!(taken, Err(RegisterError::Taken)), "{taken:?}");
         let at_l1 = store
-            .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
+            .at_location(SQUARE, &merchant("M1"), &location("L1"))
             .await
             .unwrap();
         assert_eq!(at_l1.len(), 1);
@@ -524,14 +539,14 @@ pub(crate) mod tests {
         );
         assert!(
             store
-                .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
+                .at_location(SQUARE, &merchant("M1"), &location("L1"))
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
             store
-                .at_location(PointOfSale::Square, &merchant("M2"), &location("L9"))
+                .at_location(SQUARE, &merchant("M2"), &location("L9"))
                 .await
                 .unwrap()
                 .len(),
@@ -551,7 +566,7 @@ pub(crate) mod tests {
             .unwrap();
         assert!(
             store
-                .at_location(PointOfSale::Square, &merchant("M2"), &location("L1"))
+                .at_location(SQUARE, &merchant("M2"), &location("L1"))
                 .await
                 .unwrap()
                 .is_empty()
@@ -613,7 +628,7 @@ pub(crate) mod tests {
         let refused = store.register(new("M1", "L1", till), NOW + 1).await;
         assert!(matches!(refused, Err(RegisterError::Full)), "{refused:?}");
         let at_l2 = store
-            .at_location(PointOfSale::Square, &merchant("M1"), &location("L2"))
+            .at_location(SQUARE, &merchant("M1"), &location("L2"))
             .await
             .unwrap();
         assert_eq!(at_l2.len(), 1);
@@ -640,7 +655,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         let read = store
-            .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
+            .at_location(SQUARE, &merchant("M1"), &location("L1"))
             .await;
         assert!(matches!(read, Err(StoreError::Corrupt(_))), "{read:?}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -665,9 +680,9 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// A database the first Bell made: its rows are Square's, at their
-    /// locations, the index is the one with the point of sale, and opening
-    /// it again runs nothing twice.
+    /// A database the first Bell made: its rows are Square production's, at
+    /// their locations, the index is the one with the point of sale and the
+    /// environment, and opening it again runs nothing twice.
     #[tokio::test]
     async fn a_database_from_before_the_point_of_sale_reads_as_squares() {
         let path = temp_path("migrate");
@@ -704,13 +719,20 @@ pub(crate) mod tests {
         }
         let store = RegistrationStore::open(&path).unwrap();
         let square = store
-            .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
+            .at_location(SQUARE, &merchant("M1"), &location("L1"))
             .await
             .unwrap();
         assert_eq!(square.len(), 2);
         assert!(
             store
-                .at_location(PointOfSale::Clover, &merchant("M1"), &location("L1"))
+                .at_location(CLOVER, &merchant("M1"), &location("L1"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .at_location(SANDBOX, &merchant("M1"), &location("L1"))
                 .await
                 .unwrap()
                 .is_empty()
@@ -726,7 +748,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert!(
-            index.contains("(point_of_sale, merchant_id, location_id)"),
+            index.contains("(point_of_sale, environment, merchant_id, location_id)"),
             "{index}"
         );
         let versions: Vec<i64> = connection
@@ -736,7 +758,7 @@ pub(crate) mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(versions, [1, 2]);
+        assert_eq!(versions, [1, 2, 3]);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -757,18 +779,13 @@ pub(crate) mod tests {
         }
         let clover = store
             .register(
-                at(
-                    PointOfSale::Clover,
-                    "M1",
-                    "M1",
-                    "https://push.example.org/clover",
-                ),
+                at(CLOVER, "M1", "M1", "https://push.example.org/clover"),
                 NOW,
             )
             .await
             .unwrap();
         let at_clover = store
-            .at_location(PointOfSale::Clover, &merchant("M1"), &location("M1"))
+            .at_location(CLOVER, &merchant("M1"), &location("M1"))
             .await
             .unwrap();
         assert_eq!(
@@ -777,7 +794,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             store
-                .at_location(PointOfSale::Square, &merchant("M1"), &location("M1"))
+                .at_location(SQUARE, &merchant("M1"), &location("M1"))
                 .await
                 .unwrap()
                 .len(),
@@ -797,27 +814,164 @@ pub(crate) mod tests {
         let first = new("M1", "L1", till);
         let keys = first.subscription.keys.clone();
         let id = store.register(first, NOW).await.unwrap();
-        let taken = store
-            .register(at(PointOfSale::Clover, "M1", "M1", till), NOW + 1)
-            .await;
+        let taken = store.register(at(CLOVER, "M1", "M1", till), NOW + 1).await;
         assert!(matches!(taken, Err(RegisterError::Taken)), "{taken:?}");
-        let mut moving = at(PointOfSale::Clover, "M1", "M1", till);
+        let mut moving = at(CLOVER, "M1", "M1", till);
         moving.subscription.keys = keys;
         assert_eq!(store.register(moving, NOW + 2).await.unwrap(), id);
         assert!(
             store
-                .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
+                .at_location(SQUARE, &merchant("M1"), &location("L1"))
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
             store
-                .at_location(PointOfSale::Clover, &merchant("M1"), &location("M1"))
+                .at_location(CLOVER, &merchant("M1"), &location("M1"))
                 .await
                 .unwrap()[0]
                 .id,
             id
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A database from before the environment: its Square rows are
+    /// production's and its Clover rows north_america's, the environments a
+    /// Bell ran when none was set, and no other integration's.
+    #[tokio::test]
+    async fn a_database_from_before_the_environment_reads_as_the_old_defaults() {
+        let path = temp_path("migrate-environment");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            let connection = Connection::open(&path).unwrap();
+            sqlite::migrations::apply(&connection, &MIGRATIONS[..2]).unwrap();
+            for (id, pos, location, endpoint) in [
+                (
+                    "br_00000000000000000000000000000001",
+                    "square",
+                    "L1",
+                    "https://push.example.org/a",
+                ),
+                (
+                    "br_00000000000000000000000000000002",
+                    "clover",
+                    "M1",
+                    "https://push.example.org/b",
+                ),
+            ] {
+                let keys = ReceiverKeys::generate().subscription_keys();
+                connection
+                    .execute(
+                        "INSERT INTO registrations
+                             (id, point_of_sale, merchant_id, location_id, endpoint, p256dh, auth,
+                              created_at)
+                         VALUES (?1, ?2, 'M1', ?3, ?4, ?5, ?6, ?7)",
+                        params![
+                            id,
+                            pos,
+                            location,
+                            endpoint,
+                            keys.p256dh.to_base64url(),
+                            keys.auth.to_base64url(),
+                            NOW
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        let store = RegistrationStore::open(&path).unwrap();
+        let found = |integration, at: &'static str| {
+            let store = store.clone();
+            async move {
+                store
+                    .at_location(integration, &merchant("M1"), &location(at))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|registration| registration.id.to_string())
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(
+            found(SQUARE, "L1").await,
+            ["br_00000000000000000000000000000001"]
+        );
+        assert_eq!(
+            found(CLOVER, "M1").await,
+            ["br_00000000000000000000000000000002"]
+        );
+        assert!(found(SANDBOX, "L1").await.is_empty());
+        let europe = Integration::Clover(CloverEnvironment::Europe);
+        assert!(found(europe, "M1").await.is_empty());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The same merchant and location ids in Square's sandbox and its
+    /// production are two locations: a payment in one never dings the
+    /// other's tills, and each has its own room.
+    #[tokio::test]
+    async fn the_sandbox_and_production_never_share_a_location() {
+        let path = temp_path("environments");
+        let store = RegistrationStore::open(&path).unwrap();
+        for n in 0..MAX_PER_LOCATION {
+            store
+                .register(
+                    new("M1", "L1", &format!("https://push.example.org/{n}")),
+                    NOW,
+                )
+                .await
+                .unwrap();
+        }
+        let sandbox = store
+            .register(
+                at(SANDBOX, "M1", "L1", "https://push.example.org/sandbox"),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let at_sandbox = store
+            .at_location(SANDBOX, &merchant("M1"), &location("L1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            at_sandbox.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            [&sandbox]
+        );
+        assert_eq!(
+            store
+                .at_location(SQUARE, &merchant("M1"), &location("L1"))
+                .await
+                .unwrap()
+                .len(),
+            MAX_PER_LOCATION as usize
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The same merchant id in the sandbox is another merchant: it can't
+    /// take a production registration by its endpoint, and the till moves
+    /// it there with its own keys.
+    #[tokio::test]
+    async fn another_environment_moves_a_registration_only_with_its_keys() {
+        let path = temp_path("environment-taken");
+        let store = RegistrationStore::open(&path).unwrap();
+        let till = "https://push.example.org/till-1";
+        let first = new("M1", "L1", till);
+        let keys = first.subscription.keys.clone();
+        let id = store.register(first, NOW).await.unwrap();
+        let taken = store.register(at(SANDBOX, "M1", "L1", till), NOW + 1).await;
+        assert!(matches!(taken, Err(RegisterError::Taken)), "{taken:?}");
+        let mut moving = at(SANDBOX, "M1", "L1", till);
+        moving.subscription.keys = keys;
+        assert_eq!(store.register(moving, NOW + 2).await.unwrap(), id);
+        assert!(
+            store
+                .at_location(SQUARE, &merchant("M1"), &location("L1"))
+                .await
+                .unwrap()
+                .is_empty()
         );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

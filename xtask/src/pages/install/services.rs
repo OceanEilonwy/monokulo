@@ -90,9 +90,9 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
                     em { "Google" }
                     "; the Bell’s "
                     em { "Square" }
-                    " or "
+                    " and "
                     em { "Clover" }
-                    " application with its key or Auth Code set under it. A secret is shown as set or not set, never its value."
+                    " cards, one per environment (production and North America open, the other regions and the sandboxes folded away), each application with its key or Auth Code set on its card. A secret is shown as set or not set, never its value."
                 }
                 p {
                     strong { "Save & Apply" }
@@ -158,7 +158,9 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
                     code { "/etc/monokulo/monokulo-bell.env" }
                     " with "
                     code { "MONOKULO_BELL_VAPID_KEY" }
-                    " and its point of sale’s secret."
+                    " and each integration’s secret, such as "
+                    code { "MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY" }
+                    "."
                 }
                 (command("install -m 600 /dev/null /etc/monokulo/monokulo-push-relay.env\nprintf \"MONOKULO_RELAY_HANDLE_KEY='%s'\\n\" \"$(openssl rand -hex 32)\" >> /etc/monokulo/monokulo-push-relay.env\nprintf \"MONOKULO_RELAY_APNS_KEY='%s'\\n\" \"$(cat AuthKey_FGHIJ67890.p8)\" >> /etc/monokulo/monokulo-push-relay.env", "Copy the secrets commands"))
             },
@@ -301,7 +303,7 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
         div.req {
             span { "An https address for each, with ports 80 and 443 reachable from the internet" }
             span { "The relay: your apps’ APNs key and Firebase service account" }
-            span { "The Bell: a Square application, a Clover app, or both" }
+            span { "The Bell: a Square application, a Clover app, or several, one per environment" }
         }
         p.muted {
             "Each program checks its settings before it listens and stops with the reason if anything is wrong, and answers "

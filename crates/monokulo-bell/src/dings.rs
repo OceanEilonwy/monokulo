@@ -19,12 +19,13 @@
 //! A payment rings once: Square sends `payment.updated` of a payment that
 //! stays `COMPLETED` (its processing fee filled in, a refund), and on an
 //! iPhone or iPad a ding is an alert the till can't take back. The ids of
-//! the payments rung, with their point of sale, are kept in memory only,
+//! the payments rung, with their integration, are kept in memory only,
 //! for [`REMEMBERED_FOR`] seconds and [`REMEMBERED_AT_MOST`] of them; a
 //! restart forgets them, which costs one extra ding at most.
 //!
-//! A merchant, for its share and for the memory, is its point of sale and
-//! its id (decision 52): two points of sale may give out the same id text.
+//! A merchant, for its share and for the memory, is its integration and its
+//! id (decisions 52 and 75): two points of sale, or a point of sale's sandbox
+//! and production, may give out the same id text.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -35,7 +36,7 @@ use rate_limit::RateLimiter;
 use service_runtime::status::{Event, Last};
 use tokio::sync::watch;
 
-use crate::pos::{MerchantId, PaymentId, PointOfSale, Ring};
+use crate::pos::{Integration, MerchantId, PaymentId, Ring};
 use crate::registrations::{Failed, Registration, RegistrationStore};
 use crate::status::Dinged;
 
@@ -62,7 +63,7 @@ pub struct Dings {
     options: Options,
     /// Each merchant's dings this minute, against
     /// `bell.dings_per_merchant_per_minute`.
-    per_merchant: RateLimiter<(PointOfSale, MerchantId)>,
+    per_merchant: RateLimiter<(Integration, MerchantId)>,
     rung: Mutex<Rung>,
     /// How many rings are running, for [`Dings::idle`].
     running: watch::Sender<usize>,
@@ -108,7 +109,7 @@ impl Dings {
         self.last.get()
     }
 
-    /// Dings every till registered at `ring`'s point of sale for its
+    /// Dings every till registered at `ring`'s integration for its
     /// merchant's location, for its payment, on a task of its own: the
     /// webhook that asked is answered at once. A payment rung already,
     /// lately, isn't rung again.
@@ -118,7 +119,7 @@ impl Dings {
             .rung
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .first((ring.point_of_sale, ring.payment_id.clone()), now);
+            .first((ring.integration, ring.payment_id.clone()), now);
         if !first {
             tracing::debug!("a payment rung already: no dings");
             return;
@@ -142,7 +143,7 @@ impl Dings {
     async fn ring_now(self: &Arc<Self>, ring: &Ring) {
         let registrations = match self
             .store
-            .at_location(ring.point_of_sale, &ring.merchant_id, &ring.location_id)
+            .at_location(ring.integration, &ring.merchant_id, &ring.location_id)
             .await
         {
             Ok(registrations) => registrations,
@@ -155,7 +156,7 @@ impl Dings {
         for registration in registrations {
             let (dings, merchant) = (
                 Arc::clone(self),
-                (ring.point_of_sale, ring.merchant_id.clone()),
+                (ring.integration, ring.merchant_id.clone()),
             );
             sending.spawn(async move { dings.ding(merchant, registration).await });
         }
@@ -164,10 +165,10 @@ impl Dings {
         tracing::debug!(rung, "dings sent");
     }
 
-    /// One ding to `merchant`'s `registration` at its point of sale, and
+    /// One ding to `merchant`'s `registration` at its integration, and
     /// what its answer means for it.
-    async fn ding(&self, merchant: (PointOfSale, MerchantId), registration: Registration) {
-        let wake = merchant.0.wake();
+    async fn ding(&self, merchant: (Integration, MerchantId), registration: Registration) {
+        let wake = merchant.0.point_of_sale().wake();
         let now = service_runtime::time::now_unix();
         let endpoint = &registration.subscription.endpoint;
         let outcome = match outbound::check_host(endpoint.as_url(), self.reach) {
@@ -246,9 +247,9 @@ impl Dings {
     }
 }
 
-/// A payment, as the memory knows it: two points of sale may give out the
+/// A payment, as the memory knows it: two integrations may give out the
 /// same id text.
-type Rang = (PointOfSale, PaymentId);
+type Rang = (Integration, PaymentId);
 
 /// The payments rung lately, oldest first.
 #[derive(Default)]
@@ -305,24 +306,29 @@ impl Drop for Running {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pos::{CloverEnvironment, SquareEnvironment};
+
+    const PRODUCTION: Integration = Integration::Square(SquareEnvironment::Production);
+    const SANDBOX: Integration = Integration::Square(SquareEnvironment::Sandbox);
+    const CLOVER: Integration = Integration::Clover(CloverEnvironment::NorthAmerica);
 
     const NOW: i64 = 1_800_000_000;
 
     fn payment(n: usize) -> Rang {
-        (
-            PointOfSale::Square,
-            PaymentId::try_from(format!("P{n}")).unwrap(),
-        )
+        (PRODUCTION, PaymentId::try_from(format!("P{n}")).unwrap())
     }
 
-    /// The same id text at two points of sale is two payments.
+    /// The same id text in two integrations, of two points of sale or of
+    /// one in its sandbox and production, is two payments.
     #[test]
-    fn a_payment_is_its_point_of_sales() {
+    fn a_payment_is_its_integrations() {
         let mut rung = Rung::default();
         let id = PaymentId::try_from("P1".to_owned()).unwrap();
-        assert!(rung.first((PointOfSale::Square, id.clone()), NOW));
-        assert!(rung.first((PointOfSale::Clover, id.clone()), NOW));
-        assert!(!rung.first((PointOfSale::Clover, id), NOW + 1));
+        assert!(rung.first((PRODUCTION, id.clone()), NOW));
+        assert!(rung.first((SANDBOX, id.clone()), NOW));
+        assert!(rung.first((CLOVER, id.clone()), NOW));
+        assert!(!rung.first((SANDBOX, id.clone()), NOW + 1));
+        assert!(!rung.first((CLOVER, id), NOW + 1));
     }
 
     #[test]

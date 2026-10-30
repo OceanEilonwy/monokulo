@@ -33,10 +33,9 @@ monokulo-bell)
 	settings='[bell]
 public_uri = "http://127.0.0.1:8445"
 
-[bell.square]
-application_id = "sandbox-sq0idb-release-check"
-environment = "sandbox"'
-	secrets=("MONOKULO_BELL_VAPID_KEY=$(openssl rand -hex 32)" "MONOKULO_BELL_SQUARE_WEBHOOK_KEY=release-check")
+[bell.square.sandbox]
+application_id = "sandbox-sq0idb-release-check"'
+	secrets=("MONOKULO_BELL_VAPID_KEY=$(openssl rand -hex 32)" "MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY=release-check")
 	unit=monokulo-bell
 	plist=com.monokulo.bell
 	;;

@@ -1,15 +1,16 @@
 //! The Monokular Bell: turns a point of sale's payment webhooks into dings
 //! for the tills registered at that location (`docs/bell.md`). It
-//! serves Square, Clover, or both: each point of sale is an adapter, on
-//! when its settings name an application (`[bell.square]`,
-//! `[bell.clover]`).
+//! serves Square, Clover, or both, in as many of their environments at
+//! once as are on: each integration (a point of sale's environment) is an
+//! adapter, on when its settings name an application
+//! (`[bell.square.production]`, `[bell.clover.europe]`).
 //!
-//! A till registers its Web Push subscription for its point of sale and
-//! one of its merchant's locations (for Clover, the merchant itself), with
-//! the merchant's access token there, which the Bell uses once to ask the
-//! point of sale whose the location is, then drops. When the point of
-//! sale's webhook says a payment was taken there, the Bell sends each of
-//! that location's tills a ding: an encrypted `{"wake":"square"}` or
+//! A till registers its Web Push subscription for its integration and one
+//! of its merchant's locations (for Clover, the merchant itself), with the
+//! merchant's access token there, which the Bell uses once to ask the
+//! point of sale whose the location is, then drops. When the integration's
+//! webhook says a payment was taken there, the Bell sends each of that
+//! location's tills a ding: an encrypted `{"wake":"square"}` or
 //! `{"wake":"clover"}` over Web Push (UnifiedPush directly, or APNs and FCM
 //! through monokulo's push relay), which wakes the till to ask its point of
 //! sale for new payments itself.
@@ -50,7 +51,9 @@ use rate_limit::RateLimiter;
 
 use crate::clover::Clover;
 use crate::dings::Dings;
-use crate::pos::PointOfSale;
+pub use crate::pos::{
+    ByIntegration, CloverEnvironment, Integration, PointOfSale, SquareEnvironment,
+};
 use crate::registrations::{RegistrationStore, StoreError};
 use crate::settings::{BellConfig, PublicUri};
 use crate::square::Square;
@@ -64,35 +67,60 @@ pub enum StartError {
     /// A setting the Bell can't run without, unset.
     #[error("{0} must be set: {1}")]
     Unset(&'static str, &'static str),
-    /// No point of sale is on.
+    /// No integration is on.
     #[error(
-        "bell.square.application_id or bell.clover.application_id (or both) must be set: the Bell serves no point of sale without one"
+        "an integration's application_id must be set, such as bell.square.production.application_id or bell.clover.north_america.application_id (one or several): the Bell serves no point of sale without one"
     )]
-    NoPointOfSale,
+    NoIntegration,
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error("the {0} client can't be built: {1}")]
-    Client(&'static str, reqwest::Error),
+    Client(String, reqwest::Error),
     #[error("a ding's topic: {0}")]
     Topic(#[from] push::message::TopicError),
 }
 
-/// The points of sale this Bell serves, each one's adapter: at least one.
-pub(crate) struct Adapters {
-    square: Option<Arc<Square>>,
-    clover: Option<Arc<Clover>>,
+/// One integration's adapter.
+pub(crate) enum Adapter {
+    Square(Arc<Square>),
+    Clover(Arc<Clover>),
 }
 
+impl Adapter {
+    pub(crate) fn integration(&self) -> Integration {
+        match self {
+            Adapter::Square(square) => square.integration(),
+            Adapter::Clover(clover) => clover.integration(),
+        }
+    }
+
+    pub(crate) fn application_id(&self) -> &str {
+        match self {
+            Adapter::Square(square) => square.application_id().as_str(),
+            Adapter::Clover(clover) => clover.application_id().as_str(),
+        }
+    }
+}
+
+/// The integrations this Bell serves, each one's adapter, in
+/// [`Integration::ALL`]'s order: at least one.
+pub(crate) struct Adapters(Vec<Adapter>);
+
 impl Adapters {
-    /// The points of sale that are on, in [`PointOfSale::ALL`]'s order.
-    fn on(&self) -> Vec<PointOfSale> {
-        PointOfSale::ALL
-            .into_iter()
-            .filter(|pos| match pos {
-                PointOfSale::Square => self.square.is_some(),
-                PointOfSale::Clover => self.clover.is_some(),
-            })
-            .collect()
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Adapter> {
+        self.0.iter()
+    }
+
+    /// `integration`'s adapter, when it is on.
+    pub(crate) fn get(&self, integration: Integration) -> Option<&Adapter> {
+        self.0
+            .iter()
+            .find(|adapter| adapter.integration() == integration)
+    }
+
+    /// The integrations that are on.
+    pub(crate) fn on(&self) -> impl Iterator<Item = Integration> + '_ {
+        self.0.iter().map(Adapter::integration)
     }
 }
 
@@ -131,31 +159,29 @@ pub struct Checked<'a> {
 
 impl Checked<'_> {
     /// What the Bell would run on, a line each, as `--check` says it: its
-    /// addresses, its points of sale and their webhook URLs, and the VAPID
-    /// public key the tills subscribe for. Never a secret.
+    /// addresses, each integration that is on with its application and
+    /// webhook URL, the ones that are off in one line, and the VAPID public
+    /// key the tills subscribe for. Never a secret.
     pub fn facts(&self) -> Vec<String> {
         let mut facts = vec![
             format!("listens on {}", self.config.listen),
             format!("public address {}", self.public_uri.as_str()),
         ];
-        facts.push(match &self.adapters.square {
-            Some(square) => format!(
-                "Square: on, application {} ({}), webhooks to {}",
-                square.application_id().as_str(),
-                square.environment().as_str(),
-                square.notification_url()
-            ),
-            None => "Square: off".to_owned(),
-        });
-        facts.push(match &self.adapters.clover {
-            Some(clover) => format!(
-                "Clover: on, app {} ({}), webhooks to {}",
-                clover.application_id().as_str(),
-                clover.environment().as_str(),
-                self.public_uri.notification_url(PointOfSale::Clover)
-            ),
-            None => "Clover: off".to_owned(),
-        });
+        for adapter in self.adapters.iter() {
+            let integration = adapter.integration();
+            facts.push(format!(
+                "{integration}: on, application {}, webhooks to {}",
+                adapter.application_id(),
+                self.public_uri.notification_url(integration)
+            ));
+        }
+        let off: Vec<Integration> = Integration::ALL
+            .into_iter()
+            .filter(|integration| self.adapters.get(*integration).is_none())
+            .collect();
+        if !off.is_empty() {
+            facts.push(format!("off: {}", pos::in_words(off)));
+        }
         facts.push(format!("VAPID public key {}", self.vapid_key.public()));
         facts.push(format!(
             "registrations in {}",
@@ -167,58 +193,47 @@ impl Checked<'_> {
 
 impl Bell {
     /// Everything a start checks that needs no file and no network: the
-    /// address, the points of sale that are on and their secrets, the VAPID
-    /// key, and the clients for the points of sale and the push services.
-    /// `--check` stops here; [`Bell::start`] begins here, so the two can't
-    /// disagree.
+    /// address, the integrations that are on, the VAPID key, and the
+    /// clients for the points of sale and the push services. `--check`
+    /// stops here; [`Bell::start`] begins here, so the two can't disagree.
     pub fn check(config: &BellConfig) -> Result<Checked<'_>, StartError> {
         let public_uri = config.public_uri.clone().ok_or(StartError::Unset(
             settings::PUBLIC_URI.key,
             "the Bell's address, which the points of sale send their webhooks to",
         ))?;
-        // A secret is set with its application, or the settings don't
-        // load: the `Unset`s are for a config made some other way.
-        let square = match (&config.square.application_id, &config.square.webhook_key) {
-            (None, _) => None,
-            (Some(_), None) => {
-                return Err(StartError::Unset(
-                    settings::SQUARE_WEBHOOK_KEY.env_var,
-                    "the Square webhook subscription's signature key",
-                ));
-            }
-            (Some(application_id), Some(webhook_key)) => Some(Arc::new(
+        let client_error = |integration: Integration| {
+            move |error| StartError::Client(integration.to_string(), error)
+        };
+        let mut adapters = Vec::new();
+        for square in &config.square {
+            let integration = Integration::Square(square.environment);
+            adapters.push(Adapter::Square(Arc::new(
                 Square::new(
-                    config.square.api_url.clone(),
-                    application_id.clone(),
-                    config.square.environment,
-                    public_uri.notification_url(PointOfSale::Square),
-                    webhook_key.clone(),
+                    square.api_url.clone(),
+                    square.application_id.clone(),
+                    square.environment,
+                    public_uri.notification_url(integration),
+                    square.webhook_key.clone(),
                     config.timeout,
                 )
-                .map_err(|error| StartError::Client("Square", error))?,
-            )),
-        };
-        let clover = match (&config.clover.application_id, &config.clover.auth_code) {
-            (None, _) => None,
-            (Some(_), None) => {
-                return Err(StartError::Unset(
-                    settings::CLOVER_AUTH_CODE.env_var,
-                    "the Clover app's Auth Code",
-                ));
-            }
-            (Some(application_id), Some(auth_code)) => Some(Arc::new(
+                .map_err(client_error(integration))?,
+            )));
+        }
+        for clover in &config.clover {
+            let integration = Integration::Clover(clover.environment);
+            adapters.push(Adapter::Clover(Arc::new(
                 Clover::new(
-                    config.clover.api_url.clone(),
-                    application_id.clone(),
-                    config.clover.environment,
-                    auth_code.clone(),
+                    clover.api_url.clone(),
+                    clover.application_id.clone(),
+                    clover.environment,
+                    clover.auth_code.clone(),
                     config.timeout,
                 )
-                .map_err(|error| StartError::Client("Clover", error))?,
-            )),
-        };
-        if square.is_none() && clover.is_none() {
-            return Err(StartError::NoPointOfSale);
+                .map_err(client_error(integration))?,
+            )));
+        }
+        if adapters.is_empty() {
+            return Err(StartError::NoIntegration);
         }
         let vapid_key = config
             .vapid_key
@@ -236,12 +251,12 @@ impl Bell {
             .user_agent(USER_AGENT)
             .timeout(config.timeout)
             .build()
-            .map_err(|error| StartError::Client("push", error))?;
+            .map_err(|error| StartError::Client("push".to_owned(), error))?;
         let sender = Sender::new(client, Arc::clone(&vapid_key), public_uri.contact());
         Ok(Checked {
             config,
             public_uri,
-            adapters: Adapters { square, clover },
+            adapters: Adapters(adapters),
             vapid_key,
             reach,
             sender,
@@ -261,20 +276,14 @@ impl Bell {
             topic,
             ..
         } = Bell::check(config)?;
-        if let Some(square) = &adapters.square {
+        for adapter in adapters.iter() {
+            let integration = adapter.integration();
             tracing::info!(
-                bell.webhook_url = square.notification_url(),
-                square.application = square.application_id().as_str(),
-                square.environment = square.environment().as_str(),
-                "serving Square"
-            );
-        }
-        if let Some(clover) = &adapters.clover {
-            tracing::info!(
-                bell.webhook_url = public_uri.notification_url(PointOfSale::Clover),
-                clover.application = clover.application_id().as_str(),
-                clover.environment = clover.environment().as_str(),
-                "serving Clover"
+                bell.webhook_url = public_uri.notification_url(integration),
+                bell.point_of_sale = %integration.point_of_sale(),
+                bell.environment = integration.environment(),
+                bell.application = adapter.application_id(),
+                "serving {integration}"
             );
         }
         let path = config.store_path.clone();
