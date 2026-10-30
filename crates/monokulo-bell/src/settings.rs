@@ -681,9 +681,22 @@ fn turned_on<Id: SettingValue>(
         errors.push(error);
         return None;
     }
+    let api_url = snapshot.get(&settings.api_url);
+    // As a secret for an integration that is off: most likely a table
+    // misnamed, which would otherwise pass unnoticed.
+    if api_url.is_some() && application_id.is_none() {
+        errors.push(FieldError::new(
+            settings.api_url.key,
+            format!(
+                "is set but {} isn't: set the application id to serve {integration} tills, or remove the api_url.",
+                settings.application_id.key,
+            ),
+        ));
+        return None;
+    }
     Some(On {
         application_id: application_id?,
-        api_url: snapshot.get(&settings.api_url),
+        api_url,
         secret,
     })
 }

@@ -201,7 +201,14 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
         ("MONOKULO_BELL_SQUARE_WEBHOOK_KEY", SECRETS[0].1),
         SECRETS[1],
     ];
-    let cases: [Case; 16] = [
+    let cases: [Case; 17] = [
+        (
+            format!(
+                "{ready}\n[bell.square.sandbox]\napi_url = \"https://connect.squareupsandbox.com\"\n"
+            ),
+            &SECRETS,
+            "bell.square.sandbox.api_url: is set but bell.square.sandbox.application_id isn't",
+        ),
         (
             ready.clone(),
             &SECRETS[1..],

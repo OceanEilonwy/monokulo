@@ -38,14 +38,19 @@ migrate() {
 				environment=${environment:-north_america}
 				;;
 			esac
-			if uci -q get "monokulo-bell.${pos}_$environment" >/dev/null; then
+			if uci -q get "monokulo-bell.${pos}_$environment.application_id" >/dev/null; then
 				# Both written by hand: the operator's to sort out, and the
-				# Bell's check names the old section.
+				# Bell's check names the old section. Its secret stays
+				# under the old name too, so neither is paired with the
+				# other's key.
 				logger -t monokulo-bell "kept the old $pos section beside ${pos}_$environment: move its settings by hand"
-			else
-				uci -q delete "monokulo-bell.$pos.environment"
-				uci -q rename "monokulo-bell.$pos=${pos}_$environment"
+				return 0
 			fi
+			# A new section without an application (the shipped example,
+			# say) gives way to the one that has it.
+			uci -q delete "monokulo-bell.${pos}_$environment"
+			uci -q delete "monokulo-bell.$pos.environment"
+			uci -q rename "monokulo-bell.$pos=${pos}_$environment"
 		fi
 	fi
 	[ -n "$environment" ] || case "$pos" in

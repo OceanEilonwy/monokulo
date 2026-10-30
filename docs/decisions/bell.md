@@ -755,3 +755,15 @@ fail loudly rather than being read.
     hidden. LuCI's `form` has no disclosure, so the cards are rendered as
     usual, marked, and moved into the `<details>` after the map renders
     (and again when a Save redraws it), in LuCI's own look.
+
+81. **The upgrade gives way only to an empty section, and an integration's
+    `api_url` is refused while its application isn't set** (after review).
+    A new section of the old one's name with no `application_id` (the
+    shipped example, an Add pressed and left) is replaced by the old
+    section, which has the application; one with an `application_id` is
+    the operator's own, so both are kept for them to sort out, and the old
+    secret file stays under its old name, never paired with the hand-made
+    section. An `api_url` in a table whose `application_id` isn't set
+    stops the Bell, as a secret set for an integration that is off does
+    (decision 51): it is most likely a table misnamed, which would
+    otherwise pass unnoticed.
