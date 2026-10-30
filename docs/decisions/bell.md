@@ -629,3 +629,129 @@ is final; these are the calls it left open.
     after every check passes rather than as each adapter is built; the
     status counts registrations, says which points of sale are on and how
     the last ding went, never a merchant, location, token or endpoint.
+
+## Several environments at once (2026-10-30)
+
+The owner's decision: one Bell serves several environments of each point
+of sale at the same time (Square production beside its sandbox, Clover
+North America beside its sandbox or another region), the Monokular Android
+app changed in parallel against the same contract. No Bell with data is
+deployed, so it is a clean break, as the API layout prefers; old settings
+fail loudly rather than being read.
+
+75. **The unit is an integration, a point of sale and one of its
+    environments; everything is keyed by it.** `Integration { Square(SquareEnvironment),
+    Clover(CloverEnvironment) }` (`src/pos.rs`), six in a fixed order
+    (Square production, sandbox; Clover north_america, europe,
+    latin_america, sandbox), each with its settings table
+    `[bell.<pos>.<environment>]`, its secret, its webhook route
+    `POST /v1/<pos>/<environment>/webhook` (axum's `404`, unread, for one
+    that is off, as 51 has it) and its adapter (`Adapters` is a list of
+    `Adapter::Square` or `Adapter::Clover`, each knowing its environment).
+    A registration's body gains a required `environment`
+    (`{point_of_sale, environment, access_token, location_id,
+    subscription}`, `deny_unknown_fields` kept) and its answer says it
+    (`{registration_id, point_of_sale, environment, application_id}`); an
+    environment its point of sale doesn't have is `invalid-request`
+    ("environment must be one of Square's: production, sandbox."), one that
+    is off `invalid-request` naming what this Bell runs ("this Bell runs
+    Square production and sandbox, and Clover europe"), its token unused
+    either way. The token is proved against that integration's API; the ding
+    lookup, an endpoint's owner (its own merchant in its own integration, or
+    whoever holds its auth secret), `MAX_PER_LOCATION`, each merchant's ding
+    share and the rung-payment memory are all keyed by the integration, so
+    sandbox and production ids never meet (they are made by different
+    systems, and the same text in both is two merchants). The ding still
+    says only `{"wake":"square"}` or `{"wake":"clover"}` (53): the till
+    knows its own environment. This supersedes "One application per POS per
+    Bell" (`docs/bell.md`), 11 (the table now names the environment, and an
+    id whose prefix isn't its table's stops the Bell, naming the table it
+    belongs in), 44's body and answer, 45's `/v1/info`, 47's and 52's keys
+    (an integration where they say a point of sale) and 56 (one Clover
+    region per Bell). Problem slugs stay per point of sale (46): a till
+    knows which environment it asked.
+
+76. **The settings of a Bell of one environment per point of sale stop it,
+    naming what replaced each.** `settings::REPLACED` holds
+    `bell.square.application_id`, `environment` and `api_url` and the same
+    three of `bell.clover`, each with its replacement as "is now called"
+    reads; the options file is read with
+    `OptionsFile::with_renamed(REPLACED)` ("line 2: bell.square.application_id
+    is now called bell.square.production.application_id or
+    bell.square.sandbox.application_id, by the application's environment:
+    rename it in the options file"), and the command line takes each as a
+    hidden option only to refuse it with the same words. `REPLACED_ENV`
+    holds `MONOKULO_BELL_SQUARE_WEBHOOK_KEY`,
+    `MONOKULO_BELL_CLOVER_AUTH_CODE` and their `MONOKULAR_BELL_*` names: one
+    set stops `settings::load`, naming the new variables and never the
+    value. Reading an old key as production's was the alternative: the
+    environment it meant can't be told for Square's api_url or Clover's
+    code, and a guess serves the wrong one. `OptionsFile::with_hint` (one
+    message for any unknown key under `bell.square`) was the other; the
+    rename table names each key, and needed no change to `live-settings`.
+    `RENAMED_ENV` keeps the VAPID key's old name alone (68 had all three).
+
+77. **`/v1/info` and the status nest by point of sale and environment**:
+    `{"points_of_sale": {"square": {"production": {"application_id": …},
+    "sandbox": {…}}, "clover": {"europe": {…}}}, "vapid_public_key", "version"}`,
+    the integrations that are on alone, a point of sale with none left out;
+    the status says every one, `"square": {"production": "ready", "sandbox":
+    "off"}, "clover": {…four…}`. One hand-written `Serialize`,
+    `pos::ByIntegration`, gives both in `Integration::ALL`'s order whatever
+    order they come in (a map would sort them). `--check` says a line per
+    integration that is on (its application and webhook URL) and one for
+    the rest ("off: Square sandbox, and Clover north_america, latin_america
+    and sandbox"); the start logs "serving Square production" and so on.
+
+78. **Migration 0003 adds `environment TEXT NOT NULL` (default
+    `production`, its length bounded as `point_of_sale`'s), sets Clover's
+    rows to `north_america`, and leads the location index with
+    `(point_of_sale, environment)`.** Rows from before are in the
+    environment their point of sale defaulted to then, the one a Bell
+    without `environment` set ran; a Bell that ran Square's sandbox or
+    another Clover region needs its tills to register again, said in the
+    migration and `docs/bell.md`. `ADD COLUMN` with a default and an
+    `UPDATE` follow 0002; rebuilding the table to drop the default was the
+    alternative, and every insert names the environment anyway.
+
+79. **The six integrations' settings come from two small macros and a
+    table, not six blocks.** `IntegrationSettings<Id>` holds one's
+    `application_id`, `api_url` and secret as `live_settings::Setting`s
+    built in a `const` by `integration!` (through `square!` and
+    `clover!`, which add each point of sale's words), every key, variable
+    and description made with `concat!` from the environment's name. The
+    rest stay in one `settings!` block (in a private module, since the
+    macro also declares `ALL`), and `settings::ALL` is that block's
+    followed by the integrations', joined in a `const fn`; the Bell's
+    section is its own keys and the integrations'. A test holds every
+    setting to one section, once, and each integration's three to its
+    table and its variable to its name.
+
+80. **On OpenWrt each integration is a section named
+    `<point of sale>_<environment>`, of its point of sale's type:
+    `config square 'square_production'`, `config clover 'clover_sandbox'`.**
+    The plan had the environment alone as the name (`config square
+    'sandbox'`), but UCI names a section once in a config whatever its
+    type, so Square's and Clover's sandboxes would be one section. The init
+    script writes each into its table and refuses a section whose name
+    isn't one of its point of sale's environments, naming it. The shipped
+    config has `square_production`, `square_sandbox` and
+    `clover_north_america` with their options commented out; the LuCI page
+    adds the others with each card's Add. `uci-defaults` upgrades an
+    install from before: `config square 'square'` or `config clover
+    'clover'` with an `application_id` is renamed for its environment
+    (Square's by its id's prefix, Clover's by its `environment` option,
+    `north_america` unless set) and loses that option, an empty one is
+    deleted, and the old secret file takes the integration's name; run
+    again it does nothing, and a section or file of the new name is never
+    overwritten (tried in the OpenWrt rootfs image, twice over; the rootfs
+    test upgrades an old Clover section). The LuCI page has a card per
+    integration with its state, webhook URL, application, API address and
+    secret. Most operators use production alone, so Square production and
+    Clover North America are shown, and the other Clover regions and the
+    two sandboxes are each behind a `<details>` ("More Clover regions",
+    "Sandbox (for developers)") that starts closed unless one in it has an
+    application ID or the status says it is on, so nothing set is ever
+    hidden. LuCI's `form` has no disclosure, so the cards are rendered as
+    usual, marked, and moved into the `<details>` after the map renders
+    (and again when a Save redraws it), in LuCI's own look.

@@ -1,7 +1,7 @@
 # monokulo-bell
 
 The Monokular Bell: it turns a point of sale's payment webhooks (Square's,
-Clover's, or both) into Web Push dings that wake the
+Clover's, or both, in one environment or several at once) into Web Push dings that wake the
 [Monokular](https://github.com/OceanEilonwy/monokular) tills registered at
 that location, so a till shows a Monero payment the moment it lands. It
 keeps the tills' registrations, never a payment. It is its own program,
@@ -22,40 +22,53 @@ The zip's `.sha256` beside it on the release page is its SHA-256.
 
 ## Run it
 
-A Bell serves Square, Clover, or both, each through an application of its
-own (the one the tills sign in through) whose webhooks come to it, and needs
-an https address they can reach. Set it in `bell.toml` (`--init` writes a
-fresh one to `~/.config/monokulo/bell.toml`); a point of sale is on when its
-`application_id` is set:
+A Bell serves integrations, a point of sale's environment each: Square
+production or sandbox, Clover north_america, europe, latin_america or
+sandbox, as many at once as you set. Each is an application of its own (the
+one the tills sign in through) whose webhooks come to
+`bell.public_uri` followed by `/v1/<point of sale>/<environment>/webhook`,
+such as `/v1/square/production/webhook`, and the Bell needs an https
+address they can reach. Set it in `bell.toml` (`--init` writes a fresh one
+to `~/.config/monokulo/bell.toml`); an integration is on when its table,
+named for its environment, has an `application_id`:
 
 ```toml
 [bell]
 public_uri = "https://bell.example.org"
 
-[bell.square]
+[bell.square.production]
 application_id = "sq0idp-…"
 
-[bell.clover]
+[bell.square.sandbox]
+application_id = "sandbox-sq0idb-…"
+
+[bell.clover.north_america]
 application_id = "ABCDEFGHIJKLM"
-environment = "north_america"
 ```
 
 The secrets come from the environment only, never the options file or the
-command line; each point of sale's is set when, and only when, it is on:
+command line; each integration's is set when, and only when, it is on:
 
 | Variable | |
 | --- | --- |
 | `MONOKULO_BELL_VAPID_KEY` | required: 64 hex characters (`openssl rand -hex 32`); keep it, as the tills' subscriptions are made for its public key |
-| `MONOKULO_BELL_SQUARE_WEBHOOK_KEY` | Square: the webhook subscription's signature key |
-| `MONOKULO_BELL_CLOVER_AUTH_CODE` | Clover: the app's Auth Code |
+| `MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY` | Square production: its webhook subscription's signature key |
+| `MONOKULO_BELL_SQUARE_SANDBOX_WEBHOOK_KEY` | Square sandbox: its webhook subscription's signature key |
+| `MONOKULO_BELL_CLOVER_NORTH_AMERICA_AUTH_CODE` | Clover north_america: the app's Auth Code |
+| `MONOKULO_BELL_CLOVER_EUROPE_AUTH_CODE` | Clover europe: the app's Auth Code |
+| `MONOKULO_BELL_CLOVER_LATIN_AMERICA_AUTH_CODE` | Clover latin_america: the app's Auth Code |
+| `MONOKULO_BELL_CLOVER_SANDBOX_AUTH_CODE` | Clover sandbox: the app's Auth Code |
 
-The names from when it was `monokular-bell` (`MONOKULAR_BELL_*`) are still
-read for one release, each with a warning at start.
+The VAPID key's name from when it was `monokular-bell`
+(`MONOKULAR_BELL_VAPID_KEY`) is still read for one release, with a warning
+at start. The settings of a Bell of one environment per point of sale
+(`[bell.square]`, `[bell.clover]`, `MONOKULO_BELL_SQUARE_WEBHOOK_KEY`,
+`MONOKULO_BELL_CLOVER_AUTH_CODE`) stop it, naming what replaced them.
 
 ```sh
 (umask 077; openssl rand -hex 32 > vapid.key)   # once; keep it
 export MONOKULO_BELL_VAPID_KEY="$(cat vapid.key)"
-export MONOKULO_BELL_SQUARE_WEBHOOK_KEY=…
+export MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY=…
 ./monokulo-bell --options bell.toml --check   # what it would run on, then OK; or why not
 ./monokulo-bell --options bell.toml
 ```
@@ -63,7 +76,7 @@ export MONOKULO_BELL_SQUARE_WEBHOOK_KEY=…
 It listens on `127.0.0.1:8445` (`bell.listen`) and keeps its registrations
 in `~/.local/share/monokulo/bell.db` (`bell.store_path`). Any setting can
 be given on the command line too (`--help` lists them); anything invalid or
-missing, or no point of sale on, stops it before it listens, with the
+missing, or no integration on, stops it before it listens, with the
 reason. Setting up Square's application and Clover's app is on the
 [docs page](https://docs.monokulo.com/bell/#run-one).
 
@@ -76,7 +89,7 @@ certificate store.
 
 **Status:** `curl -s http://127.0.0.1:8447/status` (`status.listen`, this
 machine only) says what it is doing as JSON: its address, the registrations
-it holds, which points of sale are ready, and the last ding it sent.
+it holds, which integrations are ready, and the last ding it sent.
 
 The binaries aren't signed. On macOS clear the quarantine of a downloaded
 one once (`xattr -d com.apple.quarantine monokulo-bell`); on Windows
@@ -102,17 +115,17 @@ dir="/Library/Application Support/monokulo"
 sudo mkdir -p /usr/local/bin "$dir/bell"
 sudo install -m 755 monokulo-bell /usr/local/bin/
 sudo xattr -d com.apple.quarantine /usr/local/bin/monokulo-bell
-sudo install -m 644 bell.toml "$dir/bell.toml"   # then set bell.public_uri and a point of sale
+sudo install -m 644 bell.toml "$dir/bell.toml"   # then set bell.public_uri and an integration
 sudo chown nobody "$dir/bell" && sudo chmod 700 "$dir/bell"
 sudo install -m 600 -o root -g wheel service/com.monokulo.bell.plist /Library/LaunchDaemons/
 sudo nano /Library/LaunchDaemons/com.monokulo.bell.plist   # the secrets, in place of REPLACE
-sudo -u nobody MONOKULO_BELL_VAPID_KEY="…" MONOKULO_BELL_SQUARE_WEBHOOK_KEY="…" /usr/local/bin/monokulo-bell \
+sudo -u nobody MONOKULO_BELL_VAPID_KEY="…" MONOKULO_BELL_SQUARE_PRODUCTION_WEBHOOK_KEY="…" /usr/local/bin/monokulo-bell \
   --options "$dir/bell.toml" --bell-store-path "$dir/bell/bell.db" --check
 sudo launchctl bootstrap system /Library/LaunchDaemons/com.monokulo.bell.plist
 ```
 
-The plist holds the secrets, so it is root's alone; delete the lines of a
-point of sale that is off. Its log is `$dir/bell/bell.log`. Stop it with
+The plist holds the secrets, so it is root's alone; delete the lines of an
+integration that is off. Its log is `$dir/bell/bell.log`. Stop it with
 `sudo launchctl bootout system/com.monokulo.bell`.
 
 **Windows.** From an administrator PowerShell in the unzipped folder:
