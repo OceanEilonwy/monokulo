@@ -247,7 +247,7 @@ test.describe('with JavaScript off', () => {
 
     await expect(page.getByRole('heading', { name: 'Saturday market stall is set up' })).toBeVisible();
     // No site: the checkout needs a site first.
-    await expect(page.getByText("add your site in the store's settings first")).toBeVisible();
+    await expect(page.getByText("add the website under Domains first")).toBeVisible();
     await expect(page.getByText('Not taking payments yet')).toHaveCount(0);
     await captureCoverageStage(page, 'setup-done-no-site', test.info(), { group: GROUP });
 

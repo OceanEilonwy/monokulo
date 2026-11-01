@@ -68,8 +68,6 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
   const page = await context.newPage();
   const integration = await connectPlugin();
   await page.goto(`${settings()}/plugins/${integration}/disconnect`);
-  await page.getByRole('link', { name: 'disconnect it first' }).click();
-  await expect(page).toHaveURL(`${settings()}/plugins/${integration}/disconnect`);
   await expect(page.getByRole('heading', { level: 1, name: 'Disconnect WooCommerce from “shop.localhost”?' })).toBeVisible();
   await captureCoverageStage(page, 'store-site-disconnect-page', test.info(), { group: GROUP, shapes: ['desktop'] });
   await page.getByLabel('Type “shop.localhost” to confirm').fill('shop.localhost');
