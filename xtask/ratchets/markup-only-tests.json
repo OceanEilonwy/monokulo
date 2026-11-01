@@ -23,7 +23,6 @@
   "crates/monokulo/src/views/store_detail.rs › tests::a_restricted_store_drops_the_any_site_warning_but_warns_when_no_domain_counts": 1,
   "crates/monokulo/src/views/store_settings.rs › tests::a_refused_save_shows_why_on_its_card_and_keeps_what_was_sent": 1,
   "crates/monokulo/src/views/store_settings.rs › tests::the_restriction_banner_needs_a_verified_domain_to_turn_on": 1,
-  "crates/monokulo/src/views/store_site.rs › tests::changing_the_website_is_blocked_while_a_plugin_is_connected": 1,
   "crates/monokulo/src/views/store_site.rs › tests::disconnecting_is_blocked_while_an_order_from_the_shop_can_be_paid": 1,
   "crates/monokulo/src/views/wallets.rs › tests::the_no_javascript_pages_hold_the_dialogs_content": 1,
   "crates/ui/tests/select.rs › only_current_is_green": 1,
