@@ -76,7 +76,9 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
   // Deleting the store has its own page.
   await page.goto(`${settings()}/delete`);
   await expect(page.getByRole('heading', { level: 1, name: 'Delete “shop.localhost”?' })).toBeVisible();
-  await expect(page.locator('.checks')).toContainText('Its orders, order history and webhooks are deleted');
+  // The fixture has an order that can still be paid: deleting waits.
+  await expect(page.locator('.checks li.no')).toContainText('No order can still be paid');
+  await expect(page.getByRole('button', { name: 'Delete store' })).toBeDisabled();
   await captureCoverageStage(page, 'store-delete-page', test.info(), { group: GROUP, shapes: ['desktop'] });
   await context.close();
 });
