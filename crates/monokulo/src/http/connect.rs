@@ -60,6 +60,9 @@ pub struct ConnectQuery {
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
+    /// "Make a new store" was chosen over the near matches offered.
+    #[serde(default)]
+    pub new: String,
     /// What the plugin calls itself, to show the merchant; optional.
     #[serde(default)]
     pub name: String,
@@ -216,6 +219,55 @@ fn encode_query_value(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
+/// The merchant's stores a shop at `host` could be meant for though none
+/// has exactly that site: the same site with or without `www.`, a store
+/// whose domains cover the shop, and a store with no site yet. A store with
+/// a plugin connected is never offered. Nearest first.
+pub(super) fn near_stores(
+    db: &crate::db::Db,
+    user_id: &crate::db::UserId,
+    host: &Site,
+) -> Result<Vec<(crate::db::StoreConnectionRow, NearReason)>, crate::db::DbError> {
+    fn bare(host: &str) -> &str {
+        host.strip_prefix("www.").unwrap_or(host)
+    }
+    let mut near = Vec::new();
+    for store in db.list_store_connections_for_user(user_id)? {
+        if db.active_integration(&store.id)?.is_some() {
+            continue;
+        }
+        let reason = match &store.site {
+            Some(site) if site == host => continue,
+            Some(site) if bare(site.as_str()) == bare(host.as_str()) => NearReason::WwwVariant,
+            Some(_) => {
+                let covered = db
+                    .list_store_domains(&store.id)?
+                    .iter()
+                    .any(|d| crate::embed_domains::covers(&d.domain, host.host()));
+                if !covered {
+                    continue;
+                }
+                NearReason::DomainCovers
+            }
+            None => NearReason::NoSite,
+        };
+        near.push((store, reason));
+    }
+    near.sort_by_key(|(_, reason)| *reason);
+    Ok(near)
+}
+
+/// Why a store is offered for a shop whose site it doesn't have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NearReason {
+    /// Its site is the shop's with or without `www.`.
+    WwwVariant,
+    /// One of its domains covers the shop.
+    DomainCovers,
+    /// It has no site yet.
+    NoSite,
+}
+
 /// `GET /plugins/connect/{slug}` (steps 1-3). No valid session: redirect to
 /// `/login` carrying a `next` that reconstructs this exact URL.
 /// A valid session: the store with the shop's host decides (see the module
@@ -288,6 +340,36 @@ pub async fn start(
         )
         .into_response(),
         Ok(None) => {
+            let (user_id, wanted) = (user.id.clone(), host.clone());
+            let near = if query.new.is_empty() {
+                state
+                    .db
+                    .read(move |db| near_stores(db, &user_id, &wanted))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            if !near.is_empty() {
+                let request = PluginRequestView {
+                    plugin,
+                    site_url: query.site_url,
+                    return_url: query.return_url,
+                    nonce: query.nonce,
+                    host,
+                };
+                let offered: Vec<_> = near
+                    .into_iter()
+                    .map(|(store, reason)| crate::views::connect::NearStoreView {
+                        id: store.id.to_string(),
+                        name: store.name,
+                        site: store.site.map(|site| site.to_string()),
+                        reason,
+                    })
+                    .collect();
+                return crate::views::connect::near_match_page(&chrome, &request, &offered)
+                    .into_response();
+            }
             let mut setup = url::form_urlencoded::Serializer::new(String::new());
             setup
                 .append_pair("plugin", plugin.slug().as_str())
@@ -312,6 +394,10 @@ pub struct ConfirmForm {
     pub nonce: String,
     #[serde(default)]
     pub connection_id: String,
+    /// The store was offered as the nearest match: its site becomes the
+    /// shop's.
+    #[serde(default)]
+    pub adopt: String,
     /// What the plugin calls itself, carried from its connect link.
     #[serde(default)]
     pub name: String,
@@ -359,9 +445,52 @@ pub async fn confirm_submit(
         .ok()
         .flatten()
         .and_then(|row| super::OwnedStore::check(row, &user_id));
-    let Some(store) = store.filter(|s| s.site.as_ref() == Some(&target.site)) else {
+    let adopting = !form.adopt.is_empty();
+    let Some(store) = store.filter(|s| adopting || s.site.as_ref() == Some(&target.site)) else {
         return refuse(ConnectRefusal::NotTheShopsStore);
     };
+    if adopting && store.site.as_ref() != Some(&target.site) {
+        // Only a store that was offered (never one with a plugin, or with
+        // no resemblance to the shop) takes the shop's site, and no other
+        // store may have it.
+        let (user_id, wanted, store_id) = (user.id.clone(), target.site.clone(), store.id.clone());
+        let allowed = state
+            .db
+            .read(move |db| {
+                if super::connections::SiteTaken::of(db, &user_id, &wanted)?.is_some() {
+                    return Ok(false);
+                }
+                Ok::<_, crate::db::DbError>(
+                    near_stores(db, &user_id, &wanted)?
+                        .iter()
+                        .any(|(near, _)| near.id == store_id),
+                )
+            })
+            .await
+            .unwrap_or(false);
+        if !allowed {
+            return refuse(ConnectRefusal::NotTheShopsStore);
+        }
+        let (store_id, name, site) = (store.id.clone(), store.name.clone(), target.site.clone());
+        let written = state
+            .db
+            .write(move |db| {
+                db.set_store_name_and_site(&store_id, &name, Some(&site))?;
+                // The shop's domain waits to be verified, as at setup.
+                crate::embed_domains::suggest_site_domain(db, &store_id, Some(&site), now_unix());
+                Ok::<_, crate::db::DbError>(())
+            })
+            .await;
+        if written.is_err() {
+            return refuse(ConnectRefusal::Failed);
+        }
+        tracing::info!(
+            store.id = %store.id,
+            from = crate::stores::stored_site(store.site.as_ref()),
+            to = %target.site,
+            "store site set by connecting a shop"
+        );
+    }
     mint_token_and_redirect(&state, &store.id, &form.nonce, &target)
         .await
         .unwrap_or_else(|| refuse(ConnectRefusal::Failed))
@@ -1331,7 +1460,7 @@ mod tests {
     /// one of them can be paid, then removes its webhook and changes the
     /// store's key; connecting again adds a new active row.
     #[tokio::test]
-    async fn a_plugin_connects_locks_the_site_and_is_disconnected_with_a_new_key() {
+    async fn a_plugin_connects_and_is_disconnected_with_a_new_key() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
         let cookie = signed_up_and_logged_in_session_cookie(&router, "lifecycle@example.com").await;
@@ -1373,16 +1502,8 @@ mod tests {
             Some("https://shop.example.com/?wc-api=monokulo")
         );
 
-        // The site is locked; Integrations lists the plugin.
+        // Integrations lists the plugin.
         let settings = format!("/stores/{id}/settings");
-        let page = body_text(get(&router, &settings, &cookie).await).await;
-        assert!(
-            page.contains(&format!(
-                r##"Set by Acme Cart · <a href="{settings}?tab=integrations#card-integrations">see Integrations</a>"##
-            )),
-            "{page}"
-        );
-        assert!(!page.contains(r#"name="store_site""#), "{page}");
         let connections =
             body_text(get(&router, &format!("{settings}?tab=integrations"), &cookie).await).await;
         assert!(
@@ -1390,47 +1511,6 @@ mod tests {
             "{connections}"
         );
         assert!(connections.contains("no orders yet"), "{connections}");
-        // A site sent anyway changes nothing; the website page refuses.
-        router
-            .clone()
-            .oneshot(form_request(
-                &settings,
-                Some(&cookie),
-                &[("store_site", "other.example")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            state
-                .db
-                .lock()
-                .get_store_connection_by_id(&id)
-                .unwrap()
-                .unwrap()
-                .site
-                .as_ref()
-                .map(crate::stores::Site::as_str),
-            Some("shop.example.com")
-        );
-        let website = format!("{settings}/website");
-        let blocked =
-            body_text(get(&router, &format!("{website}?site=other.example"), &cookie).await).await;
-        assert!(
-            blocked.contains("No plugin is connected to it")
-                && blocked.contains("disconnect it first"),
-            "{blocked}"
-        );
-        let refused = router
-            .clone()
-            .oneshot(form_request(
-                &website,
-                Some(&cookie),
-                &[("site", "other.example"), ("confirm", "Shop")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
         // Nothing from the shop is open: disconnecting is ready, and says
         // its webhook goes.
         let disconnect = format!("{settings}/plugins/{}/disconnect", rows[0].id);
@@ -1511,12 +1591,6 @@ mod tests {
         assert!(state.db.lock().list_webhooks(&id).unwrap().is_empty());
         let rows = state.db.lock().list_integrations(&id).unwrap();
         assert!(rows[0].disconnected_at.is_some());
-        // The site unlocks.
-        let page = body_text(get(&router, &settings, &cookie).await).await;
-        assert!(
-            page.contains(r#"name="store_site" id="store-site" value="shop.example.com""#),
-            "{page}"
-        );
         let connections =
             body_text(get(&router, &format!("{settings}?tab=integrations"), &cookie).await).await;
         assert!(connections.contains("<h4>Before</h4>"), "{connections}");
@@ -1982,6 +2056,149 @@ mod tests {
         assert_eq!(
             finish_body["public_key"].as_str().unwrap(),
             row.tenant_public_key
+        );
+    }
+
+    /// A shop whose site is a store's with or without `www.` is offered that
+    /// store before a second one is made; choosing it sets the store's site
+    /// to the shop's and connects, with no new store.
+    #[tokio::test]
+    async fn a_shop_one_www_away_from_your_store_is_offered_that_store() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "near-match@example.com").await;
+        let apex = create_a_store(&router, &cookie, "shop.example.com").await;
+        let _unrelated = create_a_store(&router, &cookie, "elsewhere.example").await;
+
+        let uri = connect_uri(
+            "https://www.shop.example.com/",
+            "https://www.shop.example.com/settings",
+            "nonce-near",
+        );
+        let html = body_text(get(&router, &uri, &cookie).await).await;
+        assert!(
+            html.contains("none of your stores uses that site"),
+            "{html}"
+        );
+        assert!(html.contains("the same site with or without www"), "{html}");
+        assert!(
+            html.contains(&format!(r#"name="connection_id" value="{apex}""#)),
+            "{html}"
+        );
+        assert!(
+            html.contains("Make a new store for"),
+            "a new store is still a choice: {html}"
+        );
+        assert!(
+            !html.contains("elsewhere.example"),
+            "an unrelated store is not offered: {html}"
+        );
+
+        // "Make a new store" goes on to setup.
+        let fresh = get(&router, &format!("{uri}&new=1"), &cookie).await;
+        assert!(
+            location(&fresh).starts_with("/setup?"),
+            "{}",
+            location(&fresh)
+        );
+
+        // Choosing the store sets its site to the shop's and connects it.
+        let chosen = router
+            .clone()
+            .oneshot(form_request(
+                "/plugins/connect/acme-cart",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://www.shop.example.com/"),
+                    ("return_url", "https://www.shop.example.com/settings"),
+                    ("nonce", "nonce-near"),
+                    ("connection_id", &apex),
+                    ("adopt", "1"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(chosen.status(), StatusCode::FOUND);
+        assert!(parse_query_params(&location(&chosen)).contains_key("token"));
+        let user = state
+            .db
+            .lock()
+            .get_user_by_email("near-match@example.com")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state
+                .db
+                .lock()
+                .list_store_connections_for_user(&user.id)
+                .unwrap()
+                .len(),
+            2,
+            "no third store"
+        );
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(apex.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.site.as_ref().map(crate::stores::Site::as_str),
+            Some("www.shop.example.com")
+        );
+    }
+
+    /// Only a store that was offered takes a shop's site: one unrelated to
+    /// the shop is refused, and its site is left alone.
+    #[tokio::test]
+    async fn a_store_that_was_not_offered_does_not_take_the_shops_site() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "not-offered@example.com").await;
+        let unrelated = create_a_store(&router, &cookie, "elsewhere.example").await;
+
+        // Nothing near: straight to setup, as before.
+        let start = get(
+            &router,
+            &connect_uri(
+                "https://shop.example.com/",
+                "https://shop.example.com/settings",
+                "nonce-far",
+            ),
+            &cookie,
+        )
+        .await;
+        assert!(location(&start).starts_with("/setup?"));
+
+        let refused = router
+            .clone()
+            .oneshot(form_request(
+                "/plugins/connect/acme-cart",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://shop.example.com/"),
+                    ("return_url", "https://shop.example.com/settings"),
+                    ("nonce", "nonce-far"),
+                    ("connection_id", &unrelated),
+                    ("adopt", "1"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::OK);
+        let html = body_text(refused).await;
+        assert!(html.contains("could not be found"), "{html}");
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(unrelated))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.site.as_ref().map(crate::stores::Site::as_str),
+            Some("elsewhere.example")
         );
     }
 

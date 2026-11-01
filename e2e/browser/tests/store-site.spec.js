@@ -1,11 +1,10 @@
 // @ts-check
-// A store's website and its plugins (docs/design/user-testing/
-// store-site-integrations.html: A3, B1, C1). A connected WooCommerce plugin
-// locks the website and lists under Integrations; disconnecting it waits while
-// an order it made can be paid, then removes its webhook and changes the
-// store's key, and the website unlocks; changing the website then asks
-// first, the store's name typed. Without JavaScript the dialogs are pages.
-// Captures each for the gallery.
+// A store's plugins and its deletion (docs/design/user-testing/
+// store-site-integrations.html: A3, C1). A connected WooCommerce plugin lists
+// under Integrations; disconnecting it waits while an order it made can be
+// paid, then removes its webhook and changes the store's key. Deleting the
+// store asks first, the store's name typed. Without JavaScript the dialogs
+// are pages. Captures each for the gallery.
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
@@ -28,16 +27,13 @@ async function connectPlugin() {
   return (await response.json()).integration_id;
 }
 
-test('a connected plugin locks the website; disconnecting it removes its webhook and unlocks the website, which then changes behind its own dialog', async ({ page, context }) => {
+test('a connected plugin is listed under Integrations; disconnecting it removes its webhook', async ({ page, context }) => {
   await login(context);
   await connectPlugin();
-  // The website is on the General tab, the plugin on Integrations and its
-  // webhook on Webhooks.
+  // The plugin is on Integrations and its webhook on Webhooks; the General
+  // tab has no website field.
   await page.goto(`${settings()}?tab=general`);
-  const store = page.locator('#card-store');
-  await expect(store.locator('.locked-input input')).toHaveValue('shop.localhost');
-  await expect(store.locator('#store-site-lock')).toHaveText('Set by WooCommerce · see Integrations');
-  await expect(store.locator('input[name="store_site"]')).toHaveCount(0);
+  await expect(page.locator('#card-store input[name="store_site"]')).toHaveCount(0);
   await page.goto(`${settings()}?tab=webhooks`);
   await expect(page.locator('#card-webhooks')).toContainText('https://shop.localhost/?wc-api=monokulo');
   await page.goto(`${settings()}?tab=integrations`);
@@ -63,22 +59,7 @@ test('a connected plugin locks the website; disconnecting it removes its webhook
   await page.goto(`${settings()}?tab=webhooks`);
   await expect(page.locator('#card-webhooks')).not.toContainText('https://shop.localhost/?wc-api=monokulo');
   await page.goto(`${settings()}?tab=general`);
-  const site = page.locator('#card-store input[name="store_site"]');
-  await expect(site).toHaveValue('shop.localhost');
-
-  // Changing the website through the save: it asks first, with the new
-  // address; the store's name typed.
-  await site.fill('new-shop.localhost');
-  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
-  const change = page.getByRole('dialog', { name: 'Change the website of “shop.localhost”?' });
-  await expect(change.locator('input[name="site"]')).toHaveValue('new-shop.localhost');
-  await expect(change.locator('.checks')).toContainText('Checkouts embedded on shop.localhost stop loading');
-  await captureCoverageStage(page, 'store-site-change-ready', test.info(), { group: GROUP });
-  // Cancel leaves the website as it was (the change itself: http tests).
-  await change.getByRole('link', { name: 'Cancel' }).click();
-  await expect(change).toBeHidden();
-  await page.reload();
-  await expect(page.locator('#card-store input[name="store_site"]')).toHaveValue('shop.localhost');
+  await expect(page.locator('#card-store input[name="store_site"]')).toHaveCount(0);
 });
 
 test('without JavaScript the dialogs are pages', async ({ browser }) => {
@@ -86,12 +67,7 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
   await login(context);
   const page = await context.newPage();
   const integration = await connectPlugin();
-  // The website, while the plugin is connected: blocked.
-  await page.goto(`${settings()}/website?site=elsewhere.localhost`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Change the website of “shop.localhost”?' })).toBeVisible();
-  await expect(page.locator('.checks li.no')).toContainText('No plugin is connected to it');
-  await expect(page.getByRole('button', { name: 'Change website' })).toBeDisabled();
-  await captureCoverageStage(page, 'store-site-change-blocked-page', test.info(), { group: GROUP });
+  await page.goto(`${settings()}/plugins/${integration}/disconnect`);
   await page.getByRole('link', { name: 'disconnect it first' }).click();
   await expect(page).toHaveURL(`${settings()}/plugins/${integration}/disconnect`);
   await expect(page.getByRole('heading', { level: 1, name: 'Disconnect WooCommerce from “shop.localhost”?' })).toBeVisible();
@@ -99,13 +75,11 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
   await page.getByLabel('Type “shop.localhost” to confirm').fill('shop.localhost');
   await page.getByRole('button', { name: 'Disconnect WooCommerce' }).click();
   await expect(page).toHaveURL(/\/settings\?saved=integrations/);
-  await page.goto(`${settings()}?tab=general`);
-  // Emptying the website and saving goes to the remove page.
-  await page.locator('#card-store input[name="store_site"]').fill('');
-  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page).toHaveURL(`${settings()}/website?remove=1`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Remove the website of “shop.localhost”?' })).toBeVisible();
-  await expect(page.locator('input[name="site"]')).toHaveCount(0);
+  // Deleting the store has its own page.
+  await page.goto(`${settings()}/delete`);
+  await expect(page.getByRole('heading', { level: 1, name: 'Delete “shop.localhost”?' })).toBeVisible();
+  await expect(page.locator('.checks')).toContainText('Its orders, order history and webhooks are deleted');
+  await captureCoverageStage(page, 'store-delete-page', test.info(), { group: GROUP, shapes: ['desktop'] });
   await context.close();
 });
 

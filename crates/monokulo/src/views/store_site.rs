@@ -1,16 +1,14 @@
-//! A store's website and the plugins connected to it, on its settings page
+//! A store's plugins and its deletion, on its settings page
 //! (`docs/design/user-testing/store-site-integrations.html`: A3, B1, C1).
 //!
-//! - The Store card's website is locked while a plugin is connected
-//!   ("Set by PrestaShop · see Integrations").
 //! - The Shop plugins card, on the Integrations tab, lists each plugin: its site, version, when it
 //!   connected and its last order, with "Disconnect…"; past ones fold
 //!   under "Before".
-//! - Changing or removing the website asks first (B1): blocked while a
-//!   plugin is connected, then what follows and the store's name typed.
+//! - Deleting the store asks first: blocked while an order can still be
+//!   paid, then what is lost and the store's name typed.
 //! - Disconnecting a plugin asks first (C1): blocked while an order from
 //!   the shop can still be paid, then what follows (its key changes, its
-//!   webhook is removed, the website unlocks) and the store's name typed.
+//!   webhook is removed) and the store's name typed.
 //!
 //! Each dialog is also a page, for a browser without JavaScript, drawn by
 //! the same function. Handlers: `http::store_site`.
@@ -44,7 +42,7 @@ pub struct OpenOrders {
     pub until: Option<String>,
 }
 
-/// What the website and integrations parts of the settings page show.
+/// What the integrations and deletion parts of the settings page show.
 pub struct SiteView {
     pub store_id: String,
     pub store_name: String,
@@ -59,8 +57,6 @@ pub struct SiteView {
     pub open_orders: Option<OpenOrders>,
     /// Those the connected plugin made; `None` when the engine couldn't say.
     pub plugin_open_orders: Option<OpenOrders>,
-    /// The site is among the store's domains (waiting or verified).
-    pub site_domain: bool,
 }
 
 impl SiteView {
@@ -68,20 +64,13 @@ impl SiteView {
         crate::base::url(format!("/stores/{}/settings", self.store_id))
     }
 
-    pub fn website_path(&self) -> String {
-        format!("{}/website", self.settings())
+    pub fn delete_path(&self) -> String {
+        format!("{}/delete", self.settings())
     }
 
     pub fn disconnect_path(&self, integration: &IntegrationView) -> String {
         format!("{}/plugins/{}/disconnect", self.settings(), integration.id)
     }
-}
-
-/// Changing the website to another, or removing it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WebsiteChange {
-    To(String),
-    Remove,
 }
 
 /// A plugin's mark: the first letter of its name on a tile. monokulo
@@ -95,34 +84,6 @@ pub(super) fn plugin_mark(name: &str) -> Markup {
         .collect();
     html! {
         span class="int-mark" aria-hidden="true" { (initial) }
-    }
-}
-
-/// The Store card's website field: an ordinary field (adding one saves
-/// with the settings form; changing or emptying a saved one asks first),
-/// or locked while a plugin is connected.
-pub fn website_field(view: &SiteView, shown: &str) -> Markup {
-    match &view.active {
-        Some(active) => html! {
-            (ui::Setting::new("Your website", "store-site", html! {
-                (ui::LockedValue::new(view.site.as_str()).id("store-site").described_by("store-site-lock"))
-                (ui::FieldNote::new(html! {
-                    "Set by " (active.name) " · " a href=(format!("{}?tab=integrations#card-integrations", view.settings())) { "see Integrations" }
-                }).id("store-site-lock"))
-            }))
-        },
-        None => html! {
-            (super::settings::Field::new("Your website (optional)", "store-site")
-                .help(None, html! {
-                    "Needed for the checkout on your pages or for a shop plugin, which finds this store by it. "
-                    "Any page on the site works."
-                    @if !view.site.is_empty() { " Changing or removing it asks first." }
-                })
-                .render(html! {
-                    (ui::Input::new("store_site").id("store-site").value(shown).autocomplete("url")
-                        .placeholder("shop.example").attr("inputmode", "url").attr("data-saved", view.site.as_str()))
-                }))
-        },
     }
 }
 
@@ -153,18 +114,11 @@ pub fn integrations_card(view: &SiteView) -> Markup {
                             }
                         }
                     }
-                    None if view.site.is_empty() => {
-                        (ui::Hint::new(html! {
-                            "A shop plugin needs your website: "
-                            a href=(format!("{}?tab=general#card-store", view.settings())) { "add it on the General tab" }
-                            " first."
-                        }))
-                    }
                     None => {
                         (ui::Hint::new(html! {
                             "No plugin is connected. "
                             a href=(super::docs_url("plugins/")) target="_blank" rel="noopener" { "Install the plugin for your shop" }
-                            "; it finds this store by " (view.site) "."
+                            "; connecting it asks which of your stores it should use."
                         }))
                     }
                 }
@@ -206,19 +160,13 @@ fn integration_meta(i: &IntegrationView) -> String {
 }
 
 /// The dialogs the settings page holds, opened by its buttons and its
-/// save; each also a page (`website_page`, `disconnect_page`).
+/// save; each also a page (`delete_page`, `disconnect_page`).
 pub fn dialogs(view: &SiteView) -> Markup {
     html! {
-        @if !view.site.is_empty() {
-            (ui::Dialog::new("website-dialog", "website-title",
-                website_content(view, &WebsiteChange::To(String::new()), None, true).in_dialog()).confirms("store_site"))
-            (ui::Dialog::new("website-remove-dialog", "website-remove-title",
-                website_content(view, &WebsiteChange::Remove, None, true).in_dialog())
-                .confirms("store_site").confirms_when(ui::ConfirmWhen::Emptied))
-        }
         @if let Some(active) = &view.active {
             (ui::Dialog::new("disconnect-dialog", "disconnect-title", disconnect_content(view, active, None).in_dialog()))
         }
+        (ui::Dialog::new("delete-dialog", "delete-title", delete_content(view, None).in_dialog()))
     }
 }
 
@@ -261,101 +209,99 @@ fn confirm_field(id: &str, store_name: &str) -> Markup {
     }
 }
 
-/// B1: changing the website to another, or removing it. Blocked while a
-/// plugin is connected; then what follows, and the store's name typed.
-pub fn website_content(
-    view: &SiteView,
-    change: &WebsiteChange,
-    error: Option<&str>,
-    in_dialog: bool,
-) -> DialogContent {
-    let remove = matches!(change, WebsiteChange::Remove);
-    let id = if remove && in_dialog {
-        "website-remove-title"
-    } else {
-        "website-title"
-    };
-    let verb = if remove { "Remove" } else { "Change" };
-    let title = html! { (verb) " the website of \u{201c}" (view.store_name) "\u{201d}?" };
+/// Deleting the store. Blocked while an order can still be paid (or the
+/// engine can't say); then what is lost, and the store's name typed.
+pub fn delete_content(view: &SiteView, error: Option<&str>) -> DialogContent {
+    let title = html! { "Delete \u{201c}" (view.store_name) "\u{201d}?" };
     let back = view.settings();
-    let confirm_id = if remove {
-        "website-remove-confirm"
-    } else {
-        "website-confirm"
-    };
-    let mut follows = vec![check(
-        ui::CheckMark::Then,
-        html! { "Checkouts embedded on " (view.site) " stop loading" },
-        None,
-    )];
-    if view.site_domain {
-        follows.push(check(
-            ui::CheckMark::Then,
-            html! { "Its verified domain " (view.site) " is dropped" },
-            (!remove).then(|| html! { "the new one waits to be verified" }),
-        ));
-    }
-    if let Some(open) = view.open_orders.as_ref().filter(|o| o.count > 0) {
-        follows.push(check(
-            ui::CheckMark::Then,
-            html! { (orders_word(open.count)) " started there can still be paid" },
+    let checks = match &view.open_orders {
+        None => vec![check(
+            ui::CheckMark::No,
+            html! { "Monokulo can't check the store's orders right now" },
+            Some(html! { a href=(view.delete_path()) { "try again" } }),
+        )],
+        Some(open) if open.count > 0 => vec![check(
+            ui::CheckMark::No,
+            html! { "No order can still be paid" },
             Some(html! {
-                @if let Some(until) = &open.until { "until about " (until) "; " }
-                "Monokulo keeps watching them"
+                (orders_word(open.count)) " can be paid"
+                @if let Some(until) = &open.until { " until about " (until) }
             }),
-        ));
-    }
-    let body = html! {
-        @if remove {
-            p { "Its checkout runs on its website: without one, the store takes payments at the till only." }
-        } @else {
-            p { "Its checkout runs on its website, so changing it moves where the checkout works." }
+        )],
+        Some(_) => {
+            let mut checks = vec![
+                check(
+                    ui::CheckMark::Ok,
+                    html! { "No order can still be paid" },
+                    None,
+                ),
+                check(
+                    ui::CheckMark::Then,
+                    html! { "Its orders, order history and webhooks are deleted" },
+                    None,
+                ),
+                check(
+                    ui::CheckMark::Then,
+                    html! { "Its domains, apps and settings are deleted" },
+                    None,
+                ),
+                check(
+                    ui::CheckMark::Then,
+                    html! { "Its checkout and payment links stop working" },
+                    None,
+                ),
+            ];
+            if let Some(active) = &view.active {
+                checks.push(check(
+                    ui::CheckMark::Then,
+                    html! { (active.name) " on " (active.site) " stops taking Monero" },
+                    None,
+                ));
+            }
+            checks.push(check(
+                ui::CheckMark::Then,
+                html! { "Your wallet is not touched" },
+                None,
+            ));
+            checks
         }
+    };
+    let ready = view.open_orders.as_ref().is_some_and(|o| o.count == 0);
+    let delete = ui::Button::new("Delete store").variant(ui::ButtonVariant::Danger);
+    let body = html! {
+        p { "This can't be undone." }
         @if let Some(error) = error { (ui::Alert::new(error, ui::Tone::Error)) }
-        @match &view.active {
-            Some(active) => {
-                (ui::Checks::new(vec![check(ui::CheckMark::No, html! { "No plugin is connected to it" }, Some(html! {
-                    (active.name) " on " (active.site) " is · "
-                    a href=(view.disconnect_path(active)) data-opens-dialog=[in_dialog.then_some("disconnect-dialog")] { "disconnect it first" }
-                }))]))
-                (ui::Hint::new(format!("{verb}ing becomes available once the plugin is disconnected."))
-                    .attr("id", format!("{confirm_id}-why")))
-                (actions(&back, "Close", ui::Button::new(format!("{verb} website"))
-                    .variant(ui::ButtonVariant::Danger)
-                    .disabled(true)
-                    .attr("aria-describedby", format!("{confirm_id}-why"))))
+        (ui::Checks::new(checks))
+        @if ready {
+            form method="post" action=(view.delete_path()) {
+                (confirm_field("delete-confirm", &view.store_name))
+                (actions(&back, "Cancel", delete.kind(ui::ButtonType::Submit)))
             }
-            None => {
-                form method="post" action=(view.website_path()) {
-                    @match change {
-                        WebsiteChange::To(new) => {
-                            div class="setting-field first" {
-                                div class="setting-label-row" { label class="setting-label" for=(format!("{confirm_id}-site")) { "New website" } }
-                                (ui::Input::new("site")
-                                    .id(format!("{confirm_id}-site"))
-                                    .value(new.as_str())
-                                    .placeholder("shop.example")
-                                    .required(true)
-                                    .attr("inputmode", "url")
-                                    .flag("data-confirmed"))
-                            }
-                        }
-                        WebsiteChange::Remove => { input type="hidden" name="remove" value="1"; }
-                    }
-                    (ui::Checks::new(follows))
-                    (confirm_field(confirm_id, &view.store_name))
-                    (actions(&back, "Cancel", ui::Button::new(format!("{verb} website"))
-                        .variant(ui::ButtonVariant::Danger)
-                        .kind(ui::ButtonType::Submit)))
-                }
-            }
+        } @else {
+            (ui::Hint::new("Deleting becomes available once no order can be paid.")
+                .attr("id", "delete-why"))
+            (actions(&back, "Close", delete.disabled(true).attr("aria-describedby", "delete-why")))
         }
     };
     DialogContent {
-        title_id: id.into(),
+        title_id: "delete-title".into(),
         title,
         aside: None,
         body,
+    }
+}
+
+/// The General tab's Delete store card, an action card of its own.
+pub fn delete_card(view: &SiteView) -> Markup {
+    html! {
+        section id="card-delete" class="settings-card" aria-labelledby="card-delete-title" {
+            header class="card-head" { h3 id="card-delete-title" { "Delete store" } }
+            div class="card-body" {
+                p { "Deletes the store with its orders, order history and webhooks. Your wallet is not touched." }
+                (ui::LinkButton::new("Delete store\u{2026}", view.delete_path())
+                    .attr("data-opens-dialog", "delete-dialog"))
+            }
+        }
     }
 }
 
@@ -408,11 +354,6 @@ pub fn disconnect_content(
                     Some(html! { (url) }),
                 ));
             }
-            checks.push(check(
-                ui::CheckMark::Then,
-                html! { "The website unlocks" },
-                Some(html! { "change or remove it in the Store card" }),
-            ));
             checks
         }
     };
@@ -457,23 +398,9 @@ fn dialog_page(
         .render(chrome, body)
 }
 
-/// `GET /stores/{id}/settings/website`: B1 as a page.
-pub fn website_page(
-    chrome: &PageChrome,
-    view: &SiteView,
-    change: &WebsiteChange,
-    error: Option<&str>,
-) -> Markup {
-    let title = match change {
-        WebsiteChange::To(_) => "Change website",
-        WebsiteChange::Remove => "Remove website",
-    };
-    dialog_page(
-        chrome,
-        view,
-        title,
-        website_content(view, change, error, false),
-    )
+/// `GET /stores/{id}/settings/delete`: the delete dialog as a page.
+pub fn delete_page(chrome: &PageChrome, view: &SiteView, error: Option<&str>) -> Markup {
+    dialog_page(chrome, view, "Delete store", delete_content(view, error))
 }
 
 /// `GET /stores/{id}/settings/plugins/{integration}/disconnect`:
@@ -530,29 +457,7 @@ mod tests {
                 count,
                 until: Some("14:20".into()),
             }),
-            site_domain: true,
         }
-    }
-
-    #[test]
-    fn changing_the_website_is_blocked_while_a_plugin_is_connected() {
-        let html = website_content(
-            &view(true, Some(0)),
-            &WebsiteChange::To("new.example".into()),
-            None,
-            true,
-        )
-        .in_dialog()
-        .into_string();
-        assert!(
-            html.contains("Change the website of \u{201c}Bakery\u{201d}?"),
-            "{html}"
-        );
-        assert!(html.contains(r#"No plugin is connected to it<span class="fix">Acme Cart on shop.example is · <a href="/stores/c_1/settings/plugins/int_1/disconnect" data-opens-dialog="disconnect-dialog">disconnect it first</a>"#), "{html}");
-        assert!(
-            html.contains(r#"data-variant="danger" disabled"#) && !html.contains("<form"),
-            "{html}"
-        );
     }
 
     #[test]

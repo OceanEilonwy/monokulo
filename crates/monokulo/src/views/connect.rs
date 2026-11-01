@@ -97,6 +97,84 @@ pub fn existing_store_page(
     super::Page::new("Connect Monero payments - Monokulo", header).render(chrome, body)
 }
 
+/// A store offered for a shop whose site none of the merchant's stores has.
+pub struct NearStoreView {
+    pub id: String,
+    pub name: String,
+    /// Its site; `None` for a store with none.
+    pub site: Option<String>,
+    pub reason: crate::http::connect::NearReason,
+}
+
+/// `GET /plugins/connect/{platform}` when no store has the shop's site but
+/// some of the merchant's are close: connect one of them (its site becomes
+/// the shop's), or make a new store.
+pub fn near_match_page(
+    chrome: &PageChrome,
+    request: &PluginRequestView,
+    stores: &[NearStoreView],
+) -> Markup {
+    let header = ui::PageHeader::new(format!("Connect your {} shop", request.plugin));
+    let new_store = {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query
+            .append_pair("site_url", &request.site_url)
+            .append_pair("return_url", &request.return_url)
+            .append_pair("nonce", &request.nonce)
+            .append_pair("new", "1");
+        if let Some(name) = request.plugin.name() {
+            query.append_pair("name", name.as_str());
+        }
+        crate::base::url(format!(
+            "/plugins/connect/{}?{}",
+            request.plugin.slug(),
+            query.finish()
+        ))
+    };
+    let body = html! {
+        p {
+            "The " (request.plugin) " plugin on " strong { (request.host) } " asked to connect, and none of your "
+            "stores uses that site. Connect one of these, or make a new store."
+        }
+        ul class="int-rows" {
+            @for store in stores {
+                li {
+                    span {
+                        span class="int-name" { (store.name) }
+                        span class="int-meta" {
+                            @match (&store.site, store.reason) {
+                                (Some(site), crate::http::connect::NearReason::WwwVariant) => { "Uses " (site) ", the same site with or without www." }
+                                (Some(site), _) => { "Uses " (site) "; its verified domains cover " (request.host) "." }
+                                (None, _) => { "Has no website yet." }
+                            }
+                            " Connecting sets its website to " (request.host) "."
+                        }
+                    }
+                    form method="post" action=(crate::base::url(format!("/plugins/connect/{}", request.plugin.slug()))) class="inline-form" {
+                        input type="hidden" name="connection_id" value=(store.id);
+                        input type="hidden" name="adopt" value="1";
+                        input type="hidden" name="site_url" value=(request.site_url);
+                        input type="hidden" name="return_url" value=(request.return_url);
+                        input type="hidden" name="nonce" value=(request.nonce);
+                        @if let Some(name) = request.plugin.name() {
+                            input type="hidden" name="name" value=(name.as_str());
+                        }
+                        (ui::Button::new("Connect")
+                            .variant(ui::ButtonVariant::Primary)
+                            .kind(ui::ButtonType::Submit))
+                    }
+                }
+            }
+        }
+        div class="step-foot" {
+            (ui::LinkButton::new("Cancel", request.host.link()))
+            span class="spacer" {}
+            (ui::LinkButton::new(html! { "Make a new store for " (request.host) }, new_store))
+        }
+    };
+    super::Page::new("Connect Monero payments - Monokulo", header).render(chrome, body)
+}
+
 /// `GET`/`POST /plugins/connect/{platform}` when the plugin can't connect: why, and
 /// no form.
 pub fn cannot_connect_page(

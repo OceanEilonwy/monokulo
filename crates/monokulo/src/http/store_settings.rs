@@ -25,7 +25,6 @@ use axum::response::{IntoResponse, Response};
 use crate::confirmation_thresholds::MAX_CUSTOM_THRESHOLDS;
 use crate::db::UserRow;
 use crate::engine_client::EngineClientError;
-use crate::stores::Site;
 use crate::views::store_settings::{StoreOutcome, StoreSection, StoreTab};
 
 use super::orders::{
@@ -51,19 +50,10 @@ fn too_many_thresholds() -> String {
 type NewThreshold = (u64, pricing::unit_amount::UnitAmount);
 
 /// What a save changes, once every card's values were checked.
-/// A saved website changed in the form, to be asked about first.
-enum WebsiteRequest {
-    To(String),
-    Remove,
-}
-
 #[derive(Default)]
 struct Plan {
-    /// The website changed or emptied: the save goes on to ask about it.
-    website: Option<WebsiteRequest>,
-    /// The store's name, and a site for a store that had none.
+    /// The store's name.
     name: Option<String>,
-    site: Option<Site>,
     /// The store's payment description (empty: none).
     payment_description: Option<String>,
     base_currency: Option<String>,
@@ -77,7 +67,6 @@ struct Plan {
 impl Plan {
     fn is_empty(&self) -> bool {
         self.name.is_none()
-            && self.site.is_none()
             && self.payment_description.is_none()
             && self.base_currency.is_none()
             && self.default_confirmations.is_none()
@@ -109,7 +98,7 @@ pub async fn save(
     // store's lock, so no order is priced against one half saved.
     let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
 
-    let mut plan = match plan(&state, &row, &sk, &sent).await {
+    let plan = match plan(&state, &row, &sk, &sent).await {
         Ok(plan) => plan,
         Err((section, message)) => {
             drop(policy);
@@ -124,19 +113,9 @@ pub async fn save(
         .find(|(key, _)| key == "tab")
         .and_then(|(_, tab)| StoreTab::from_id(tab))
         .map_or_else(String::new, |tab| format!("&tab={}", tab.id()));
-    let website = plan.website.take().map(|request| {
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        match request {
-            WebsiteRequest::To(site) => query.append_pair("site", &site),
-            WebsiteRequest::Remove => query.append_pair("remove", "1"),
-        };
-        format!("/stores/{id}/settings/website?{}", query.finish())
-    });
     if plan.is_empty() {
         drop(policy);
-        return crate::base::see_other(
-            website.unwrap_or_else(|| format!("/stores/{id}/settings?saved=nothing{tab}")),
-        );
+        return crate::base::see_other(format!("/stores/{id}/settings?saved=nothing{tab}"));
     }
 
     let mut saved = Vec::new();
@@ -152,9 +131,6 @@ pub async fn save(
     }
     let ids: Vec<&str> = saved.iter().map(|section| section.id()).collect();
     tracing::info!(store.id = %id, saved = %ids.join(","), "store settings saved");
-    if let Some(website) = website {
-        return crate::base::see_other(&website);
-    }
     crate::base::see_other(format!("/stores/{id}/settings?saved={}", ids.join(",")))
 }
 
@@ -209,53 +185,12 @@ async fn plan(
     };
     let mut plan = Plan::default();
 
-    // The store's name and site. A site is optional, kept as its host, and
-    // no other store on this instance may have it.
+    // The store's name.
     const STORE: StoreSection = StoreSection::Store;
     if let Some(raw) = form.get("store_name") {
         let name = crate::stores::clean_name(raw).map_err(|m| (STORE, m.to_owned()))?;
         if name != row.name {
             plan.name = Some(name);
-        }
-    }
-    // The settings form only ever adds a first site. Changing or removing
-    // one asks first (`http::store_site`): the save goes on to that page,
-    // the rest of the form saved. A connected plugin's site isn't in the
-    // form at all; one sent anyway is ignored.
-    let locked = {
-        let store_id = row.id.clone();
-        state
-            .db
-            .read(move |db| db.active_integration(&store_id))
-            .await
-            .map_err(|_| (STORE, something_went_wrong()))?
-            .is_some()
-    };
-    if let Some(raw) = form.get("store_site").filter(|_| !locked) {
-        let typed = raw.trim();
-        match &row.site {
-            // Changing or removing a saved site asks first, with what was
-            // typed (`http::store_site`).
-            Some(current) if typed.is_empty() => plan.website = Some(WebsiteRequest::Remove),
-            Some(current) if typed != current.as_str() => {
-                plan.website = Some(WebsiteRequest::To(typed.to_owned()));
-            }
-            Some(_) => {}
-            None if typed.is_empty() => {}
-            // Adding one saves with the form, when no other store has it.
-            None => {
-                let site = Site::parse(raw).map_err(|m| (STORE, m.to_string()))?;
-                let (user_id, wanted) = (row.user_id.clone(), site.clone());
-                let taken = state
-                    .db
-                    .read(move |db| super::connections::SiteTaken::of(db, &user_id, &wanted))
-                    .await
-                    .map_err(|_| (STORE, something_went_wrong()))?;
-                if let Some(taken) = taken {
-                    return Err((STORE, taken.message(&site)));
-                }
-                plan.site = Some(site);
-            }
         }
     }
     // What the store's payments are for, which payers read: one line,
@@ -481,37 +416,14 @@ async fn apply(
     plan: Plan,
     saved: &mut Vec<StoreSection>,
 ) -> Result<(), Refusal> {
-    if plan.name.is_some() || plan.site.is_some() {
-        let name = plan.name.unwrap_or_else(|| row.name.clone());
-        let new_site = plan.site.is_some();
-        let site = plan.site.or_else(|| row.site.clone());
-        let (store_id, wanted) = (row.id.clone(), site.clone());
+    if let Some(name) = plan.name {
+        let (store_id, site) = (row.id.clone(), row.site.clone());
         let written = state
             .db
-            .write(move |db| {
-                db.set_store_name_and_site(&store_id, &name, wanted.as_ref())?;
-                // A new site's domain waits to be verified, as at setup.
-                if new_site {
-                    crate::embed_domains::suggest_site_domain(
-                        db,
-                        &store_id,
-                        wanted.as_ref(),
-                        crate::now_unix(),
-                    );
-                }
-                Ok::<_, crate::db::DbError>(())
-            })
+            .write(move |db| db.set_store_name_and_site(&store_id, &name, site.as_ref()))
             .await;
         match written {
             Ok(()) => saved.push(StoreSection::Store),
-            Err(e) if e.is_unique_violation() => {
-                return Err((
-                    StoreSection::Store,
-                    site.as_ref().map_or_else(something_went_wrong, |site| {
-                        super::connections::SiteTaken::Someone.message(site)
-                    }),
-                ))
-            }
             Err(_) => return Err((StoreSection::Store, something_went_wrong())),
         }
     }
