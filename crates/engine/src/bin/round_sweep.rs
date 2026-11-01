@@ -317,25 +317,71 @@ fn quantile(sorted: &[u64], q: f64) -> u64 {
     sorted[((sorted.len() - 1) as f64 * q).round() as usize]
 }
 
-async fn sweep() -> Result<(), Box<dyn Error>> {
+/// The command line's values. Read out of clap's matches before any await:
+/// holding `ArgMatches` in an async function trips a cycle in the nightly
+/// compiler's async-drop analysis (E0391).
+struct Params {
+    db_path: String,
+    tenant_count: usize,
+    group_count: usize,
+    backlog: u64,
+    round_budget_ms: u64,
+    link_kbps: u64,
+    rtt_ms: u64,
+    ttfb_us_per_block: u64,
+    block_bytes: u64,
+    budget_mb: u32,
+    idle_rounds: usize,
+    max_secs: u64,
+    seed: u64,
+    trace_requests: bool,
+}
+
+fn params() -> Result<Params, Box<dyn Error>> {
     use stress_common::value;
     let args = command().try_get_matches()?;
-    let db_path: String = value(&args, "db")?;
-    let tenant_count: usize = value(&args, "tenants")?;
-    let group_count: usize = value::<usize>(&args, "groups")?.max(1);
-    let backlog: u64 = value(&args, "backlog-blocks")?;
-    let round_budget = Duration::from_millis(value(&args, "round-budget-ms")?);
-    let link_kbps: u64 = value(&args, "link-kbps")?;
+    Ok(Params {
+        db_path: value(&args, "db")?,
+        tenant_count: value(&args, "tenants")?,
+        group_count: value::<usize>(&args, "groups")?.max(1),
+        backlog: value(&args, "backlog-blocks")?,
+        round_budget_ms: value(&args, "round-budget-ms")?,
+        link_kbps: value(&args, "link-kbps")?,
+        rtt_ms: value(&args, "rtt-ms")?,
+        ttfb_us_per_block: value(&args, "ttfb-us-per-block")?,
+        block_bytes: value(&args, "block-bytes")?,
+        budget_mb: value(&args, "budget-mb")?,
+        idle_rounds: value(&args, "idle-rounds")?,
+        max_secs: value(&args, "max-secs")?,
+        seed: value(&args, "seed")?,
+        trace_requests: args.get_flag("trace-requests"),
+    })
+}
+
+async fn sweep() -> Result<(), Box<dyn Error>> {
+    let Params {
+        db_path,
+        tenant_count,
+        group_count,
+        backlog,
+        round_budget_ms,
+        link_kbps,
+        rtt_ms,
+        ttfb_us_per_block,
+        block_bytes,
+        budget_mb,
+        idle_rounds,
+        max_secs,
+        seed,
+        trace_requests,
+    } = params()?;
+    let round_budget = Duration::from_millis(round_budget_ms);
     let link = LinkModel {
-        rtt: Duration::from_millis(value(&args, "rtt-ms")?),
-        ttfb_per_block: Duration::from_micros(value(&args, "ttfb-us-per-block")?),
-        rate: (link_kbps > 0).then(|| link_kbps as f64 * 1000.0 / 8.0),
+        rtt: Duration::from_millis(rtt_ms),
+        ttfb_per_block: Duration::from_micros(ttfb_us_per_block),
+        rate: (link_kbps > 0).then_some(link_kbps as f64 * 1000.0 / 8.0),
     };
-    let block_bytes: u64 = value(&args, "block-bytes")?;
-    let budget_mb: u32 = value(&args, "budget-mb")?;
-    let idle_rounds: usize = value(&args, "idle-rounds")?;
-    let max_secs = Duration::from_secs(value(&args, "max-secs")?);
-    let seed: u64 = value(&args, "seed")?;
+    let max_secs = Duration::from_secs(max_secs);
     if tenant_count < group_count {
         return Err("--tenants must be at least --groups".into());
     }
@@ -440,7 +486,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         header_requests: AtomicU64::new(0),
         small_requests: AtomicU64::new(0),
         heights_served: Mutex::new(HashSet::new()),
-        trace: args.get_flag("trace-requests"),
+        trace: trace_requests,
     });
     let db = Db::open(&db_path, &store)?;
     let observer = rusqlite::Connection::open_with_flags(

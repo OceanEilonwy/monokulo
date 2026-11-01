@@ -396,31 +396,82 @@ fn progress(conn: &rusqlite::Connection, progressed_through: u64) -> rusqlite::R
     })
 }
 
-async fn fixture() -> Result<(), Box<dyn Error>> {
+/// The command line's values. Read out of clap's matches before any await:
+/// holding `ArgMatches` in an async function trips a cycle in the nightly
+/// compiler's async-drop analysis (E0391).
+struct Params {
+    db_path: String,
+    driver: Driver,
+    tenants: usize,
+    orders: usize,
+    large_window_orders: usize,
+    warmup: usize,
+    measured: usize,
+    drain: usize,
+    seed: u64,
+    background_readers: usize,
+    background_http_readers: usize,
+    background_writers: usize,
+    write_lock_ms: u64,
+    write_lock_until_tick: u64,
+    rpc_delay_ms: u64,
+    rpc_fail_until_height: u64,
+    rpc_fail_every: u64,
+    custody_slots: u64,
+    custody_delay_ms: u64,
+}
+
+fn params() -> Result<Params, Box<dyn Error>> {
     use stress_common::value;
     let args = command().try_get_matches()?;
-    let db_path: String = value(&args, "db")?;
-    let driver = Driver::parse(&value::<String>(&args, "driver")?)?;
-    let tenants: usize = value(&args, "tenants")?;
-    let orders: usize = value(&args, "orders")?;
-    let large_window_orders: usize = value(&args, "large-window-orders")?;
-    let warmup: usize = value(&args, "warmup")?;
-    let measured: usize = value(&args, "measured")?;
-    let drain: usize = value(&args, "drain")?;
-    let seed: u64 = value(&args, "seed")?;
-    let background_readers: usize = value(&args, "background-readers")?;
-    let background_http_readers: usize = value(&args, "background-http-readers")?;
-    let background_writers: usize = value(&args, "background-writers")?;
-    let write_lock_ms: u64 = value(&args, "write-lock-ms")?;
-    let write_lock_until_tick = match value(&args, "write-lock-until-tick")? {
-        0 => u64::MAX,
-        ticks => ticks,
-    };
-    let rpc_delay_ms: u64 = value(&args, "rpc-delay-ms")?;
-    let rpc_fail_until_height: u64 = value(&args, "rpc-fail-until-height")?;
-    let rpc_fail_every: u64 = value(&args, "rpc-fail-every")?;
-    let custody_slots: u64 = value(&args, "custody-slots")?;
-    let custody_delay_ms: u64 = value(&args, "custody-delay-ms")?;
+    Ok(Params {
+        db_path: value(&args, "db")?,
+        driver: Driver::parse(&value::<String>(&args, "driver")?)?,
+        tenants: value(&args, "tenants")?,
+        orders: value(&args, "orders")?,
+        large_window_orders: value(&args, "large-window-orders")?,
+        warmup: value(&args, "warmup")?,
+        measured: value(&args, "measured")?,
+        drain: value(&args, "drain")?,
+        seed: value(&args, "seed")?,
+        background_readers: value(&args, "background-readers")?,
+        background_http_readers: value(&args, "background-http-readers")?,
+        background_writers: value(&args, "background-writers")?,
+        write_lock_ms: value(&args, "write-lock-ms")?,
+        write_lock_until_tick: match value(&args, "write-lock-until-tick")? {
+            0 => u64::MAX,
+            ticks => ticks,
+        },
+        rpc_delay_ms: value(&args, "rpc-delay-ms")?,
+        rpc_fail_until_height: value(&args, "rpc-fail-until-height")?,
+        rpc_fail_every: value(&args, "rpc-fail-every")?,
+        custody_slots: value(&args, "custody-slots")?,
+        custody_delay_ms: value(&args, "custody-delay-ms")?,
+    })
+}
+
+async fn fixture() -> Result<(), Box<dyn Error>> {
+    let Params {
+        db_path,
+        driver,
+        tenants,
+        orders,
+        large_window_orders,
+        warmup,
+        measured,
+        drain,
+        seed,
+        background_readers,
+        background_http_readers,
+        background_writers,
+        write_lock_ms,
+        write_lock_until_tick,
+        rpc_delay_ms,
+        rpc_fail_until_height,
+        rpc_fail_every,
+        custody_slots,
+        custody_delay_ms,
+    } = params()?;
 
     // Setup: tenants, keys and orders, with stable ids so every run of a
     // scenario builds the same database.

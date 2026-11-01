@@ -205,7 +205,7 @@ impl ScanProgress {
         let (secs, scans) = self.time.iter().fold((0.0, 0u64), |(s, n), t| {
             (s + t.scan_secs, n.saturating_add(t.tx_scans))
         });
-        (scans > 0).then(|| secs / scans as f64)
+        (scans > 0).then_some(secs / scans as f64)
     }
 
     /// Figures for `/status`, as of `now_unix`.
