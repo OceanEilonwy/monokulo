@@ -67,7 +67,7 @@
 .card-guide-toggle .mk-icon { width: 1.1em; height: 1.1em; }
 .card-guide-toggle::after { content: "\25BE"; color: var(--muted); }
 .card-guide[open] .card-guide-toggle::after { content: "\25B4"; }
-.card-guide-body { display: grid; gap: var(--space-lg); margin: var(--space-lg) var(--space-lg) 0; padding: var(--space-lg); background: var(--surface-sunken); border-radius: var(--radius-md); font-size: var(--text-base); }
+.card-guide-body { display: grid; gap: var(--space-lg); margin: var(--space-lg) var(--space-lg) 0; padding: var(--space-lg); background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: var(--text-base); }
 .card-guide-body > * { margin: 0; }
 .card-body { padding: var(--space-lg); min-width: 0; }
 .card-body > .hint:first-child { margin-top: 0; margin-bottom: var(--space-lg); }
