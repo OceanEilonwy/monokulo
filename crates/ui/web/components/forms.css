@@ -95,6 +95,12 @@ a.mk-launch-tile[href]:hover { background: var(--btn-hover-bg); border-color: va
 .mk-stepper[data-ready] > .mk-input:focus-visible { outline: none; }
 .mk-stepper[data-ready]:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-color: var(--focus-ring); }
 .mk-stepper[data-ready]:has(> [aria-invalid="true"]) { border-color: var(--error); }
+/* In a setting's control column it spans the column like the other
+   controls, the number between the buttons rather than the buttons packed
+   at one end. */
+.setting-control > .mk-stepper { display: flex; justify-self: start; }
+.setting-control > .mk-stepper[data-ready] { justify-self: stretch; }
+.setting-control > .mk-stepper[data-ready] > .mk-input { flex: 1 1 auto; width: auto; min-width: 0; }
 .mk-stepper:has(> :disabled) { opacity: .55; }
 .mk-stepper:has(> :disabled) > .mk-input { opacity: 1; }
 .mk-stepper-btn { width: 2.25rem; margin: 0; padding: 0; border: 0; background: var(--surface-sunken); color: var(--ink); font: inherit; font-size: var(--text-lg); font-weight: 700; cursor: pointer; }
