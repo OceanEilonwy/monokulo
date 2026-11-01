@@ -1,28 +1,26 @@
-//! A store's website and the plugins connected to it (`views::store_site`):
-//! changing or removing the website, and disconnecting a plugin, each
-//! behind its checklist dialog, or the page holding it without JavaScript.
+//! A store's deletion and the plugins connected to it (`views::store_site`):
+//! deleting the store and disconnecting a plugin, each behind its checklist
+//! dialog, or the page holding it without JavaScript.
 //!
-//! - `GET`/`POST /stores/{id}/settings/website` (`?site=` the
-//!   new address, or `?remove=1`): refused while a plugin is connected.
-//!   The old site's domain is dropped and the new one's waits to be
-//!   verified.
+//! - `GET`/`POST /stores/{id}/settings/delete`: refused while an order can
+//!   still be paid. The engine forgets the store, then its rows here are
+//!   deleted, history and webhooks with them.
 //! - `GET`/`POST /stores/{id}/settings/plugins/{integration}/disconnect`:
 //!   refused while an order the plugin made can still be paid. Gives the
 //!   store a new secret key in the engine, so the plugin's stops working,
 //!   then removes the plugin's webhook and marks it disconnected in one
-//!   write; the website unlocks.
+//!   write.
 
 use std::collections::HashSet;
 
-use axum::extract::{Form, Path, Query, State};
+use axum::extract::{Form, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::db::{ConnectionId, StoreIntegrationRow, UserRow};
-use crate::stores::Site;
 use crate::views::store_settings::StoreSection;
-use crate::views::store_site::{IntegrationView, OpenOrders, SiteView, WebsiteChange};
+use crate::views::store_site::{IntegrationView, OpenOrders, SiteView};
 
 use super::orders::{decrypt_sk, load_owned_connection};
 use super::{AppState, AuthedUser, OwnedStore};
@@ -83,7 +81,7 @@ pub(super) async fn site_view(
     clock: &crate::views::time::Clock,
 ) -> SiteView {
     let id = row.id.clone();
-    let (integrations, domains, from_plugin) = state
+    let (integrations, from_plugin) = state
         .db
         .read(move |db| {
             let integrations = db.list_integrations(&id)?;
@@ -92,16 +90,11 @@ pub(super) async fn site_view(
                 Some(active) => db.order_ids_from_source(&id, &active.kind)?,
                 None => Default::default(),
             };
-            Ok::<_, crate::db::DbError>((integrations, db.list_store_domains(&id)?, from_plugin))
+            Ok::<_, crate::db::DbError>((integrations, from_plugin))
         })
         .await
         .unwrap_or_default();
     let active = integrations.iter().find(|i| i.disconnected_at.is_none());
-    let site_domain = row
-        .site
-        .as_ref()
-        .and_then(|site| crate::embed_domains::domain_of_site(site.as_str()))
-        .is_some_and(|domain| domains.iter().any(|d| d.domain == domain));
     let listed = state.engine.client.list_open_orders(sk).await.ok();
     let open = open_orders(listed.as_deref(), None, clock);
     let plugin_open = match active {
@@ -120,7 +113,6 @@ pub(super) async fn site_view(
             .collect(),
         open_orders: open,
         plugin_open_orders: plugin_open,
-        site_domain,
     }
 }
 
@@ -155,172 +147,86 @@ fn something_went_wrong() -> String {
     "Something went wrong saving this. Nothing changed; try again in a minute.".to_owned()
 }
 
-// -- The website ---------------------------------------------------------------
+// -- Deleting the store ----------------------------------------------------------
 
 #[derive(Deserialize, Default)]
-pub struct WebsiteQuery {
-    #[serde(default)]
-    site: Option<String>,
-    #[serde(default)]
-    remove: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-pub struct WebsiteForm {
-    #[serde(default)]
-    site: String,
-    #[serde(default)]
-    remove: Option<String>,
+pub struct DeleteForm {
     #[serde(default)]
     confirm: String,
 }
 
-fn website_path(id: &ConnectionId) -> String {
-    format!("/stores/{id}/settings/website")
+fn delete_path(id: &ConnectionId) -> String {
+    format!("/stores/{id}/settings/delete")
 }
 
-/// `GET /stores/{id}/settings/website`: B1 as a page. A store
-/// with no website has nothing to change: back to its settings.
-pub async fn website_form(
+/// `GET /stores/{id}/settings/delete`: the delete dialog as a page.
+pub async fn delete_form(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<ConnectionId>,
-    Query(query): Query<WebsiteQuery>,
 ) -> Response {
-    let (row, _, view, chrome) = match load(&state, &user, &id, website_path(&id)).await {
+    let (_, _, view, chrome) = match load(&state, &user, &id, delete_path(&id)).await {
         Ok(loaded) => loaded,
         Err(status) => return status.into_response(),
     };
-    if row.site.is_none() {
-        return crate::base::see_other(format!("/stores/{id}/settings#card-store"));
-    }
-    let change = match (query.remove, query.site) {
-        (Some(_), _) => WebsiteChange::Remove,
-        (None, site) => WebsiteChange::To(site.unwrap_or_default()),
-    };
-    crate::views::store_site::website_page(&chrome, &view, &change, None).into_response()
+    crate::views::store_site::delete_page(&chrome, &view, None).into_response()
 }
 
-/// `POST /stores/{id}/settings/website`: the website changed or
-/// removed, once no plugin is connected and the store's name was typed.
-pub async fn website_submit(
+/// `POST /stores/{id}/settings/delete`: deletes the store, once no order
+/// can still be paid and its name was typed. The engine forgets the store
+/// first (its orders and keys), then the store's rows here go in one
+/// write: its history, webhooks, domains, apps and plugins with them. The
+/// wallet it paid into is the merchant's and stays.
+pub async fn delete_submit(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<ConnectionId>,
-    Form(form): Form<WebsiteForm>,
+    Form(form): Form<DeleteForm>,
 ) -> Response {
-    let (row, _, view, chrome) = match load(&state, &user, &id, website_path(&id)).await {
+    let (row, sk, view, chrome) = match load(&state, &user, &id, delete_path(&id)).await {
         Ok(loaded) => loaded,
         Err(status) => return status.into_response(),
-    };
-    let change = if form.remove.is_some() {
-        WebsiteChange::Remove
-    } else {
-        WebsiteChange::To(form.site.clone())
     };
     let refuse = |message: String| {
         (
             StatusCode::UNPROCESSABLE_ENTITY,
-            crate::views::store_site::website_page(&chrome, &view, &change, Some(&message)),
+            crate::views::store_site::delete_page(&chrome, &view, Some(&message)),
         )
             .into_response()
     };
-    let Some(current) = row.site.clone() else {
-        return crate::base::see_other(format!("/stores/{id}/settings#card-store"));
-    };
-    if let Some(active) = &view.active {
-        return refuse(format!(
-            "{} is connected on {}: disconnect it first.",
-            active.name, active.site
-        ));
+    match &view.open_orders {
+        None => {
+            return refuse("Monokulo can't check the store's orders right now. Nothing changed; try again in a minute.".to_owned())
+        }
+        Some(open) if open.count > 0 => {
+            return refuse(format!(
+                "{} can still be paid. Delete the store once none can.",
+                if open.count == 1 { "1 order".to_owned() } else { format!("{} orders", open.count) },
+            ))
+        }
+        Some(_) => {}
     }
-    let new_site = match &change {
-        WebsiteChange::Remove => None,
-        WebsiteChange::To(typed) => match Site::parse(typed) {
-            Ok(site) => Some(site),
-            Err(why) => return refuse(why.to_string()),
-        },
-    };
     if form.confirm.trim() != row.name {
         return refuse(format!(
-            "Type \u{201c}{}\u{201d} exactly to {} its website.",
-            row.name,
-            if new_site.is_none() {
-                "remove"
-            } else {
-                "change"
-            }
+            "Type \u{201c}{}\u{201d} exactly to delete it.",
+            row.name
         ));
     }
-    if new_site.as_ref() == Some(&current) {
-        return super::orders::saved(&id, StoreSection::Store);
+    if let Err(e) = state.engine.client.delete_tenant(&sk).await {
+        tracing::error!(store.id = %id, error = %e, "the engine could not delete the store");
+        return refuse(something_went_wrong());
     }
-    if let Some(new_site) = &new_site {
-        let (user_id, wanted) = (user.id.clone(), new_site.clone());
-        match state
-            .db
-            .read(move |db| super::connections::SiteTaken::of(db, &user_id, &wanted))
-            .await
-        {
-            Ok(None) => {}
-            Ok(Some(taken)) => return refuse(taken.message(new_site)),
-            Err(_) => return refuse(something_went_wrong()),
-        }
+    // The engine refuses the key now: what was opened with it ends.
+    state.revocations.revoke(&sk.hash());
+    let store_id = row.id.clone();
+    if let Err(e) = state.db.write(move |db| db.delete_store(&store_id)).await {
+        // The engine has already forgotten the store: nothing to fall back
+        // on, and nothing a retry could do but this same delete.
+        tracing::error!(store.id = %id, error = %e, "the store's rows could not be deleted");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    let (store_id, name, old_site, site) = (
-        row.id.clone(),
-        row.name.clone(),
-        current.clone(),
-        new_site.clone(),
-    );
-    let written = state
-        .db
-        .write(move |db| {
-            let now = crate::now_unix();
-            // The old site's domain goes; the new one's waits to be verified.
-            // Not while it is the one domain a restricted store's checkout
-            // can be shown on: the new one isn't verified yet.
-            let old_domains = match crate::embed_domains::domain_of_site(old_site.as_str()) {
-                Some(old) => db
-                    .list_store_domains(&store_id)?
-                    .into_iter()
-                    .filter(|d| d.domain == old)
-                    .collect(),
-                None => Vec::new(),
-            };
-            for domain in &old_domains {
-                if crate::embed_domains::would_leave_restricted_store_without_domain(
-                    db, &store_id, &domain.id, now,
-                )? {
-                    return Ok(false);
-                }
-            }
-            db.set_store_name_and_site(&store_id, &name, site.as_ref())?;
-            for domain in &old_domains {
-                db.delete_store_domain(&store_id, &domain.id)?;
-            }
-            crate::embed_domains::suggest_site_domain(db, &store_id, site.as_ref(), now);
-            Ok::<_, crate::db::DbError>(true)
-        })
-        .await;
-    match written {
-        Ok(false) => refuse(crate::embed_domains::LAST_DOMAIN_MESSAGE.to_string()),
-        Ok(true) => {
-            tracing::info!(
-                store.id = %id,
-                from = %current,
-                to = crate::stores::stored_site(new_site.as_ref()),
-                "store website changed"
-            );
-            super::orders::saved(&id, StoreSection::Store)
-        }
-        Err(e) if e.is_unique_violation() => {
-            refuse(new_site.as_ref().map_or_else(something_went_wrong, |site| {
-                super::connections::SiteTaken::Someone.message(site)
-            }))
-        }
-        Err(_) => refuse(something_went_wrong()),
-    }
+    tracing::info!(store.id = %id, "store deleted");
+    crate::base::see_other("/")
 }
 
 // -- Disconnecting a plugin ------------------------------------------------------

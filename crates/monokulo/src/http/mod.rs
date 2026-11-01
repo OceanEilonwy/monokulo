@@ -565,8 +565,8 @@ pub fn build_router(state: AppState) -> Router {
             post(orders::change_store_wallet),
         )
         .route(
-            "/stores/{id}/settings/website",
-            axum::routing::get(store_site::website_form).post(store_site::website_submit),
+            "/stores/{id}/settings/delete",
+            axum::routing::get(store_site::delete_form).post(store_site::delete_submit),
         )
         .route(
             "/stores/{id}/settings/apps/connect",

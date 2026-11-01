@@ -663,12 +663,9 @@ fn wallets_label(n: usize) -> String {
     }
 }
 
-/// "Store": its name, its website, optional, and its payment description,
-/// optional. Any store takes payments at the till; a website lets it show
-/// the checkout on its pages and connect a shop plugin.
+/// "Store": its name and its payment description, optional.
 fn store_card(store: &StoreSettingsData) -> Markup {
     let name = store.shown("store_name", &store.display_name);
-    let site = store.shown("store_site", &store.site);
     let payment_description = store.shown("payment_description", &store.payment_description);
     settings_card(
         store,
@@ -685,7 +682,6 @@ fn store_card(store: &StoreSettingsData) -> Markup {
                         .attr("maxlength", crate::stores::MAX_NAME_LEN.to_string())
                         .maybe_attr("data-saved", store.saved_attr(&store.display_name)))
                 }))
-            (super::store_site::website_field(&store.sites, &site))
             (Field::new("Payment description (optional)", "payment-description")
                 .help(None, html! {
                     "Shown to the payer under your store's name when an order has no description of its own. "
@@ -1125,11 +1121,14 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
         @if let Some(store) = &data.store {
             (tab_links(store))
             @match store.tab {
-                StoreTab::General => (settings_form(store, html! {
-                    (store_card(store))
-                    (base_currency_card(store))
-                    (diagnostics_card(store))
-                })),
+                StoreTab::General => {
+                    (settings_form(store, html! {
+                        (store_card(store))
+                        (base_currency_card(store))
+                        (diagnostics_card(store))
+                    }))
+                    (super::store_site::delete_card(&store.sites))
+                },
                 StoreTab::Payments => (settings_form(store, html! {
                     (confirmations_card(store))
                     (fx_provider_card(store))
@@ -1212,7 +1211,6 @@ mod tests {
                 past: Vec::new(),
                 open_orders: None,
                 plugin_open_orders: None,
-                site_domain: false,
             },
             confirmations_required: Some(10),
             fx_provider_options: vec![FxProviderOption {

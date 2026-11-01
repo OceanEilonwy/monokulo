@@ -804,16 +804,83 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     assert!(body_text(again).await.contains("already added this wallet"));
 }
 
-/// A store's Store card names it and gives it a site, or takes it away: a
-/// new site waits to be verified, and one another store has is refused,
-/// saying which.
+/// A store's Store card renames it. It has no website field: a store's site
+/// is set when it is made (or when a plugin connects), and one sent anyway
+/// changes nothing.
 #[tokio::test]
-async fn a_stores_name_and_site_are_changed_in_its_settings() {
+async fn a_stores_name_is_changed_in_its_settings() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state.clone());
     let cookie = signed_up_and_logged_in_session_cookie(
         &router,
         "rename@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let made = crate::http::test_support::set_up_store_with_keys(
+        &router,
+        &cookie,
+        &[
+            ("store_name", "Bakery"),
+            ("store_site", "bakery.example"),
+            ("view_key_hex", TEST_VIEW_KEY_HEX),
+            ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+        ],
+    )
+    .await;
+    let bakery = crate::http::test_support::store_made(&made);
+    let settings = format!("/stores/{bakery}/settings");
+    let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
+    assert!(
+        page.contains(r#"name="store_name" id="store-name" value="Bakery""#),
+        "{page}"
+    );
+    assert!(!page.contains(r#"name="store_site""#), "{page}");
+    assert!(!page.contains("Your website"), "{page}");
+
+    let saved = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &settings,
+            &cookie,
+            &[
+                ("store_name", " Corner  bakery & café "),
+                ("store_site", "https://other.example/"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+    assert!(saved.headers()["location"]
+        .to_str()
+        .unwrap()
+        .ends_with("?saved=store"));
+    let row = state
+        .db
+        .lock()
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(bakery.clone()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.name, "Corner bakery & café");
+    assert_eq!(
+        row.site.as_ref().map(crate::stores::Site::as_str),
+        Some("bakery.example"),
+        "the site stays as it was made"
+    );
+    let domains = state.db.lock().list_store_domains(&row.id).unwrap();
+    assert_eq!(domains[0].domain, "bakery.example", "waits to be verified");
+}
+
+/// Deleting a store asks for its name, then removes it with its history,
+/// domains and webhooks, and leaves the merchant's other stores and the
+/// wallet alone.
+#[tokio::test]
+async fn a_store_is_deleted_with_its_history_and_nothing_else() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state.clone());
+    let cookie = signed_up_and_logged_in_session_cookie(
+        &router,
+        "delete@example.com",
         "correct horse battery staple",
     )
     .await;
@@ -842,180 +909,99 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
             &router,
             &cookie,
             "Market stall",
-            "",
+            "stall.example",
             wallet.as_str(),
         )
         .await,
     );
-    let settings = format!("/stores/{stall}/settings");
-    let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
-    assert!(
-        page.contains(r#"name="store_name" id="store-name" value="Market stall""#),
-        "{page}"
-    );
-    assert!(
-        page.contains(r#"name="store_site" id="store-site" value="" placeholder"#),
-        "{page}"
-    );
-    assert!(page.contains("Your website (optional)"), "{page}");
-
-    let taken = router
-        .clone()
-        .oneshot(cookie_form_request(
-            &settings,
-            &cookie,
-            &[
-                ("store_name", "Market stall"),
-                ("store_site", "https://bakery.example/"),
-            ],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(taken.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let html = body_text(taken).await;
-    assert!(
-        html.contains("Your store Bakery already uses bakery.example."),
-        "{html}"
-    );
-
-    let saved = router
-        .clone()
-        .oneshot(cookie_form_request(
-            &settings,
-            &cookie,
-            &[
-                ("store_name", " Market  stall & café "),
-                ("store_site", "https://Stall.example/menu"),
-            ],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(saved.status(), StatusCode::SEE_OTHER);
-    assert!(saved.headers()["location"]
-        .to_str()
-        .unwrap()
-        .ends_with("?saved=store"));
-    let row = state
+    let row_user = state
         .db
         .lock()
-        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(stall.clone()))
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(bakery.clone()))
         .unwrap()
-        .unwrap();
-    assert_eq!(row.name, "Market stall & café");
-    assert_eq!(
-        row.site.as_ref().map(crate::stores::Site::as_str),
-        Some("stall.example")
-    );
-    let domains = state.db.lock().list_store_domains(&row.id).unwrap();
-    assert_eq!(domains[0].domain, "stall.example", "waits to be verified");
+        .unwrap()
+        .user_id;
+    let settings = format!("/stores/{bakery}/settings");
+    let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
+    assert!(page.contains("Delete store"), "{page}");
 
-    // Emptying it in the form saves nothing of it: the save goes on to ask
-    // (B1), the name typed; then it's gone, and its domain with it.
-    let cleared = router
-        .clone()
-        .oneshot(cookie_form_request(
-            &settings,
-            &cookie,
-            &[("store_site", "")],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
-    let website = format!("{settings}/website");
-    assert_eq!(
-        cleared.headers()["location"],
-        format!("{website}?remove=1").as_str()
+    let delete = format!("{settings}/delete");
+    let page = body_text(cookie_get(&router, &delete, &cookie).await).await;
+    assert!(page.contains("Delete \u{201c}Bakery\u{201d}?"), "{page}");
+    assert!(
+        page.contains("Its orders, order history and webhooks are deleted"),
+        "{page}"
     );
-    let site_of = |state: &AppState| {
+    let exists = |id: &str| {
         state
             .db
             .lock()
-            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(stall.clone()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(id.to_owned()))
             .unwrap()
-            .unwrap()
-            .site
-            .map(|site| site.to_string())
-            .unwrap_or_default()
+            .is_some()
     };
-    assert_eq!(site_of(&state), "stall.example", "not yet");
-    let page = body_text(cookie_get(&router, &format!("{website}?remove=1"), &cookie).await).await;
-    assert!(
-        page.contains("Remove the website of \u{201c}Market stall &amp; café\u{201d}?"),
-        "{page}"
-    );
-    assert!(
-        page.contains("Checkouts embedded on stall.example stop loading"),
-        "{page}"
-    );
-    assert!(
-        page.contains("Its verified domain stall.example is dropped"),
-        "{page}"
-    );
     let wrong = router
         .clone()
         .oneshot(cookie_form_request(
-            &website,
+            &delete,
             &cookie,
-            &[("remove", "1"), ("confirm", "market stall")],
+            &[("confirm", "bakery")],
         ))
         .await
         .unwrap();
     assert_eq!(wrong.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(site_of(&state), "stall.example");
-    let removed = router
+    assert!(exists(&bakery), "a wrong name deletes nothing");
+
+    let someone_else = signed_up_and_logged_in_session_cookie(
+        &router,
+        "other@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let theirs = router
         .clone()
         .oneshot(cookie_form_request(
-            &website,
-            &cookie,
-            &[("remove", "1"), ("confirm", "Market stall & café")],
+            &delete,
+            &someone_else,
+            &[("confirm", "Bakery")],
         ))
         .await
         .unwrap();
-    assert_eq!(removed.status(), StatusCode::SEE_OTHER);
-    assert_eq!(site_of(&state), "");
-    assert!(state
-        .db
-        .lock()
-        .list_store_domains(&engine_protocol::ids::ConnectionId::new(stall.clone()))
-        .unwrap()
-        .is_empty());
-    // Changing works the same way, to the new site.
-    router
+    assert_eq!(theirs.status(), StatusCode::NOT_FOUND);
+    assert!(exists(&bakery), "not theirs to delete");
+
+    let deleted = router
         .clone()
         .oneshot(cookie_form_request(
-            &settings,
+            &delete,
             &cookie,
-            &[("store_site", "first.example")],
+            &[("confirm", "Bakery")],
         ))
         .await
         .unwrap();
-    let asked = router
-        .clone()
-        .oneshot(cookie_form_request(
-            &settings,
-            &cookie,
-            &[("store_site", "second.example")],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        asked.headers()["location"],
-        format!("{website}?site=second.example").as_str()
+    assert_eq!(deleted.status(), StatusCode::SEE_OTHER);
+    assert!(!exists(&bakery));
+    assert!(exists(&stall), "the other store stays");
+    assert!(
+        state
+            .db
+            .lock()
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(bakery.clone()))
+            .unwrap()
+            .is_empty(),
+        "its domains go"
     );
-    let changed = router
-        .clone()
-        .oneshot(cookie_form_request(
-            &website,
-            &cookie,
-            &[
-                ("site", "https://Second.example/x"),
-                ("confirm", "Market stall & café"),
-            ],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(changed.status(), StatusCode::SEE_OTHER);
-    assert_eq!(site_of(&state), "second.example");
+    assert!(
+        state
+            .db
+            .lock()
+            .get_wallet(&row_user, &wallet)
+            .unwrap()
+            .is_some(),
+        "the wallet stays"
+    );
+    let gone = cookie_get(&router, &settings, &cookie).await;
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
 }
 
 /// A site is optional: a store with none has a name only. Done still lists
@@ -1079,7 +1065,7 @@ async fn a_store_with_no_site_has_a_name_only() {
         r#"<a class="mk-btn" href="/stores/{store_id}/pos" data-variant="primary">Open the till</a>"#
     )), "{done}");
     assert!(
-        done.contains("add your site in the store's settings first"),
+        done.contains("add the website under Domains first"),
         "{done}"
     );
     assert!(!done.contains("Not taking payments yet"), "{done}");
@@ -1119,9 +1105,7 @@ async fn a_stores_payment_description_is_saved_from_its_settings() {
     let store = crate::http::test_support::store_made(&made);
     let settings = format!("/stores/{store}/settings");
     let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
-    let website = page.find("Your website (optional)").unwrap();
-    let description = page.find("Payment description (optional)").unwrap();
-    assert!(website < description, "{page}");
+    assert!(page.contains("Payment description (optional)"), "{page}");
     assert!(
         page.contains("when an order has no description of its own"),
         "{page}"

@@ -219,7 +219,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                     label class="setting-label" for="store-site" { "Your website" }
                     @if data.from_plugin.is_none() { (ui::Hint::new("(optional)").inline(true)) }
                 }
-                (field_help("Needed for the checkout on your pages or for a shop plugin. Leave it empty to take payments at the till only."))
+                (field_help("Needed for the checkout on your pages or for a shop plugin. It is added to the store's Domains. Leave it empty to take payments at the till only."))
                 (ui::Input::new("store_site")
                     .id("store-site")
                     .value(data.site.clone())
@@ -377,7 +377,7 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                     @if has_site {
                         (ui::Hint::new(format!("A script tag and a button on {}, or a call from your server. The guide shows both, and how to verify the domain.", site)).inline(true))
                     } @else {
-                        (ui::Hint::new("It runs on your website: add your site in the store's settings first.").inline(true))
+                        (ui::Hint::new("It runs on your website: add the website under Domains first.").inline(true))
                     }
                 }
                 @if has_site {
@@ -386,7 +386,7 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                         .attr("target", "_blank")
                         .attr("rel", "noopener"))
                 } @else {
-                    (ui::LinkButton::new("Add your site", format!("{}#card-store", settings_link(id))))
+                    (ui::LinkButton::new("Add your website", format!("{}?tab=domains", settings_link(id))))
                 }
             }
             li {
@@ -406,7 +406,7 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                         strong { "Connect a shop plugin" }
                         (ui::Hint::new(
                             "Install Monokulo's plugin for your shop, then connect it from the shop's payment settings. \
-                             It finds this store by its site."
+                             It asks which of your stores to use."
                         ).inline(true))
                     }
                     (ui::LinkButton::new(html! { "Find your plugin " (super::external_link_icon()) }, super::docs_url("plugins/"))

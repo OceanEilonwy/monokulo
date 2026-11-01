@@ -1544,6 +1544,30 @@ impl Db {
         Ok(())
     }
 
+    /// Deletes a store and everything it holds here: its orders' currency
+    /// metadata, connect tokens, confirmation thresholds and domains by
+    /// hand, the rest (webhooks and their deliveries, plugins, apps, push
+    /// targets, till orders, order requests, wallet periods) by cascade. One
+    /// transaction; the wallet the store paid into is the merchant's and
+    /// stays. The engine's side is `EngineClient::delete_tenant`.
+    pub fn delete_store(&self, id: &ConnectionId) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for table in [
+            "order_currency_metadata",
+            "connect_tokens",
+            "confirmation_thresholds",
+            "store_domains",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE connection_id = ?1"),
+                params![id],
+            )?;
+        }
+        tx.execute("DELETE FROM store_connections WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     // -- Store integrations (migration 0037) -----------------------------
 
     fn row_to_integration(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreIntegrationRow> {
