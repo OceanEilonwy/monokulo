@@ -269,6 +269,128 @@ async fn a_draft_is_saved_and_previewed_and_what_is_wrong_is_said_with_nothing_s
     assert!(html.contains("Preview only"), "{html}");
 }
 
+/// A stock layout's preview is its store's owner's, and only as a frame of the
+/// preview page, sandboxed like a draft's.
+#[tokio::test]
+async fn a_layouts_preview_is_its_owners_and_only_as_a_frame() {
+    let wizard = wizard("layout-preview@example.com", true).await;
+    let page = format!("/stores/{}/settings/checkout-layout", wizard.store);
+    let frame = format!("{page}/frame?layout=tiny&state=paid");
+    let request = |cookie: Option<&str>, dest: &str, site: &str| {
+        let mut request = Request::builder()
+            .uri(&frame)
+            .header("sec-fetch-dest", dest)
+            .header("sec-fetch-site", site);
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        request.body(Body::empty()).unwrap()
+    };
+
+    let (status, _) = wizard.get(&format!("{page}?layout=tiny")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let framed = wizard
+        .router
+        .clone()
+        .oneshot(request(Some(&wizard.cookie), "iframe", "same-origin"))
+        .await
+        .unwrap();
+    assert_eq!(framed.status(), StatusCode::OK);
+    let policy = framed.headers()[axum::http::header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap();
+    assert!(policy.contains("sandbox"), "{policy}");
+
+    let alone = wizard
+        .router
+        .clone()
+        .oneshot(request(Some(&wizard.cookie), "document", "none"))
+        .await
+        .unwrap();
+    assert_eq!(alone.status(), StatusCode::FORBIDDEN);
+
+    let stranger = signed_up_and_logged_in_session_token(
+        &wizard.router,
+        "stranger@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let stranger = format!("{}={stranger}", crate::http::SESSION_COOKIE_NAME);
+    let theirs = wizard
+        .router
+        .clone()
+        .oneshot(request(Some(&stranger), "iframe", "same-origin"))
+        .await
+        .unwrap();
+    assert_eq!(theirs.status(), StatusCode::NOT_FOUND);
+
+    let nobody = wizard
+        .router
+        .clone()
+        .oneshot(request(None, "iframe", "same-origin"))
+        .await
+        .unwrap();
+    assert_ne!(nobody.status(), StatusCode::OK);
+}
+
+/// The form shows every colour, so saving it as it came changes nothing: a store
+/// stays on the theme. Without JavaScript, a box takes every colour back to it.
+#[tokio::test]
+async fn saving_the_themes_colours_keeps_a_store_on_the_theme() {
+    use crate::views::checkout_style::{theme_colour, CheckoutStyle};
+    let wizard = wizard("theme-colours@example.com", true).await;
+    let settings = format!("/stores/{}/settings", wizard.store);
+    let style = || {
+        wizard
+            .state
+            .db
+            .lock()
+            .get_store_connection_by_id(&wizard.store)
+            .unwrap()
+            .unwrap()
+            .checkout_style
+    };
+    let save = |fields: Vec<(&'static str, String)>| {
+        let pairs: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        form_post(&settings, Some(&wizard.cookie), &pairs)
+    };
+
+    let own = theme_colour("light", "accent").unwrap().to_string();
+    let saved = wizard
+        .router
+        .clone()
+        .oneshot(save(vec![("style_light_accent", own)]))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+    assert_eq!(style(), CheckoutStyle::default());
+
+    wizard
+        .router
+        .clone()
+        .oneshot(save(vec![
+            ("style_light_accent", "#2f6b4f".to_string()),
+            ("style_dark_text", "#eeeeee".to_string()),
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(style().light.accent.as_deref(), Some("#2f6b4f"));
+    assert_eq!(style().dark.text.as_deref(), Some("#eeeeee"));
+
+    // The box wins over what the swatches still hold, as they can't be emptied.
+    wizard
+        .router
+        .clone()
+        .oneshot(save(vec![
+            ("style_light_accent", "#2f6b4f".to_string()),
+            ("style_theme_colours", "on".to_string()),
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(style(), CheckoutStyle::default());
+}
+
 /// A draft's page can only be seen as a sandboxed frame of this Monokulo's own
 /// pages: never at its own address, where it would pass for the real thing.
 #[tokio::test]

@@ -682,6 +682,65 @@ pub(super) fn switch_examples() -> Vec<(&'static str, Switch)> {
     ]
 }
 
+component! {
+    /// A colour: a swatch that opens the device's own picker, and it's what the
+    /// form sends, so it works with JavaScript off. Once its island attaches,
+    /// a box beside it shows the colour as hex for typing or pasting, and a
+    /// button puts back `default_value` while it differs.
+    pub struct ColourInput {
+        name: String,
+        /// `#rrggbb`, lower case: what a browser's colour input holds.
+        value: String,
+        /// Its name for screen readers ("Accent, light").
+        label: String,
+        id: Option<String>,
+        /// The colour to go back to, when there is one.
+        default_value: Option<String>,
+        /// More attributes for the swatch: `data-saved`.
+        rest: Attrs,
+    }
+    behaviour "colour-input.behaviour.ts" {
+        uses(default_value),
+        /// It holds `default_value`, or there's none: nothing to go back to.
+        at_default: bool,
+        fn reset,
+        ref well,
+        ref hex,
+    }
+    html {
+        span class="mk-colour" {
+            input class="mk-colour-well" type="color" name=(name) id=[id] value=(value)
+                aria-label=(label) ..rest ref=well;
+            @if enhanced {
+                input class="mk-colour-hex" type="text" value=(value) maxlength="7" autocomplete="off"
+                    spellcheck="false" aria-label={ (label) ", as hex" } ref=hex;
+                button class="mk-colour-reset" type="button" aria-label={ (label) ": back to the default" }
+                    title="Back to the default" hidden[b.at_default] on:click=reset {
+                    svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true" { path d="M6 6l12 12M18 6 6 18" {} }
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn colour_input_examples() -> Vec<(&'static str, ColourInput)> {
+    vec![
+        (
+            "At its default",
+            ColourInput::new("book_colour", "#b34700", "Accent").default_value("#b34700"),
+        ),
+        (
+            "Changed, so it can go back",
+            ColourInput::new("book_colour_changed", "#2f6b4f", "Accent, changed")
+                .default_value("#b34700"),
+        ),
+        (
+            "With nothing to go back to",
+            ColourInput::new("book_colour_plain", "#2f6b4f", "Text"),
+        ),
+    ]
+}
+
 /// One choice of [`RadioCards`].
 #[derive(Clone, Debug, UiRecord)]
 pub struct RadioCard {
@@ -703,6 +762,9 @@ component! {
         /// Small cards, side by side: the theme's three.
         #[default(false)]
         compact: bool,
+        /// After the choices, in their grid: what sits among them but isn't
+        /// one, like a link to where another is set up.
+        after: Option<Slot>,
     }
     html {
         div class=join["radio-cards", "is-compact" if compact] {
@@ -714,6 +776,7 @@ component! {
                     (card.label)
                 }
             }
+            @if let Some(after) = after { (after) }
         }
     }
 }

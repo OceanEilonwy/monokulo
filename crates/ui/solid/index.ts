@@ -44,6 +44,7 @@ export * from './Field';
 export * from './Input';
 export * from './MoneyInput';
 export * from './Stepper';
+export * from './ColourInput';
 export * from './FieldNote';
 export * from './LockedValue';
 export * from './TextArea';

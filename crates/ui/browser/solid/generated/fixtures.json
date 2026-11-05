@@ -3346,6 +3346,38 @@
     "title": "Disabled"
   },
   {
+    "component": "ColourInput",
+    "html": "<span class=\"mk-colour\" data-island=\"ColourInput\" data-props=\"{&quot;default_value&quot;:&quot;#b34700&quot;,&quot;label&quot;:&quot;Accent&quot;,&quot;value&quot;:&quot;#b34700&quot;}\"><input class=\"mk-colour-well\" type=\"color\" name=\"book_colour\" value=\"#b34700\" aria-label=\"Accent\" data-mk=\"1\"><!--mk:2--></span>",
+    "props": {
+      "default_value": "#b34700",
+      "label": "Accent",
+      "name": "book_colour",
+      "value": "#b34700"
+    },
+    "title": "At its default"
+  },
+  {
+    "component": "ColourInput",
+    "html": "<span class=\"mk-colour\" data-island=\"ColourInput\" data-props=\"{&quot;default_value&quot;:&quot;#b34700&quot;,&quot;label&quot;:&quot;Accent, changed&quot;,&quot;value&quot;:&quot;#2f6b4f&quot;}\"><input class=\"mk-colour-well\" type=\"color\" name=\"book_colour_changed\" value=\"#2f6b4f\" aria-label=\"Accent, changed\" data-mk=\"1\"><!--mk:2--></span>",
+    "props": {
+      "default_value": "#b34700",
+      "label": "Accent, changed",
+      "name": "book_colour_changed",
+      "value": "#2f6b4f"
+    },
+    "title": "Changed, so it can go back"
+  },
+  {
+    "component": "ColourInput",
+    "html": "<span class=\"mk-colour\" data-island=\"ColourInput\" data-props=\"{&quot;label&quot;:&quot;Text&quot;,&quot;value&quot;:&quot;#2f6b4f&quot;}\"><input class=\"mk-colour-well\" type=\"color\" name=\"book_colour_plain\" value=\"#2f6b4f\" aria-label=\"Text\" data-mk=\"1\"><!--mk:2--></span>",
+    "props": {
+      "label": "Text",
+      "name": "book_colour_plain",
+      "value": "#2f6b4f"
+    },
+    "title": "With nothing to go back to"
+  },
+  {
     "component": "FieldNote",
     "html": "<span class=\"field-help\">The node's host and port, like node.example.com:18089.</span>",
     "props": {

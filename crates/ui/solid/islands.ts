@@ -13,6 +13,7 @@ export const islands: Record<string, () => Promise<Attach>> = {
   Dialog: () => import('./Dialog').then(module => module.attachDialog),
   MoneyInput: () => import('./MoneyInput').then(module => module.attachMoneyInput),
   Stepper: () => import('./Stepper').then(module => module.attachStepper),
+  ColourInput: () => import('./ColourInput').then(module => module.attachColourInput),
   RowsEditor: () => import('./RowsEditor').then(module => module.attachRowsEditor),
   Select: () => import('./Select').then(module => module.attachSelect),
   Countdown: () => import('./Countdown').then(module => module.attachCountdown),

@@ -299,6 +299,16 @@ pub fn edit_page(
 /// A frame showing one state of a draft: sandboxed, so nothing in it runs, and
 /// with its own address, so it's never taken for this page.
 fn preview_frame(preview_token: &str, state: &PreviewState) -> Markup {
+    frame_at(
+        state,
+        &format!(
+            "/checkout-preview/{preview_token}/frame?state={}",
+            state.slug
+        ),
+    )
+}
+
+fn frame_at(state: &PreviewState, path: &str) -> Markup {
     html! {
         figure class="template-preview" {
             figcaption { (state.name) }
@@ -306,9 +316,38 @@ fn preview_frame(preview_token: &str, state: &PreviewState) -> Markup {
                 sandbox=""
                 loading="lazy"
                 title=(format!("Your page when: {}", state.name))
-                src=(crate::base::url(format!("/checkout-preview/{preview_token}/frame?state={}", state.slug))) {}
+                src=(crate::base::url(path)) {}
         }
     }
+}
+
+/// `/stores/{id}/settings/checkout-layout`: every state of a stock layout, in
+/// the store's saved colours.
+pub fn layout_preview(chrome: &PageChrome, store: &WizardStore, layout: Layout) -> Markup {
+    let page = format!("/stores/{}/settings/checkout-layout", store.id);
+    let header = ui::PageHeader::new(format!("{} layout", layout.label())).crumbs(store.crumbs());
+    let body = html! {
+        nav class="template-preview-states" aria-label="Layouts" {
+            @for other in Layout::ALL {
+                a href=(crate::base::url(format!("{page}?layout={}", other.name())))
+                    aria-current=[(other == layout).then_some("page")] { (other.label()) }
+            }
+        }
+        (super::settings::plain_card("layout-preview", "Every state", html! {
+            (ui::Hint::new("In your saved colours, on a made-up order that can't be paid."))
+            div class="template-previews" {
+                @for state in &PREVIEW_STATES {
+                    (frame_at(state, &format!("{page}/frame?layout={}&state={}", layout.name(), state.slug)))
+                }
+            }
+        }))
+    };
+    super::Page::new(
+        format!("{} layout - {} - Monokulo", layout.label(), store.name),
+        header,
+    )
+    .class("settings-page")
+    .render(chrome, body)
 }
 
 /// Step 2: every state of the draft, with a link to show someone.
@@ -490,140 +529,141 @@ pub enum PageCard {
     TurnedOff { reason: Option<String> },
 }
 
+/// The name of the card on the Checkout tab.
+pub const CARD_NAME: &str = "custom-page";
+
+impl PageCard {
+    /// The card's state, in a word or two, beside its title.
+    pub fn tag(&self) -> ui::Tag {
+        let (words, tone) = match self {
+            PageCard::NeedsDomain => ("Not available yet", ui::TagTone::Muted),
+            PageCard::None => ("Not set up", ui::TagTone::Muted),
+            PageCard::Draft { .. } => ("Waiting for approval", ui::TagTone::Warning),
+            PageCard::Working { .. } => ("Working", ui::TagTone::Ok),
+            PageCard::Failing { .. } => ("Failing", ui::TagTone::Warning),
+            PageCard::NotShowing { .. } => ("Not showing", ui::TagTone::Error),
+            PageCard::TurnedOff { .. } => ("Turned off by admin", ui::TagTone::Error),
+        };
+        ui::Tag::new(words).tone(tone)
+    }
+}
+
+/// A button of the card. The card sits among the settings form's, and a form can't
+/// hold another, so each button names its form, which is outside
+/// ([`page_card_forms`]).
+fn form_button(label: &str, action: &str) -> ui::Button {
+    ui::Button::new(label)
+        .kind(ui::ButtonType::Submit)
+        .attr("form", format!("custom-page-{action}"))
+}
+
+/// The forms the card's buttons send: once on the page, outside the settings form.
+pub fn page_card_forms(store_id: &str) -> Markup {
+    let page = crate::base::url(format!("/stores/{store_id}/settings/checkout-page"));
+    html! {
+        @for action in ["recheck", "stop", "discard"] {
+            form id=(format!("custom-page-{action}")) method="post" action=(format!("{page}/{action}")) hidden {}
+        }
+    }
+}
+
 /// The card on the Checkout tab.
 pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
     let page = crate::base::url(format!("/stores/{store_id}/settings/checkout-page"));
     let edit = || ui::LinkButton::new("Edit", page.clone());
-    let recheck = || {
-        html! {
-            form method="post" action=(format!("{page}/recheck")) class="inline-form" {
-                (ui::Button::new("Check again").kind(ui::ButtonType::Submit))
-            }
-        }
-    };
-    let stop = || {
-        html! {
-            form method="post" action=(format!("{page}/stop")) class="inline-form" {
-                (ui::Button::new("Stop using").kind(ui::ButtonType::Submit))
-            }
-        }
-    };
+    let recheck = || form_button("Check again", "recheck");
+    let stop = || form_button("Stop using", "stop");
     let continue_draft = |draft: bool| {
         html! {
             @if draft { (ui::LinkButton::new("Continue your draft", format!("{page}/approve"))) }
         }
     };
-    let (tag, body) = match card {
-        PageCard::NeedsDomain => (
-            "Not available yet",
-            html! {
-                p { "A custom page needs a web domain or onion address you've proved is yours. Verify one, then come back here." }
-                (ui::LinkButton::new("Verify a domain", crate::base::url(format!("/stores/{store_id}/settings?tab=domains"))))
-            },
-        ),
-        PageCard::None => (
-            "Not set up",
-            html! {
-                p { "Write your own checkout with a template and optional CSS. Your domains approve every version you publish, so a leaked key can't put new words in front of customers." }
-                (ui::FormActions::new(ui::Slot::many([
-                    ui::Slot::from(ui::LinkButton::new("Create a custom page", page.clone()).variant(ui::ButtonVariant::Primary)),
-                    ui::Slot::from(html! { a href=(super::docs_url("custom-pages")) { "Custom page guide" } }),
-                ])))
-            },
-        ),
-        PageCard::Draft { domains, days_left } => (
-            "Waiting for approval",
-            html! {
-                p { "Customers don't see this draft until it's approved on " strong { (domains.join(" and ")) } ". It's kept for " (days_left) " more days." }
-                (ui::FormActions::new(ui::Slot::many([
-                    ui::Slot::from(ui::LinkButton::new("Continue", format!("{page}/approve")).variant(ui::ButtonVariant::Primary)),
-                    ui::Slot::from(edit()),
-                    ui::Slot::from(html! {
-                        form method="post" action=(format!("{page}/discard")) class="inline-form" {
-                            (ui::Button::new("Discard draft").kind(ui::ButtonType::Submit))
-                        }
-                    }),
-                ])))
-            },
-        ),
+    let body = match card {
+        PageCard::NeedsDomain => html! {
+            p { "A custom page needs a web domain or onion address you've proved is yours. Verify one, then come back here." }
+            (ui::LinkButton::new("Verify a domain", crate::base::url(format!("/stores/{store_id}/settings?tab=domains"))))
+        },
+        PageCard::None => html! {
+            p { "Write your own checkout with a template and optional CSS. Your domains approve every version you publish, so a leaked key can't put new words in front of customers." }
+            (ui::FormActions::new(ui::Slot::many([
+                ui::Slot::from(ui::LinkButton::new("Create a custom page", page.clone()).variant(ui::ButtonVariant::Primary)),
+                ui::Slot::from(html! { a href=(super::docs_url("custom-pages")) { "Custom page guide" } }),
+            ])))
+        },
+        PageCard::Draft { domains, days_left } => html! {
+            p { "Customers don't see this draft until it's approved on " strong { (domains.join(" and ")) } ". It's kept for " (days_left) " more days." }
+            (ui::FormActions::new(ui::Slot::many([
+                ui::Slot::from(ui::LinkButton::new("Continue", format!("{page}/approve")).variant(ui::ButtonVariant::Primary)),
+                ui::Slot::from(edit()),
+                ui::Slot::from(form_button("Discard draft", "discard")),
+            ])))
+        },
         PageCard::Working {
             domains,
             waiting,
             checked,
             trouble,
             draft,
-        } => (
-            "Working",
-            html! {
-                p { "Showing to customers where your site frames it. Checked " (checked) " on " strong { (domains.join(" and ")) } "." }
-                @if let Some(trouble) = trouble {
-                    (ui::Hint::new(trouble.as_str()))
-                }
-                @if !waiting.is_empty() {
-                    (ui::Hint::new(format!("{} shows {} until it has this version's proof. We'll look soon.", waiting.join(" and "), fallback.label())))
-                }
-                (ui::Hint::new(format!("Direct visits to a payment link show {}.", fallback.label())))
-                (ui::FormActions::new(ui::Slot::many([
-                    ui::Slot::from(continue_draft(*draft)),
-                    ui::Slot::from(edit()),
-                    ui::Slot::from(stop()),
-                ])))
-            },
-        ),
+        } => html! {
+            p { "Showing to customers where your site frames it. Checked " (checked) " on " strong { (domains.join(" and ")) } "." }
+            @if let Some(trouble) = trouble {
+                (ui::Hint::new(trouble.as_str()))
+            }
+            @if !waiting.is_empty() {
+                (ui::Hint::new(format!("{} shows {} until it has this version's proof. We'll look soon.", waiting.join(" and "), fallback.label())))
+            }
+            (ui::Hint::new(format!("Direct visits to a payment link show {}.", fallback.label())))
+            (ui::FormActions::new(ui::Slot::many([
+                ui::Slot::from(continue_draft(*draft)),
+                ui::Slot::from(edit()),
+                ui::Slot::from(stop()),
+            ])))
+        },
         PageCard::Failing {
             domains,
             reason,
             token,
             days_left,
             draft,
-        } => (
-            "Failing",
-            html! {
-                p {
-                    "We can't find every proof of this version. Customers still see your page for "
-                    (days_left) " more days, then " (fallback.label()) " on all your domains. Add what's missing, then check again."
-                }
-                @if let Some(reason) = reason {
-                    (ui::Hint::new(reason.as_str()))
-                }
-                @for domain in domains {
-                    p { strong { (domain) } }
-                    (proof_details(domain, token))
-                }
-                (ui::FormActions::new(ui::Slot::many([
-                    ui::Slot::from(recheck()),
-                    ui::Slot::from(continue_draft(*draft)),
-                    ui::Slot::from(edit()),
-                    ui::Slot::from(stop()),
-                ])))
-            },
-        ),
-        PageCard::NotShowing { reason, draft } => (
-            "Not showing",
-            html! {
-                p { "Customers now see " strong { (fallback.label()) } " instead of your page. Open orders keep working. Your page comes back by itself once a check finds every record and file." }
-                @if let Some(reason) = reason {
-                    (ui::Hint::new(reason.as_str()))
-                }
-                (ui::FormActions::new(ui::Slot::many([
-                    ui::Slot::from(recheck()),
-                    ui::Slot::from(continue_draft(*draft)),
-                    ui::Slot::from(edit()),
-                    ui::Slot::from(stop()),
-                ])))
-            },
-        ),
-        PageCard::TurnedOff { reason } => (
-            "Turned off by admin",
-            html! {
-                p { "The operator of this Monokulo turned off your custom page. Customers see your layout, " strong { (fallback.label()) } "." }
-                @if let Some(reason) = reason { p { strong { "Reason: " } (reason) } }
-                (ui::Hint::new("You can edit a draft, but can't publish it while this is off."))
-                (edit())
-            },
-        ),
+        } => html! {
+            p {
+                "We can't find every proof of this version. Customers still see your page for "
+                (days_left) " more days, then " (fallback.label()) " on all your domains. Add what's missing, then check again."
+            }
+            @if let Some(reason) = reason {
+                (ui::Hint::new(reason.as_str()))
+            }
+            @for domain in domains {
+                p { strong { (domain) } }
+                (proof_details(domain, token))
+            }
+            (ui::FormActions::new(ui::Slot::many([
+                ui::Slot::from(recheck()),
+                ui::Slot::from(continue_draft(*draft)),
+                ui::Slot::from(edit()),
+                ui::Slot::from(stop()),
+            ])))
+        },
+        PageCard::NotShowing { reason, draft } => html! {
+            p { "Customers now see " strong { (fallback.label()) } " instead of your page. Open orders keep working. Your page comes back by itself once a check finds every record and file." }
+            @if let Some(reason) = reason {
+                (ui::Hint::new(reason.as_str()))
+            }
+            (ui::FormActions::new(ui::Slot::many([
+                ui::Slot::from(recheck()),
+                ui::Slot::from(continue_draft(*draft)),
+                ui::Slot::from(edit()),
+                ui::Slot::from(stop()),
+            ])))
+        },
+        PageCard::TurnedOff { reason } => html! {
+            p { "The operator of this Monokulo turned off your custom page. Customers see your layout, " strong { (fallback.label()) } "." }
+            @if let Some(reason) = reason { p { strong { "Reason: " } (reason) } }
+            (ui::Hint::new("You can edit a draft, but can't publish it while this is off."))
+            (edit())
+        },
     };
-    super::settings::plain_card_with_meta("custom-page", "Custom page", Some(tag), body)
+    super::settings::plain_card_with_tag(CARD_NAME, "Custom page", card.tag(), body)
 }
 
 /// One row of the operator's list.

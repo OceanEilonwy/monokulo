@@ -86,6 +86,24 @@ a.mk-launch-tile[href]:hover { background: var(--btn-hover-bg); border-color: va
 .mk-money[data-size="compact"] > .mk-input { min-height: 2rem; padding: var(--space-xs) var(--space-sm); font-size: var(--text-sm); }
 .mk-money[data-size="compact"] > .mk-money-unit { padding: 0 var(--space-sm); font-size: var(--text-xs); }
 
+/* A colour (ColourInput): the swatch opens the device's picker, the hex box
+   beside it comes with the behaviour. Without it, the swatch fills the box. */
+.mk-colour { box-sizing: border-box; display: flex; align-items: center; gap: var(--space-sm); min-width: 0; min-height: 2.75rem; padding: var(--space-xs) var(--space-sm); border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: var(--control-bg); }
+.mk-colour:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-color: var(--focus-ring); }
+.mk-colour:has(> :user-invalid) { border-color: var(--error); }
+.mk-colour > .mk-colour-well { appearance: none; flex: none; box-sizing: border-box; width: 1.75rem; height: 1.75rem; margin: 0; padding: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: none; overflow: hidden; cursor: pointer; }
+.mk-colour > .mk-colour-well:only-child { flex: 1 1 auto; }
+.mk-colour > .mk-colour-well:focus-visible { outline: none; }
+.mk-colour-well::-webkit-color-swatch-wrapper { padding: 0; }
+.mk-colour-well::-webkit-color-swatch { border: 0; }
+.mk-colour-well::-moz-color-swatch { border: 0; }
+.mk-colour > .mk-colour-hex { flex: 1 1 0; width: 100%; min-width: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; color: var(--ink); font-family: var(--font-mono); font-size: var(--text-sm); }
+.mk-colour > .mk-colour-hex:focus-visible { outline: none; }
+.mk-colour > .mk-colour-reset { flex: none; display: grid; place-items: center; width: 1.5rem; height: 1.5rem; margin: 0; padding: 0; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); cursor: pointer; }
+.mk-colour > .mk-colour-reset:hover { color: var(--ink); background: var(--surface-sunken); }
+.mk-colour > .mk-colour-reset[hidden] { display: none; }
+.mk-colour-reset .mk-icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+
 /* A whole number with − and + (Stepper). Without the behaviour, a narrow
    field; with it, one box with the buttons at its ends. */
 .mk-stepper { box-sizing: border-box; display: inline-flex; align-items: stretch; vertical-align: middle; }
