@@ -1,0 +1,230 @@
+[
+  {
+    "html": "<p>plain</p>",
+    "source": "<p>plain</p>"
+  },
+  {
+    "html": "<p>a<span>b</span>c</p>",
+    "source": "<p>a<span>b</span>c</p>"
+  },
+  {
+    "html": "<p><b><i><em><strong><small><code>x</code></small></strong></em></i></b></p>",
+    "source": "<p><b><i><em><strong><small><code>x</code></small></strong></em></i></b></p>"
+  },
+  {
+    "html": "<div><div><div><section><article><aside>deep</aside></article></section></div></div></div>",
+    "source": "<div><div><div><section><article><aside>deep</aside></article></section></div></div></div>"
+  },
+  {
+    "html": "<ul><li>a</li><li>b<ul><li>nested</li></ul></li></ul>",
+    "source": "<ul><li>a</li><li>b<ul><li>nested</li></ul></li></ul>"
+  },
+  {
+    "html": "<ol>\n  <li>a</li>\n  <li><div><p>b</p></div></li>\n</ol>",
+    "source": "<ol>\n  <li>a</li>\n  <li><div><p>b</p></div></li>\n</ol>"
+  },
+  {
+    "html": "<ul><mk-if id=\"mk-if-0\"><li>in a region in a list</li></mk-if></ul>",
+    "source": "<ul>{{if awaiting}}<li>in a region in a list</li>{{end}}</ul>"
+  },
+  {
+    "html": "<p><mk-if id=\"mk-if-0\">inline <em>region</em></mk-if></p>",
+    "source": "<p>{{if awaiting}}inline <em>region</em>{{end}}</p>"
+  },
+  {
+    "html": "<div><mk-if id=\"mk-if-0\"><div><p>block region</p></div></mk-if></div>",
+    "source": "<div>{{if awaiting}}<div><p>block region</p></div>{{end}}</div>"
+  },
+  {
+    "html": "<mk-if id=\"mk-if-0\"><h1>top</h1></mk-if>",
+    "source": "{{if awaiting}}<h1>top</h1>{{end}}"
+  },
+  {
+    "html": "<p><mk-part data-part=\"amount\"></mk-part> <mk-part data-part=\"fiat\"></mk-part> <mk-part data-part=\"store\"></mk-part> <mk-part data-part=\"order-id\"></mk-part></p>",
+    "source": "<p>{{amount}} {{fiat}} {{store}} {{order-id}}</p>"
+  },
+  {
+    "html": "<h1><mk-part data-part=\"store\"></mk-part></h1><h2><mk-part data-part=\"amount\"></mk-part></h2>",
+    "source": "<h1>{{store}}</h1><h2>{{amount bare}}</h2>"
+  },
+  {
+    "html": "<section><mk-part data-part=\"status\"></mk-part><mk-part data-part=\"qr\"></mk-part><div><mk-part data-part=\"address\"></mk-part></div><mk-part data-part=\"countdown\"></mk-part><mk-part data-part=\"progress\"></mk-part><mk-part data-part=\"refund\"></mk-part><mk-part data-part=\"payments\"></mk-part></section>",
+    "source": "<section>{{status}}{{qr small}}<div>{{address short}}</div>{{countdown}}{{progress}}{{refund}}{{payments}}</section>"
+  },
+  {
+    "html": "<div></div>",
+    "source": "<div></div>"
+  },
+  {
+    "html": "<p></p><p></p>",
+    "source": "<p></p><p></p>"
+  },
+  {
+    "html": "<br><br>",
+    "source": "<br><br>"
+  },
+  {
+    "html": "<p>a<br>b</p>",
+    "source": "<p>a<br>b</p>"
+  },
+  {
+    "html": "<hr><p>after</p>",
+    "source": "<hr><p>after</p>"
+  },
+  {
+    "html": "<div><hr></div>",
+    "source": "<div><hr></div>"
+  },
+  {
+    "html": "&lt;script&gt;alert(1)&lt;/script&gt;",
+    "source": "&lt;script&gt;alert(1)&lt;/script&gt;"
+  },
+  {
+    "html": "&lt;!-- not a comment --&gt;",
+    "source": "&lt;!-- not a comment --&gt;"
+  },
+  {
+    "html": "&lt;/div&gt;&lt;/p&gt;",
+    "source": "&lt;/div&gt;&lt;/p&gt;"
+  },
+  {
+    "html": "<p>&lt;/p&gt;&lt;div&gt;</p>",
+    "source": "<p>&lt;/p&gt;&lt;div&gt;</p>"
+  },
+  {
+    "html": "<p>x</p>",
+    "source": "<!-- dropped --><p>x</p><!-- dropped -->"
+  },
+  {
+    "html": "<p>x</p>",
+    "source": "<!-- <div> --><p>x</p>"
+  },
+  {
+    "html": "a &amp; b &amp;amp; c",
+    "source": "a &amp; b &amp;amp; c"
+  },
+  {
+    "html": "\"quoted\" 'quoted'",
+    "source": "&quot;quoted&quot; &apos;quoted&apos;"
+  },
+  {
+    "html": "non&nbsp;breaking",
+    "source": "non&nbsp;breaking"
+  },
+  {
+    "html": "AB",
+    "source": "&#x41;&#66;"
+  },
+  {
+    "html": "é ü 日本語 🙂",
+    "source": "é ü 日本語 🙂"
+  },
+  {
+    "html": "tab\there",
+    "source": "tab\there"
+  },
+  {
+    "html": "\n\nleading newlines\n\n",
+    "source": "\n\nleading newlines\n\n"
+  },
+  {
+    "html": "<div>\n\n<p>\n\n</p>\n\n</div>",
+    "source": "<div>\n\n<p>\n\n</p>\n\n</div>"
+  },
+  {
+    "html": "<ul>\n\n</ul>",
+    "source": "<ul>\n\n</ul>"
+  },
+  {
+    "html": "  <p>  spaced  </p>  ",
+    "source": "  <p>  spaced  </p>  "
+  },
+  {
+    "html": "<div class=\"upper\"></div>",
+    "source": "<DIV CLASS=\"upper\"></DIV>"
+  },
+  {
+    "html": "<div class=\"single\"></div>",
+    "source": "<div class='single'></div>"
+  },
+  {
+    "html": "<div class=\"a  b\tc\"></div>",
+    "source": "<div class=\"a  b\tc\"></div>"
+  },
+  {
+    "html": "<div aria-label=\"a &amp; &quot;b&quot;\"></div>",
+    "source": "<div aria-label=\"a &amp; &quot;b&quot;\"></div>"
+  },
+  {
+    "html": "<div lang=\"en\" class=\"x\" aria-label=\"y\"></div>",
+    "source": "<div lang=\"en\" class=\"x\" aria-label=\"y\"></div>"
+  },
+  {
+    "html": "<div aria-label=\"A\"></div>",
+    "source": "<div aria-label=\"&#x41;\"></div>"
+  },
+  {
+    "html": "<figure><figcaption>cap</figcaption></figure>",
+    "source": "<figure><figcaption>cap</figcaption></figure>"
+  },
+  {
+    "html": "<blockquote><p>q</p></blockquote>",
+    "source": "<blockquote><p>q</p></blockquote>"
+  },
+  {
+    "html": "<header><nav><main><footer></footer></main></nav></header>",
+    "source": "<header><nav><main><footer></footer></main></nav></header>"
+  },
+  {
+    "html": "<h1><span>a</span></h1><h2><em>b</em></h2><h3><b>c</b></h3><h4><i>d</i></h4><h5><small>e</small></h5><h6><code>f</code></h6>",
+    "source": "<h1><span>a</span></h1><h2><em>b</em></h2><h3><b>c</b></h3><h4><i>d</i></h4><h5><small>e</small></h5><h6><code>f</code></h6>"
+  },
+  {
+    "html": "<span><span><span>nested spans</span></span></span>",
+    "source": "<span><span><span>nested spans</span></span></span>"
+  },
+  {
+    "html": "<b>bold text outside a paragraph</b>",
+    "source": "<b>bold text outside a paragraph</b>"
+  },
+  {
+    "html": "<em></em><strong></strong>",
+    "source": "<em></em><strong></strong>"
+  },
+  {
+    "html": "<div><b>a</b><p>b</p><i>c</i></div>",
+    "source": "<div><b>a</b><p>b</p><i>c</i></div>"
+  },
+  {
+    "html": "<code><mk-part data-part=\"order-id\"></mk-part></code>",
+    "source": "<code>{{order-id}}</code>"
+  },
+  {
+    "html": "<small>&lt;small&gt;</small>",
+    "source": "<small>&lt;small&gt;</small>"
+  },
+  {
+    "html": "<div><span>x</span>text<span>y</span></div>",
+    "source": "<div><span>x</span>text<span>y</span></div>"
+  },
+  {
+    "html": "<p><mk-if id=\"mk-if-0\">a</mk-if><mk-if id=\"mk-if-1\"></mk-if></p>",
+    "source": "<p>{{if awaiting, !double_spend}}a{{end}}{{if status=paid|overpaid}}b{{end}}</p>"
+  },
+  {
+    "html": "<ol><li><p>x</p></li></ol>",
+    "source": "<ol><li><p>x</p></li></ol>"
+  },
+  {
+    "html": "<main><p>one</p><p>two</p></main>",
+    "source": "<main><p>one</p><p>two</p></main>"
+  },
+  {
+    "html": "<p>{ single braces }</p>",
+    "source": "<p>{ single braces }</p>"
+  },
+  {
+    "html": "<p>}} closing</p>",
+    "source": "<p>}} closing</p>"
+  }
+]

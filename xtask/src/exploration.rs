@@ -27,7 +27,7 @@ use std::{
 pub(crate) const HELP: &str = "\
         engine fuzz TARGET [SECONDS] [zmq]\n\
                       One fuzz campaign (scheduler, resources, inputs, queue, mempool, status, history,\n\
-                      notifications, portfolio or dns_message): reviewed seeds copied into the corpus, a calibrated\n\
+                      notifications, portfolio, dns_message, checkout_template or checkout_css): reviewed seeds copied into the corpus, a calibrated\n\
                       build, then libFuzzer exploring for SECONDS once it has replayed the corpus, with its evidence under\n\
                       target/engine-exploration/fuzz (ENGINE_FUZZ_SEED sets the seed; needs cargo-fuzz)\n\
         engine properties [default|zmq]\n\
@@ -147,6 +147,8 @@ fn limits(target: &str) -> Option<Limits> {
         "scheduler" | "resources" | "inputs" | "mempool" | "status" => (300, 10, 4096),
         // One DNS message: at most what a TCP answer can carry.
         "dns_message" => (300, 10, 65535),
+        // One template or stylesheet: at most what's accepted.
+        "checkout_template" | "checkout_css" => (300, 10, 33000),
         _ => return None,
     };
     Some(Limits {
@@ -1028,7 +1030,7 @@ pub(crate) fn fuzz(root: &Path, args: &[&str], tools: &Tools) -> io::Result<Exit
     let usage = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Target must be scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio, or dns_message.",
+            "Target must be scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio, dns_message, checkout_template, or checkout_css.",
         )
     };
     let (target, seconds, features) = match args {

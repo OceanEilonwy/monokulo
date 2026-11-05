@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 engine = { path = "../crates/engine", features = ["fuzzing"] }
 dns-client = { path = "../crates/dns-client" }
+checkout-template = { path = "../crates/checkout-template" }
 
 [features]
 zmq = ["engine/zmq"]
@@ -88,3 +89,17 @@ path="fuzz_targets/dns_message.rs"
 test=false
 doc=false
 bench=false
+
+[[bin]]
+name = "checkout_template"
+path = "fuzz_targets/checkout_template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "checkout_css"
+path = "fuzz_targets/checkout_css.rs"
+test = false
+doc = false
+bench = false
