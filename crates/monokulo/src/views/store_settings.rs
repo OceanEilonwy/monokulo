@@ -777,11 +777,28 @@ fn layout_card(store: &StoreSettingsData) -> Markup {
         ),
     };
     let shown = store.shown("checkout_layout", store.checkout_layout.name());
-    let custom = html! {
-        a class="layout-custom" href={ "#" (super::settings::card_id(super::checkout_pages::CARD_NAME)) } {
-            strong { "Custom " (store.custom_page.tag()) }
-            span class="layout-thumb" aria-hidden="true" { "{{ your template }}" }
-            (ui::Hint::new("Your own template and CSS. Needs a verified domain."))
+    let custom_thumb_and_help = html! {
+        span class="layout-thumb" aria-hidden="true" { "{{ your template }}" }
+        (ui::Hint::new("Your own template and CSS. Needs a verified domain."))
+    };
+    // Greyed out until the store has a verified domain, with the help saying why:
+    // there's nothing to go to yet but the card below, which says what to do.
+    let custom = if matches!(
+        store.custom_page,
+        super::checkout_pages::PageCard::NeedsDomain
+    ) {
+        html! {
+            div class="layout-custom is-unavailable" {
+                strong { "Custom" }
+                (custom_thumb_and_help)
+            }
+        }
+    } else {
+        html! {
+            a class="layout-custom" href={ "#" (super::settings::card_id(super::checkout_pages::CARD_NAME)) } {
+                strong { "Custom " (store.custom_page.tag()) }
+                (custom_thumb_and_help)
+            }
         }
     };
     let preview = html! {

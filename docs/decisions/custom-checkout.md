@@ -245,7 +245,8 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     owner found the words-only cards didn't match the design. Each layout's card
     shows its skeleton, and Layout, Custom page, Colours and shape run in the
     canvas's order. Decision 35 stands, so Custom in the Layout row is a link to its
-    card showing the page's status, not a radio button. A custom page's buttons name
+    card showing the page's status, not a radio button. Without a verified domain it's
+    greyed out with no status or link, as the owner asked. A custom page's buttons name
     forms outside the settings form, because forms can't nest. "Preview every state"
     needed a page the stock layouts didn't have: it shows their nine states in the
     store's saved colours, to its owner only, as sandboxed frames.
