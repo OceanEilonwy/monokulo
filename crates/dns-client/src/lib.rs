@@ -334,6 +334,34 @@ fn within(name: &str, zone: &str) -> bool {
             .is_some_and(|head| head.ends_with('.'))
 }
 
+/// Whether `ip` is on this machine or its network, or isn't one to ask at all. A
+/// referral naming one is ignored.
+fn is_internal(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(ip) => {
+            let [a, b, ..] = ip.octets();
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+                || ip.is_unspecified()
+                || a == 0
+                // Shared address space (RFC 6598), which carriers and Tailscale use.
+                || (a == 100 && (64..128).contains(&b))
+        }
+        IpAddr::V6(ip) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                // Unique local (fc00::/7) and link local (fe80::/10).
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80
+        }
+    }
+}
+
 /// Where to look names up: the roots to start from, the resolvers to ask
 /// when they can't be reached, how long to wait for each answer, and where
 /// a server's address is answered (port 53, unless `addresses` says).
@@ -469,6 +497,9 @@ impl Resolver {
                 }
             }
         }
+        // Whoever owns a domain says where its name servers are, and a domain is
+        // often typed in by someone else: never ask this machine or its network.
+        addresses.retain(|ip| !is_internal(*ip));
         // IPv4 first: plenty of machines have no IPv6 route.
         addresses.sort_by_key(|ip| ip.is_ipv6());
         if addresses.is_empty() {

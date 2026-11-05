@@ -521,3 +521,96 @@ async fn live_txt_records_are_read_from_the_root_servers_down() {
     );
     assert_eq!(dns.txt("_monokulo.example.invalid").await, Ok(vec![]));
 }
+
+/// A domain's owner says where its name servers are, whoever's looking it up. A
+/// referral to this machine or its network goes nowhere, by glue or by name: on a
+/// router, it would have Monokulo probing its own LAN for them.
+#[tokio::test]
+async fn a_referral_to_an_internal_address_is_never_followed() {
+    for internal in [
+        "127.0.0.1",
+        "10.0.0.5",
+        "172.16.0.5",
+        "192.168.1.1",
+        "169.254.169.254",
+        "100.64.0.1",
+        "0.0.0.1",
+        "::1",
+        "fd00::1",
+        "fe80::1",
+        "::ffff:192.168.1.1",
+    ] {
+        let glue = move |_: &_| Reply {
+            authorities: vec![("shop.example", ns("ns1.shop.example"))],
+            additionals: vec![(
+                "ns1.shop.example",
+                match internal.parse::<IpAddr>().unwrap() {
+                    IpAddr::V4(ip) => a(&ip.to_string()),
+                    IpAddr::V6(ip) => RecordData::Aaaa(ip),
+                },
+            )],
+            ..Reply::default()
+        };
+        let (root, _) = serve(false, Arc::new(glue)).await;
+        let (zone, zone_asked) = serve(
+            false,
+            Arc::new(|_| Reply {
+                authoritative: true,
+                answers: vec![("_monokulo.shop.example", txt("monokulo-verify=abc"))],
+                ..Reply::default()
+            }),
+        )
+        .await;
+        let dns = resolver(
+            &["192.0.2.2"],
+            &[],
+            &[("192.0.2.2", root), (internal, zone)],
+        );
+        assert!(
+            dns.txt("_monokulo.shop.example").await.is_err(),
+            "{internal}"
+        );
+        assert_eq!(zone_asked.load(Ordering::SeqCst), 0, "{internal}");
+    }
+}
+
+/// With a public address among them, that's the one asked.
+#[tokio::test]
+async fn an_internal_address_is_skipped_for_a_public_one() {
+    let (root, _) = serve(
+        false,
+        Arc::new(|_| Reply {
+            authorities: vec![("shop.example", ns("ns1.shop.example"))],
+            additionals: vec![
+                ("ns1.shop.example", a("10.0.0.5")),
+                ("ns1.shop.example", a("192.0.2.3")),
+            ],
+            ..Reply::default()
+        }),
+    )
+    .await;
+    let answerer = || -> Answerer {
+        Arc::new(|_| Reply {
+            authoritative: true,
+            answers: vec![("_monokulo.shop.example", txt("monokulo-verify=abc"))],
+            ..Reply::default()
+        })
+    };
+    let (internal, internal_asked) = serve(false, answerer()).await;
+    let (public, public_asked) = serve(false, answerer()).await;
+    let dns = resolver(
+        &["192.0.2.2"],
+        &[],
+        &[
+            ("192.0.2.2", root),
+            ("10.0.0.5", internal),
+            ("192.0.2.3", public),
+        ],
+    );
+    assert_eq!(
+        dns.txt("_monokulo.shop.example").await.unwrap(),
+        ["monokulo-verify=abc"]
+    );
+    assert_eq!(internal_asked.load(Ordering::SeqCst), 0);
+    assert_eq!(public_asked.load(Ordering::SeqCst), 1);
+}
