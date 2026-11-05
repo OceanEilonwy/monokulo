@@ -2034,11 +2034,11 @@ mod tests {
 
     /// The merchant's DNS provider is having an outage: Verify says the
     /// lookup failed rather than that the record is missing. A domain already
-    /// verified that hits the outage on its daily re-check is flagged but
-    /// keeps working through the grace period, and clears by itself on the
-    /// next (hourly) re-check once DNS answers again.
+    /// verified stays verified through an outage of any length, retried
+    /// hourly. Only an answer without the record starts the grace period, and
+    /// the failing domain clears by itself once its record is back.
     #[tokio::test]
-    async fn a_dns_outage_is_reported_as_such_and_a_verified_domain_recovers_by_itself() {
+    async fn a_dns_outage_is_reported_as_such_and_only_a_missing_record_starts_the_clock() {
         let dns = Arc::new(FakeDns::default());
         let (state, _engine) = test_state(dns.clone()).await;
         let router = build_router(state.clone());
@@ -2172,7 +2172,7 @@ mod tests {
             "the restricted checkout still shows on the site"
         );
 
-        // An hour on, DNS answers again: the failing domain's more frequent
+        // An hour on, the record is back: the failing domain's more frequent
         // re-check clears it with no action from the merchant.
         dns.publish(name, &domain_proof::VERIFY.value(&row.token));
         // Measured from when the failing check was recorded (the re-check
@@ -2195,6 +2195,107 @@ mod tests {
         assert!(row.failing_since.is_none());
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;
         assert!(!html.contains("failed its DNS check"), "got: {html}");
+    }
+
+    /// No answer leaves what is known about a proof alone, on the web and on
+    /// Tor: it doesn't start the clock or clear one running, so an outage
+    /// can't hide a real warning, and an answer afterwards puts the domain
+    /// back on the daily schedule.
+    #[tokio::test]
+    async fn no_answer_neither_starts_nor_stops_the_clock_on_the_web_or_on_tor() {
+        const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+        let (dns, onion) = (
+            Arc::new(FakeDns::default()),
+            Arc::new(domain_proof::test_support::FakeOnion::default()),
+        );
+        let (state, _engine) = test_state(dns.clone()).await;
+        let state = AppState {
+            proofs: domain_proof::test_support::proofs(dns.clone(), onion.clone()),
+            ..state
+        };
+        let router = build_router(state.clone());
+        let session = session_for(&router, "no-answer@example.com").await;
+        let id = create_store(&router, &state, &session).await;
+        let store = engine_protocol::ids::ConnectionId::new(id.to_string());
+        post_location(
+            &router,
+            &format!("/stores/{id}/settings/domains"),
+            &session,
+            &format!("domain={ONION}"),
+        )
+        .await;
+        let rows = state.db.lock().list_store_domains(&store).unwrap();
+        let onion_row = rows.iter().find(|d| d.domain == ONION).unwrap().clone();
+        let web_row = rows.iter().find(|d| d.domain != ONION).unwrap().clone();
+        let web_name = domain_proof::VERIFY.record_name(&web_row.domain);
+        let current = |row: &crate::db::StoreDomainRow| {
+            state
+                .db
+                .lock()
+                .get_store_domain(&store, &row.id)
+                .unwrap()
+                .unwrap()
+        };
+        let due = |at| {
+            state
+                .db
+                .lock()
+                .list_store_domains_due_for_recheck(
+                    at,
+                    domain_proof::RECHECK_EVERY_SECS,
+                    domain_proof::FAILING_RECHECK_EVERY_SECS,
+                )
+                .unwrap()
+                .len()
+        };
+
+        // Both verified, then neither can be reached.
+        let t0 = 1_000_000;
+        dns.publish(&web_name, &domain_proof::VERIFY.value(&web_row.token));
+        onion.serve(ONION, &domain_proof::VERIFY.value(&onion_row.token));
+        for row in [&web_row, &onion_row] {
+            embed_domains::check_and_record(&state.db, &state.proofs, row, t0)
+                .await
+                .unwrap();
+        }
+        dns.fail(&web_name, "timed out");
+        onion.fail(ONION, "the onion service couldn't be found");
+        let t1 = t0 + domain_proof::RECHECK_EVERY_SECS;
+        for row in [&web_row, &onion_row] {
+            embed_domains::check_and_record(&state.db, &state.proofs, row, t1)
+                .await
+                .unwrap();
+            assert_eq!(current(row).failing_since, None, "{}", row.domain);
+            assert!(current(row).last_error.is_some(), "{}", row.domain);
+        }
+        assert_eq!(
+            current(&onion_row).last_error.as_deref(),
+            Some("Fetching the file over Tor failed: the onion service couldn't be found")
+        );
+        // Sooner than a day, since nothing is known.
+        assert_eq!(due(t1 + domain_proof::FAILING_RECHECK_EVERY_SECS), 2);
+
+        // An answer with the proof: back to the daily schedule.
+        dns.publish(&web_name, &domain_proof::VERIFY.value(&web_row.token));
+        let t2 = t1 + domain_proof::FAILING_RECHECK_EVERY_SECS;
+        embed_domains::check_and_record(&state.db, &state.proofs, &web_row, t2)
+            .await
+            .unwrap();
+        assert_eq!(current(&web_row).last_error, None);
+
+        // A clock already running keeps running through no answer.
+        dns.remove(&web_name);
+        let t3 = t2 + domain_proof::RECHECK_EVERY_SECS;
+        embed_domains::check_and_record(&state.db, &state.proofs, &web_row, t3)
+            .await
+            .unwrap();
+        assert_eq!(current(&web_row).failing_since, Some(t3));
+        dns.fail(&web_name, "timed out");
+        let t4 = t3 + domain_proof::FAILING_RECHECK_EVERY_SECS;
+        embed_domains::check_and_record(&state.db, &state.proofs, &web_row, t4)
+            .await
+            .unwrap();
+        assert_eq!(current(&web_row).failing_since, Some(t3));
     }
 
     /// Dismissing shrinks only the "any website" warning: a domain that
