@@ -84,3 +84,29 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     hash allows exactly that text and nothing a template could add.
 11. **Pages with no order on them get no strict policy.** Not-found and
     open-from-shop show no merchant content, and must never be given any.
+12. **Templates are parsed by our own strict parser, not an HTML5 parser.** The
+    subset is small enough to write in full, it refuses what a browser would
+    rearrange, and what's written is always from the tree. A browser test holds
+    it to that. `cssparser` reads the CSS, since CSS tokenising (escapes above
+    all) has to match browsers exactly. `lightningcss` was the alternative:
+    an alpha, and far heavier to compile.
+13. **Merchant CSS isn't in a layer.** Unlayered rules beat the stock layered
+    ones, so it can restyle anything, and `!important` in the protected layer
+    still beats it. `@layer` itself is refused, so a page can't reorder them.
+14. **Only `[data-part="..."]` can be selected by attribute, and no ids.**
+    Anything else would pin internals as an API, and attribute selectors are
+    how CSS reads values out of a page.
+15. **A template's `lang` and `aria-label` are allowed; `id` and `data-*` aren't.**
+    Ids are how live updates find things, so one could break them.
+16. **The CSS sanitiser checks its own output.** A security review broke the first
+    version three ways: a trailing `\\ ` escaping the `{` after trimming, `{}` in
+    a value being a nested rule to a browser, and a leading `~` reaching outside
+    the root. All are fixed and tested, and `written_is_safe` now reads what was
+    written as a browser would, knowing nothing of how it was written. A mistake
+    in the writer becomes a refused save, not a page that gets out.
+17. **Merchant CSS can still make its own page misleading.** It can hide the code
+    or cover the page from inside its own root, and any type selector
+    (`input`, `svg`) or stock keyframe name is theirs to reach. That's the owner's
+    "if a merchant abuses it, that's on them", and each version is approved in
+    DNS. The protected layer (PR 7) limits accidents, not intent.
+

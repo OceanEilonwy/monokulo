@@ -1,0 +1,118 @@
+[
+  {
+    "css": "h1{color:red}",
+    "written": "#checkout-root h1{color:red;}"
+  },
+  {
+    "css": ".pay,h1>em{margin:1px 2px}",
+    "written": "#checkout-root .pay,#checkout-root h1>em{margin:1px 2px;}"
+  },
+  {
+    "css": ".mk-row{gap:1em}",
+    "written": "#checkout-root .mk-row{gap:1em;}"
+  },
+  {
+    "css": "[data-part=\"qr\"]{flex:none}",
+    "written": "#checkout-root [data-part=\"qr\"]{flex:none;}"
+  },
+  {
+    "css": "h1::before{content:\"}html{color:red}\"}",
+    "written": "#checkout-root h1::before{content:\"}html{color:red}\";}"
+  },
+  {
+    "css": "p:hover{color:red}",
+    "written": "#checkout-root p:hover{color:red;}"
+  },
+  {
+    "css": "p:not(.pay){color:red}",
+    "written": "#checkout-root p:not(.pay){color:red;}"
+  },
+  {
+    "css": "p:is(h1,h2) em{color:red}",
+    "written": "#checkout-root p:is(h1,h2) em{color:red;}"
+  },
+  {
+    "css": "p:has(+ em){color:red}",
+    "written": "#checkout-root p:has(+ em){color:red;}"
+  },
+  {
+    "css": "p:nth-child(2n+1){color:red}",
+    "written": "#checkout-root p:nth-child(2n/**/+1){color:red;}"
+  },
+  {
+    "css": "h1{color:red!important}",
+    "written": "#checkout-root h1{color:red!important;}"
+  },
+  {
+    "css": "h1{margin:calc(1px + var(--x))}",
+    "written": "#checkout-root h1{margin:calc(1px + var(--x));}"
+  },
+  {
+    "css": "h1{background:linear-gradient(red,blue)}",
+    "written": "#checkout-root h1{background:linear-gradient(red,blue);}"
+  },
+  {
+    "css": "h1{--mine:1px 2px}",
+    "written": "#checkout-root h1{--mine:1px 2px;}"
+  },
+  {
+    "css": "@media (max-width: 480px) { .pay { flex-direction: column; } }",
+    "written": "@media (max-width: 480px){#checkout-root .pay{flex-direction:column;}}"
+  },
+  {
+    "css": "@supports (display: grid) { h1 { display: grid } }",
+    "written": "@supports (display: grid){#checkout-root h1{display:grid;}}"
+  },
+  {
+    "css": "@container (min-width: 1px) { h1 { color: red } }",
+    "written": "@container (min-width: 1px){#checkout-root h1{color:red;}}"
+  },
+  {
+    "css": "@keyframes pop { from { opacity: 0 } 50%, to { opacity: 1 } }",
+    "written": "@keyframes pop{from{opacity:0;}50%,to{opacity:1;}}"
+  },
+  {
+    "css": "@media print { @media (min-width: 1px) { h1 { color: red } } }",
+    "written": "@media print{@media (min-width: 1px){#checkout-root h1{color:red;}}}"
+  },
+  {
+    "css": "h1\\ {color:red}",
+    "written": "#checkout-root h1\\ {color:red;}"
+  },
+  {
+    "css": "h1{color:a\\ ;background:red}",
+    "written": "#checkout-root h1{color:a\\ ;background:red;}"
+  },
+  {
+    "css": "h\\31 {color:red}",
+    "written": "#checkout-root h1{color:red;}"
+  },
+  {
+    "css": "h1{content:\"a\\\"b\"}",
+    "written": "#checkout-root h1{content:\"a\\\"b\";}"
+  },
+  {
+    "css": "h1{content:\"\\7d html{color:red}\"}",
+    "written": "#checkout-root h1{content:\"}html{color:red}\";}"
+  },
+  {
+    "css": "h1 /* c */ em{color:/* c */red}",
+    "written": "#checkout-root h1 em{color:red;}"
+  },
+  {
+    "css": "h1{color:red",
+    "written": "#checkout-root h1{color:red;}"
+  },
+  {
+    "css": "h1{color:red;;;}",
+    "written": "#checkout-root h1{color:red;}"
+  },
+  {
+    "css": "*{margin:0}",
+    "written": "#checkout-root *{margin:0;}"
+  },
+  {
+    "css": "em+em,em~em,em>em{margin:0}",
+    "written": "#checkout-root em+em,#checkout-root em~em,#checkout-root em>em{margin:0;}"
+  }
+]

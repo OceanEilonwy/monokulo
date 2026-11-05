@@ -10,6 +10,7 @@ members = [
     "crates/credentials",
     "crates/dns-client",
     "crates/domain-proof",
+    "crates/checkout-template",
     "crates/service-runtime",
     "crates/rate-limit",
     "crates/abuse",

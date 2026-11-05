@@ -1,0 +1,27 @@
+[package]
+name = "checkout-template"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "Checkout page templates and their CSS: parsed, checked for every order state, budgeted and rewritten so they can only do what a checkout may"
+
+[lib]
+# No doctests: each is compiled and linked on its own, the slowest thing a
+# crate can add to CI for what a unit test proves as well.
+doctest = false
+
+[dependencies]
+# Reads a merchant's CSS the way browsers do, so what is checked is what would
+# run, however it's escaped.
+cssparser = "0.38.0"
+# The value that approves one version of a page.
+sha2 = "0.11.0"
+
+[dev-dependencies]
+# Reads the corpus the browser test shares.
+serde_json = "1.0.151"
+# Any text must give a template or a list of problems, never a panic.
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

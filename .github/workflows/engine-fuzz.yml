@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio, dns_message]
+        target: [scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio, dns_message, checkout_template, checkout_css]
         features: ['']
     env:
       RUSTUP_TOOLCHAIN: nightly-2026-10-02
