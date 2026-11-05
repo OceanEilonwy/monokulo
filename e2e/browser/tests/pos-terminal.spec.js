@@ -143,7 +143,7 @@ async function expectCancelledCheckout(checkout, { javaScript = true } = {}) {
   await expect(checkout.locator('#checkout-root')).toHaveAttribute('data-status', 'cancelled');
   await expect(checkout.locator('#live-status .mk-stage')).toContainText('This order was cancelled.');
   await expect(checkout.locator('#live-status .mk-stage')).toContainText('keep this page open');
-  await expect(checkout.locator('#live-pay .qr-wrap.is-spent')).toHaveCount(1);
+  await expect(checkout.locator('#live-qr .qr-wrap.is-spent')).toHaveCount(1);
   await expect(checkout.locator('#live-address [data-void]')).toHaveCount(1);
   if (javaScript) {
     await expect(checkout.locator('#checkout-stream')).toHaveCount(1);

@@ -16,9 +16,10 @@ pub enum Feature {
     Progress,
     Refund,
     Payments,
+    Merchant,
 }
 
-pub const ALL_FEATURES: [Feature; 11] = [
+pub const ALL_FEATURES: [Feature; 12] = [
     Feature::Store,
     Feature::Amount,
     Feature::Fiat,
@@ -30,6 +31,7 @@ pub const ALL_FEATURES: [Feature; 11] = [
     Feature::Progress,
     Feature::Refund,
     Feature::Payments,
+    Feature::Merchant,
 ];
 
 /// One use of a feature in a template.
@@ -55,6 +57,7 @@ impl Feature {
             Feature::Progress => "progress",
             Feature::Refund => "refund",
             Feature::Payments => "payments",
+            Feature::Merchant => "merchant",
         }
     }
 
@@ -87,7 +90,7 @@ impl Feature {
     /// Whether live updates replace it, so it has one id on the page and can
     /// only show once at a time.
     pub fn is_live(self) -> bool {
-        !matches!(self, Feature::Store | Feature::OrderId)
+        !matches!(self, Feature::Store | Feature::OrderId | Feature::Merchant)
     }
 
     /// What it costs against the budget: broadly, what rendering it costs,
@@ -96,7 +99,7 @@ impl Feature {
         match self {
             Feature::OrderId | Feature::Store => 2,
             Feature::Amount | Feature::Fiat => 3,
-            Feature::Address | Feature::Countdown => 6,
+            Feature::Address | Feature::Countdown | Feature::Merchant => 6,
             Feature::Progress | Feature::Status => 10,
             Feature::Payments => 30,
             Feature::Refund | Feature::Qr => 40,

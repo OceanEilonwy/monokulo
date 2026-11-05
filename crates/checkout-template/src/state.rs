@@ -64,7 +64,8 @@ impl State {
         matches!(self.status, Status::Pending | Status::Partial)
     }
 
-    /// Nothing more will happen to this order.
+    /// The time to pay is over, one way or another. A payment already on its
+    /// way can still arrive at an expired or cancelled order.
     pub fn is_final(&self) -> bool {
         matches!(
             self.status,

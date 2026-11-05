@@ -4252,6 +4252,7 @@
           "Scan the code or copy the address. 58 min left"
         ]
       },
+      "plain": false,
       "state": "pending",
       "steps": [
         {
@@ -4283,6 +4284,7 @@
           "0.2 XMR in; send the other 0.22 XMR."
         ]
       },
+      "plain": false,
       "state": "partial",
       "steps": [
         {
@@ -4314,6 +4316,7 @@
           "Payment seen; 3 of 10 confirmations."
         ]
       },
+      "plain": false,
       "state": "confirming",
       "steps": [
         {
@@ -4345,6 +4348,7 @@
           "Thank you."
         ]
       },
+      "plain": false,
       "state": "paid",
       "steps": [
         {
@@ -4372,6 +4376,7 @@
           "Nothing arrived in time; ask for a new order."
         ]
       },
+      "plain": false,
       "state": "expired",
       "steps": [
         {
@@ -4403,6 +4408,7 @@
           "Scan the code."
         ]
       },
+      "plain": false,
       "state": "pending",
       "steps": [
         {
@@ -4429,6 +4435,7 @@
     "props": {
       "compact": false,
       "label": "An order, start to finish",
+      "plain": false,
       "steps": [
         {
           "detail": {
@@ -4527,6 +4534,7 @@
           "Payment seen; 3 of 10 confirmations."
         ]
       },
+      "plain": false,
       "state": "confirming",
       "steps": [
         {
@@ -4568,6 +4576,7 @@
           "Payment seen; 3 of 10 confirmations."
         ]
       },
+      "plain": false,
       "state": "confirming",
       "steps": [
         {

@@ -199,10 +199,13 @@ component! {
         /// across.
         #[default(false)]
         vertical: bool,
+        /// Just the track and its line, with no box around them.
+        #[default(false)]
+        plain: bool,
         rest: Attrs,
     }
     html {
-        div class=join["mk-stage", { "state-" (state) } if state] data-size="compact" if compact ..rest {
+        div class=join["mk-stage", { "state-" (state) } if state] data-size="compact" if compact data-plain="" if plain ..rest {
             ol class="mk-track" data-orientation="vertical" if vertical aria-label=(label) {
                 @for step in steps {
                     li class=join[{ "step-" (step.progress) }, { "state-" (step.state) } if step.state] {

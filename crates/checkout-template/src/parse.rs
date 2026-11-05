@@ -690,6 +690,20 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        // A region is replaced when it flips, which would lose what's being
+        // typed in the form, and the script that drives it.
+        if feature == Feature::Refund
+            && self
+                .stack
+                .iter()
+                .any(|frame| matches!(frame.open, Open::Region { .. }))
+        {
+            self.problem(
+                Problem::at(line, "{{refund}} can't go inside an {{if}}.")
+                    .hint("It says by itself when the address can't change any more."),
+            );
+            return;
+        }
         if !feature.is_inline() {
             if let Some(outer) = self.inside_phrasing_only() {
                 self.problem(

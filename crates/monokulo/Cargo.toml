@@ -84,6 +84,8 @@ pricing = { path = "../pricing" }
 outbound = { path = "../outbound" }
 push = { path = "../push" }
 push-relay = { path = "../push-relay", optional = true }
+# Checkout page templates, which every layout is (`views::checkout_layouts`).
+checkout-template = { path = "../checkout-template" }
 # Proving a merchant controls a domain: by TXT record, or a file over Tor.
 domain-proof = { path = "../domain-proof" }
 # Constant-time comparison of a presented store secret key (`http::store_key`).
