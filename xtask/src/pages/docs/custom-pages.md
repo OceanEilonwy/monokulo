@@ -11,16 +11,16 @@ those aren't enough.
 
 ## Where it shows
 
-A custom page shows only in a frame of the site that approved it. Everywhere
-else customers get the layout you chose, so nothing here can stop anyone paying.
+A custom page shows only in a frame of your own sites, which have all approved it.
+Everywhere else customers get the layout you chose, so nothing here can stop anyone paying.
 
 | Where | What shows |
 | --- | --- |
-| A frame on an `https://` page of the domain that approved it, or a subdomain | Your custom page |
+| A frame on an `https://` page of your web domain, or a subdomain | Your custom page |
+| A frame on your onion address | Your custom page |
 | A frame on any other site | Your layout |
 | A payment link, or the checkout opened by itself | Your layout |
 | An embed that asks for one with `view` | That layout |
-| Your onion address, when a web domain approved the page | Your layout |
 
 The page needs your browser's frame request headers to know where it is, and
 your site's `Referer` to know whose frame it is. The embed library sends the
@@ -158,23 +158,25 @@ at `/.well-known/monokulo-template` instead, with that value as its contents.
 Monokulo fetches it over Tor, and only over Tor. This is weaker than DNS, as
 whoever can change your shop's files can approve a page.
 
-A store with both approves by its web domain, and its onion address keeps
-showing your layout. A page shows only on the site that approved it.
+A store with both needs both, in the same step. The page then has one status: it
+shows on both sites or neither, and if either proof goes missing, both are affected.
+Adding a domain to a store with a page in use starts that page failing until the new
+domain approves it, so add its proof soon after.
 
-Choose **Check for the record** or **Check for the file**, then **Use this
-template**. Monokulo looks again as it publishes, and only publishes if the proof
-is there. What's in use keeps showing until then.
+Choose **Check for the record**, **Check for the file** or **Check both**, then
+**Use this template**, which appears once every proof is found. Monokulo looks again
+as it publishes, and only publishes if they're all there. What's in use keeps showing until then.
 
 Afterwards you can remove the records of older versions, and should: while one is
 there, that version can be published again. Keep the `_monokulo` record that
-verifies your domain, as a page shows only while its domain counts.
+verifies your domain, as a page shows only on domains that count.
 
 ## After it's published
 
-Monokulo looks at the proof again about once a day, when customers are viewing
-the page. If the record is gone, the page keeps showing for 3 days, the card on
-your Checkout tab says so, and then customers get your layout until the record
-is back. A lookup that gets no answer doesn't count as the record being gone.
+Monokulo looks at each proof again about once a day, when customers are viewing
+the page. If one is gone, the page keeps showing for 3 days, the card on your
+Checkout tab says which, and then customers get your layout on every domain until
+it's back. A lookup that gets no answer doesn't count as the record being gone.
 
 A page open when its version changes, or when it stops showing, loads again by
 itself. **Stop using** goes back to your layout at any time.
@@ -190,7 +192,7 @@ checks, customers get your layout, and you can fix it and publish it again.
 
 The store's secret key can do everything here through the API, which suits a
 shop that wants to deploy its checkout with its code. The key alone can't put new
-words in front of customers: publishing still takes the proof on your domain. It
+words in front of customers: publishing still takes the proof on your domains. It
 can stop using a page, which goes back to your layout.
 
 | Do this | With |
@@ -221,8 +223,10 @@ const call = async (method, path, body) => {
 };
 
 const draft = await call("POST", "/draft", { template, css });
-// `kind` is "dns" here, or "file" on an onion address.
-await setTxtRecord(draft.approval.name, draft.approval.value); // your DNS provider's
+// One for each domain: `kind` is "dns", or "file" on an onion address.
+for (const approval of draft.approvals) {
+  await publishProof(approval); // your DNS provider's API, or your shop's files
+}
 // DNS takes a while. Up to 12 lookups a minute, publishing included.
 while (!(await call("POST", "/draft/check")).found) {
   await new Promise((wait) => setTimeout(wait, 30_000));
@@ -232,7 +236,8 @@ await call("POST", "/draft/publish");
 
 ## On Tor
 
-On a store with only an onion address, the page shows in a frame of that address,
-and it needs Tor Browser to send the browser's frame request headers. If it
+On an onion address, the page shows in a frame of that address, and it needs Tor Browser to send the browser's frame request headers. If it
 doesn't, customers there get your layout, which is safe but isn't what you wrote.
-Check it once on your own shop in Tor Browser after you publish.
+Check it once on your own shop in Tor Browser after you publish. While the Monokulo
+you're on has Tor off, a new version can't be published on a store with an onion
+address, as its file can't be checked. A page in use keeps showing.

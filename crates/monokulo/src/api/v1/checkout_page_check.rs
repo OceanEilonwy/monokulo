@@ -1,24 +1,37 @@
 use super::checkout_page_draft;
 use crate::api::{self, prelude::*};
-use crate::checkout_pages::TEMPLATE;
+use crate::checkout_pages::{approved, check_every, Approved};
 use crate::http::checkout_pages as pages;
 
 api::resource!(
     "/api/v1/checkout-page/draft/check",
     rel = "checkout-page-check",
-    doc = "Looks for a draft's proof now, without publishing it: for a client waiting on DNS."
+    doc = "Looks for a draft's proof on each of the store's domains now, without publishing it: for a client waiting on DNS."
 );
 
-/// What the look found.
+/// What the look found, together and on each domain.
 #[api::body]
 struct Body {
-    /// Whether the proof is there.
+    /// Whether every domain has it, so the draft can be published.
     found: bool,
-    /// Whether the lookup got an answer: `false` says nothing about the proof.
+    /// Whether every domain answered: `false` says nothing about those that didn't.
     answered: bool,
     /// What's wrong, for a person; left out when it's found.
     error: Option<String>,
+    /// What it found on each domain.
+    domains: Vec<DomainFound>,
     draft: Link<checkout_page_draft::Path>,
+}
+
+/// What the look found on one domain.
+#[api::object]
+struct DomainFound {
+    /// The domain or onion address.
+    domain: String,
+    /// Whether it has the proof.
+    found: bool,
+    /// What's wrong there, for a person; left out when it's found.
+    error: Option<String>,
 }
 
 /// Look for the draft's proof.
@@ -41,12 +54,25 @@ async fn check(store: Store, instance: Instance) -> api::Result<Body> {
         }
         Err(_) => return Err(internal()),
     };
-    let outcome =
-        domain_proof::check(&state.proofs, &TEMPLATE, &approval.domain, &approval.token).await;
+    let checks = check_every(&state.proofs, &approval.domains, &approval.token).await;
+    let together = approved(&checks);
     Ok(Body {
-        found: matches!(outcome, domain_proof::CheckOutcome::Found),
-        answered: !matches!(outcome, domain_proof::CheckOutcome::LookupFailed(_)),
-        error: outcome.error_message(&TEMPLATE, &approval.domain, &approval.token),
+        found: together == Approved::Yes,
+        answered: !checks
+            .iter()
+            .any(|check| matches!(check.outcome, domain_proof::CheckOutcome::LookupFailed(_))),
+        error: match together {
+            Approved::Yes => None,
+            Approved::Missing(reason) | Approved::NoAnswer(reason) => Some(reason),
+        },
+        domains: checks
+            .into_iter()
+            .map(|check| DomainFound {
+                found: matches!(check.outcome, domain_proof::CheckOutcome::Found),
+                domain: check.domain,
+                error: check.reason,
+            })
+            .collect(),
         draft: Link::new(checkout_page_draft::Path {}),
     })
 }

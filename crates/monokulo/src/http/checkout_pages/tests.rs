@@ -669,9 +669,16 @@ async fn a_pages_proof_is_checked_with_a_grace_period_and_no_answer_means_nothin
     let check = |at: i64| {
         let (db, proofs, store, token) = (db.clone(), proofs.clone(), store.clone(), token.clone());
         async move {
-            check_and_record(&db, &proofs, &store, "store-home.example", &token, at)
-                .await
-                .unwrap()
+            check_and_record(
+                &db,
+                &proofs,
+                &store,
+                &["store-home.example".to_string()],
+                &token,
+                at,
+            )
+            .await
+            .unwrap()
         }
     };
     let now = crate::now_unix();
@@ -1027,4 +1034,93 @@ async fn each_start_writes_a_live_pages_css_again() {
         0,
         "already current"
     );
+}
+
+/// A store with a web domain and an onion address approves on both, in one step, and
+/// the page has one status: either proof missing fails it, on both sites.
+#[tokio::test]
+async fn a_web_domain_and_an_onion_address_must_both_approve() {
+    const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+    let wizard = wizard("both@example.com", true).await;
+    let onion = Arc::new(domain_proof::test_support::FakeOnion::default());
+    let proofs = domain_proof::test_support::proofs(wizard.dns.clone(), onion.clone());
+    let state = AppState {
+        proofs: proofs.clone(),
+        ..wizard.state.clone()
+    };
+    let wizard = Wizard {
+        router: build_router(state.clone()),
+        state,
+        ..wizard
+    };
+    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    {
+        let db = wizard.state.db.lock();
+        db.create_store_domain("o", &store, ONION, "t", 1, None)
+            .unwrap()
+            .unwrap();
+        db.conn_for_test()
+            .execute(
+                "UPDATE store_domains SET verified_at_utc = ?1 WHERE id = 'o'",
+                [now],
+            )
+            .unwrap();
+    }
+    assert_eq!(wizard.save(GOOD, "").await.status(), StatusCode::SEE_OTHER);
+    let draft = wizard.draft().unwrap();
+    let token = checkout_template::version_token(store.as_str(), &draft.template, &draft.css);
+    let approve = format!("{}/approve", wizard.page());
+
+    // Both shown, and neither alone offers the button.
+    let (_, html) = wizard.get(&approve).await;
+    assert!(
+        html.contains("store-home.example") && html.contains(ONION),
+        "{html}"
+    );
+    assert!(html.contains("Check both"), "{html}");
+    wizard.dns.publish(
+        &TEMPLATE.record_name("store-home.example"),
+        &TEMPLATE.value(&token),
+    );
+    let (_, html) = wizard.post(&approve, None).await;
+    assert!(html.contains("Found the record."), "{html}");
+    assert!(!html.contains("Use this template"), "{html}");
+    let (status, _) = wizard
+        .post(&format!("{}/publish", wizard.page()), None)
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(wizard.published(), None, "the file isn't there");
+
+    onion.serve(ONION, &TEMPLATE.value(&token));
+    let (_, html) = wizard.post(&approve, None).await;
+    assert!(html.contains("Use this template"), "{html}");
+    wizard
+        .post(&format!("{}/publish", wizard.page()), None)
+        .await;
+    assert!(wizard.published().is_some());
+
+    // Either going fails the one page, naming which, and comes back with both.
+    let names = ["store-home.example".to_string(), ONION.to_string()];
+    let check = |at| {
+        crate::checkout_pages::check_and_record(
+            &wizard.state.db,
+            &proofs,
+            &store,
+            &names,
+            &token,
+            at,
+        )
+    };
+    onion.serve(ONION, "someone else's");
+    let found = check(now).await.unwrap();
+    assert!(matches!(&found, crate::checkout_pages::Approved::Missing(why) if why.contains(ONION)));
+    let page = wizard.published().unwrap();
+    assert_eq!(page.failing_since, Some(now));
+    assert!(page.last_error.unwrap().contains(ONION));
+    onion.serve(ONION, &TEMPLATE.value(&token));
+    assert_eq!(
+        check(now).await.unwrap(),
+        crate::checkout_pages::Approved::Yes
+    );
+    assert_eq!(wizard.published().unwrap().failing_since, None);
 }

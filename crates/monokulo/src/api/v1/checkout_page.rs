@@ -1,11 +1,11 @@
 use super::{checkout_page_draft, store};
 use crate::api::{self, prelude::*};
-use crate::checkout_pages::{approver, standing, PageStanding};
+use crate::checkout_pages::{approver_names, standing, PageStanding};
 
 api::resource!(
     "/api/v1/checkout-page",
     rel = "checkout-page",
-    doc = "The store's custom checkout page: the one version its domain approved, which its customers see in a frame of the site that approved it.\n\nEverything else (payment links, other sites, a page asking for a layout) gets the store's layout. To change the page, save a draft (`save-checkout-page-draft`), approve it on the domain, then publish it: what's in use keeps showing until then."
+    doc = "The store's custom checkout page: the one version its domains approved, which its customers see in a frame of those sites.\n\nEverything else (payment links, other sites, a page asking for a layout) gets the store's layout. To change the page, save a draft (`save-checkout-page-draft`), approve it on each domain, then publish it: what's in use keeps showing until then."
 );
 
 /// The custom page in use.
@@ -17,13 +17,12 @@ pub(crate) struct Body {
     css: String,
     /// Which version this is.
     version: String,
-    /// `working`, `failing` (its proof is gone, and it shows until its grace
-    /// period ends), `not-showing` (its grace period ended, its domain no longer
-    /// counts, or it no longer passes the checks) or `turned-off` (by this
+    /// `working`, `failing` (a proof is gone, and it shows until its grace period
+    /// ends), `not-showing` (its grace period ended, no domain counts any more, or it no longer passes the checks) or `turned-off` (by this
     /// Monokulo's admin).
     status: String,
-    /// The domain whose proof it needs; left out when there's none.
-    domain: Option<String>,
+    /// The domains it shows on, each of which must keep its proof.
+    domains: Vec<String>,
     /// When its proof was last looked at, in Unix seconds.
     last_checked_at: i64,
     /// What the last look found wrong, for a person; left out when nothing was.
@@ -54,7 +53,7 @@ pub(crate) fn body_of(
     };
     Body {
         status: status.to_string(),
-        domain: approver(domains, now).map(|row| row.domain.clone()),
+        domains: approver_names(domains, now),
         last_checked_at: page.last_checked_at.unwrap_or(page.published_at),
         stops_showing_at: match standing {
             PageStanding::Failing { since } => Some(since + domain_proof::GRACE_SECS),

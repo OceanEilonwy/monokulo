@@ -5,13 +5,13 @@ use crate::http::checkout_pages::{self as pages, PublishRefused};
 api::resource!(
     "/api/v1/checkout-page/draft/publish",
     rel = "checkout-page-publish",
-    doc = "Makes a draft the store's custom page, once its domain has approved it. The secret key alone can't put new words in front of customers: that takes the proof on the domain."
+    doc = "Makes a draft the store's custom page, once each of its domains has approved it. The secret key alone can't put new words in front of customers: that takes the proof on the domains."
 );
 
 /// Publish the draft.
 ///
-/// Monokulo looks for the proof itself, and publishes only if it's there. With it
-/// missing, `409` `checkout-page-not-approved`; with the lookup unanswered, `503`
+/// Monokulo looks for the proof on each domain itself, and publishes only if all are
+/// there. With one missing, `409` `checkout-page-not-approved`; with none missing but a lookup unanswered, `503`
 /// `checkout-page-not-checked`, worth trying again. A store with no draft or no
 /// verified domain is `404` `not-found`; a page this Monokulo's admin turned off is
 /// `403` `checkout-page-turned-off`; a draft saved by an earlier release that no

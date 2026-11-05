@@ -10,7 +10,7 @@ use tower::ServiceExt;
 use super::super::recording::{fixture, Fixture, Recorder, PUBLIC_URI};
 use crate::http::test_support::{api_request, body_json};
 use crate::http::{build_router, AppState};
-use domain_proof::test_support::{proofs, FakeDns};
+use domain_proof::test_support::{proofs, FakeDns, FakeOnion};
 
 const PAGE: &str = "/api/v1/checkout-page";
 const DRAFT: &str = "/api/v1/checkout-page/draft";
@@ -24,6 +24,7 @@ struct Shop {
     state: AppState,
     fixture: Fixture,
     dns: Arc<FakeDns>,
+    onion: Arc<FakeOnion>,
     _engine: engine_test_support::TestEngineHandle,
 }
 
@@ -33,8 +34,9 @@ impl Shop {
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let fixture = fixture(engine.router(), PUBLIC_URI, &Recorder::default()).await;
         let dns = Arc::new(FakeDns::default());
+        let onion = Arc::new(FakeOnion::default());
         let state = AppState {
-            proofs: proofs(dns.clone(), Arc::default()),
+            proofs: proofs(dns.clone(), onion.clone()),
             ..fixture.state.clone()
         };
         // Only the domain this test says: the fixture's own isn't verified.
@@ -61,6 +63,7 @@ impl Shop {
             state,
             fixture,
             dns,
+            onion,
             _engine: engine,
         }
     }
@@ -93,7 +96,8 @@ impl Shop {
     }
 
     fn approve(&self, draft: &Value) {
-        let approval = &draft["approval"];
+        let approvals = draft["approvals"].as_array().unwrap();
+        let approval = approvals.iter().find(|row| row["kind"] == "dns").unwrap();
         self.dns.publish(
             approval["name"].as_str().unwrap(),
             approval["value"].as_str().unwrap(),
@@ -168,9 +172,12 @@ async fn a_refused_draft_says_what_and_where_and_saves_nothing() {
 async fn the_key_alone_cant_put_new_words_in_front_of_customers() {
     let shop = Shop::new(Some("shop.example")).await;
     let first = shop.save(TEMPLATE).await;
-    assert_eq!(first["approval"]["kind"], "dns");
-    assert_eq!(first["approval"]["domain"], "shop.example");
-    assert_eq!(first["approval"]["name"], "_monokulo-template.shop.example");
+    assert_eq!(first["approvals"][0]["kind"], "dns");
+    assert_eq!(first["approvals"][0]["domain"], "shop.example");
+    assert_eq!(
+        first["approvals"][0]["name"],
+        "_monokulo-template.shop.example"
+    );
 
     let check = body_json(shop.sk("POST", CHECK, None).await).await;
     assert_eq!(
@@ -214,9 +221,9 @@ async fn an_onion_store_approves_with_a_file() {
     const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
     let shop = Shop::new(Some(ONION)).await;
     let draft = shop.save(TEMPLATE).await;
-    assert_eq!(draft["approval"]["kind"], "file");
+    assert_eq!(draft["approvals"][0]["kind"], "file");
     assert_eq!(
-        draft["approval"]["name"],
+        draft["approvals"][0]["name"],
         format!("http://{ONION}/.well-known/monokulo-template")
     );
 }
@@ -317,6 +324,67 @@ async fn a_draft_that_no_longer_passes_is_refused_as_such() {
     let body = body_json(refused).await;
     assert_eq!(Shop::slug_of(&body), "checkout-page-refused");
     assert!(!body["errors"].as_array().unwrap().is_empty());
+}
+
+/// A store with a web domain and an onion address needs both to approve, so a domain
+/// added with a stolen key can't approve a version by itself.
+#[tokio::test]
+async fn a_store_with_both_domains_needs_both_to_approve() {
+    const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+    let shop = Shop::new(Some("shop.example")).await;
+    let at = crate::now_unix();
+    shop.state
+        .db
+        .lock()
+        .conn_for_test()
+        .execute(
+            "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc, verified_at_utc)
+             VALUES ('onion', ?1, ?2, 't', ?3, ?3)",
+            rusqlite::params![shop.fixture.store_id, ONION, at],
+        )
+        .unwrap();
+    let draft = shop.save(TEMPLATE).await;
+    let approvals = draft["approvals"].as_array().unwrap();
+    assert_eq!(approvals.len(), 2, "{approvals:?}");
+
+    // One alone isn't enough, whichever it is.
+    shop.approve(&draft);
+    let check = body_json(shop.sk("POST", CHECK, None).await).await;
+    assert_eq!(check["found"], false);
+    let found = |name: &str| {
+        check["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["domain"] == name)
+            .unwrap()["found"]
+            .clone()
+    };
+    assert_eq!(found("shop.example"), true);
+    assert_eq!(found(ONION), false);
+    let refused = shop.sk("POST", PUBLISH, None).await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let detail = body_json(refused).await["detail"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(detail.contains(ONION), "says which: {detail}");
+    assert_eq!(
+        shop.sk("GET", PAGE, None).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let value = approvals.iter().find(|row| row["kind"] == "file").unwrap()["value"]
+        .as_str()
+        .unwrap();
+    shop.onion.serve(ONION, value);
+    let check = body_json(shop.sk("POST", CHECK, None).await).await;
+    assert_eq!(check["found"], true);
+    let published = shop.sk("POST", PUBLISH, None).await;
+    assert_eq!(published.status(), StatusCode::OK);
+    let page = body_json(published).await;
+    assert_eq!(page["status"], "working");
+    assert_eq!(page["domains"].as_array().unwrap().len(), 2);
 }
 
 /// An operator's decision isn't the merchant's to undo, however they ask.

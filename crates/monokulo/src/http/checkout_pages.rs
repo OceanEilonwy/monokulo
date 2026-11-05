@@ -345,7 +345,8 @@ pub(crate) static CHECKS: LazyLock<rate_limit::RateLimiter<ConnectionId>> =
 
 /// What's needed to approve a store's draft.
 pub struct Approval {
-    pub domain: String,
+    /// Each must approve it.
+    pub domains: Vec<String>,
     pub token: String,
     pub draft: crate::db::CheckoutPageDraft,
 }
@@ -366,13 +367,13 @@ pub async fn approval_for(
             ))
         })
         .await?;
-    let (Some(draft), Some(domain)) = (draft, crate::checkout_pages::approver(&domains, now))
-    else {
+    let domains = crate::checkout_pages::approver_names(&domains, now);
+    let Some(draft) = draft.filter(|_| !domains.is_empty()) else {
         return Ok(None);
     };
     Ok(Some(Approval {
         token: checkout_template::version_token(id.as_str(), &draft.template, &draft.css),
-        domain: domain.domain.clone(),
+        domains,
         draft,
     }))
 }
@@ -381,7 +382,7 @@ pub async fn approval_for(
 pub enum PublishRefused {
     /// No draft, or no domain that counts.
     NothingToPublish,
-    /// The proof wasn't there.
+    /// A proof wasn't there.
     NotFound(String),
     /// The lookup got no answer.
     CantCheck(String),
@@ -392,8 +393,8 @@ pub enum PublishRefused {
     Failed,
 }
 
-/// Looks up a draft's proof and, if it's there, makes it the page in use. The
-/// lookup is here, not just on the page before: publishing is what the approval
+/// Looks up a draft's proof on each domain and, if all are there, makes it the page
+/// in use. The lookup is here, not just on the page before: publishing is what the approval
 /// is for.
 pub async fn publish_draft(state: &AppState, id: &ConnectionId) -> Result<(), PublishRefused> {
     let approval = match approval_for(state, id).await {
@@ -418,26 +419,16 @@ pub async fn publish_draft(state: &AppState, id: &ConnectionId) -> Result<(), Pu
     let written_css = check_draft(&approval.draft.template, &approval.draft.css)
         .map_err(PublishRefused::NoLongerPasses)?
         .written_css;
-    let outcome = domain_proof::check(
-        &state.proofs,
-        &crate::checkout_pages::TEMPLATE,
-        &approval.domain,
-        &approval.token,
-    )
-    .await;
-    let reason = outcome
-        .error_message(
-            &crate::checkout_pages::TEMPLATE,
-            &approval.domain,
-            &approval.token,
-        )
-        .unwrap_or_default();
-    match outcome {
-        domain_proof::CheckOutcome::Found => {}
-        domain_proof::CheckOutcome::LookupFailed(_) => {
+    let checks =
+        crate::checkout_pages::check_every(&state.proofs, &approval.domains, &approval.token).await;
+    match crate::checkout_pages::approved(&checks) {
+        crate::checkout_pages::Approved::Yes => {}
+        crate::checkout_pages::Approved::Missing(reason) => {
+            return Err(PublishRefused::NotFound(reason))
+        }
+        crate::checkout_pages::Approved::NoAnswer(reason) => {
             return Err(PublishRefused::CantCheck(reason))
         }
-        _ => return Err(PublishRefused::NotFound(reason)),
     }
     let now = crate::now_unix();
     let Approval {
@@ -492,34 +483,34 @@ async fn show_approval(
         Ok(None) => return crate::base::see_other(format!("/stores/{id}/settings/checkout-page")),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let result = if check.is_none() {
-        checkout_pages::ApproveResult::NotChecked
+    let results: Vec<(String, checkout_pages::ApproveResult)> = if check.is_none() {
+        approval
+            .domains
+            .iter()
+            .map(|domain| (domain.clone(), checkout_pages::ApproveResult::NotChecked))
+            .collect()
     } else if !CHECKS.check(row.id.clone(), crate::now_unix()) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     } else {
-        let scheme = crate::checkout_pages::TEMPLATE;
-        let outcome =
-            domain_proof::check(&state.proofs, &scheme, &approval.domain, &approval.token).await;
-        let reason = outcome
-            .error_message(&scheme, &approval.domain, &approval.token)
-            .unwrap_or_default();
-        match outcome {
-            domain_proof::CheckOutcome::Found => checkout_pages::ApproveResult::Found,
-            domain_proof::CheckOutcome::LookupFailed(_) => {
-                checkout_pages::ApproveResult::CantCheck(reason)
-            }
-            _ => checkout_pages::ApproveResult::NotFound(reason),
-        }
+        crate::checkout_pages::check_every(&state.proofs, &approval.domains, &approval.token)
+            .await
+            .into_iter()
+            .map(|check| {
+                let reason = check.reason.unwrap_or_default();
+                let result = match check.outcome {
+                    domain_proof::CheckOutcome::Found => checkout_pages::ApproveResult::Found,
+                    domain_proof::CheckOutcome::LookupFailed(_) => {
+                        checkout_pages::ApproveResult::CantCheck(reason)
+                    }
+                    _ => checkout_pages::ApproveResult::NotFound(reason),
+                };
+                (check.domain, result)
+            })
+            .collect()
     };
     let chrome = super::page_chrome(&state, Some(&user), format!("/stores/{id}/settings")).await;
-    checkout_pages::approve_step(
-        &chrome,
-        &wizard_store(&row),
-        &approval.domain,
-        &approval.token,
-        &result,
-    )
-    .into_response()
+    checkout_pages::approve_step(&chrome, &wizard_store(&row), &approval.token, &results)
+        .into_response()
 }
 
 /// `POST .../publish`: the "Use this template" button.
@@ -609,12 +600,13 @@ pub async fn recheck(
         Ok(found) => found,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    if let (Some(page), Some(domain)) = (page, crate::checkout_pages::approver(&domains, now)) {
+    let domains = crate::checkout_pages::approver_names(&domains, now);
+    if let Some(page) = page.filter(|_| !domains.is_empty()) {
         let checked = crate::checkout_pages::check_and_record(
             &state.db,
             &state.proofs,
             &row.id,
-            &domain.domain,
+            &domains,
             &page.token,
             now,
         )
@@ -635,7 +627,7 @@ pub(super) async fn page_card(
     domains: &[crate::db::StoreDomainRow],
     now: i64,
 ) -> checkout_pages::PageCard {
-    use crate::checkout_pages::{approver, standing, PageStanding};
+    use crate::checkout_pages::{approver_names, standing, PageStanding};
     use checkout_pages::PageCard;
     let store_id = id.clone();
     let found = state
@@ -650,39 +642,38 @@ pub(super) async fn page_card(
     let Ok((page, draft)) = found else {
         return PageCard::None;
     };
-    let domain = approver(domains, now).map(|row| row.domain.clone());
+    let names = approver_names(domains, now);
     let has_draft = draft.is_some();
     let Some(page) = page else {
-        return match (domain, draft) {
-            (None, _) => PageCard::NeedsDomain,
-            (Some(domain), Some(draft)) => PageCard::Draft {
-                domain,
+        return match draft {
+            _ if names.is_empty() => PageCard::NeedsDomain,
+            Some(draft) => PageCard::Draft {
+                domains: names,
                 days_left: (draft.created_at + crate::db::DRAFT_SECS - now) / (24 * 60 * 60) + 1,
             },
-            (Some(_), None) => PageCard::None,
+            None => PageCard::None,
         };
     };
     match standing(&page, domains, now) {
         PageStanding::TurnedOff => PageCard::TurnedOff {
             reason: page.turned_off_reason.filter(|reason| !reason.is_empty()),
         },
-        PageStanding::NotShowing => PageCard::NotShowing { draft: has_draft },
+        PageStanding::NotShowing => PageCard::NotShowing {
+            reason: page.last_error,
+            draft: has_draft,
+        },
         PageStanding::Failing { since } => PageCard::Failing {
-            domain: domain.unwrap_or_default(),
+            domains: names,
+            reason: page.last_error,
             token: page.token,
             days_left: (since + domain_proof::GRACE_SECS - now) / (24 * 60 * 60) + 1,
             draft: has_draft,
         },
         PageStanding::Working => PageCard::Working {
-            domain: domain.unwrap_or_default(),
+            domains: names,
             checked: crate::views::time::Clock::utc(now)
                 .relative(page.last_checked_at.unwrap_or(page.published_at)),
             trouble: page.last_error,
-            onion_gets_layout: approver(domains, now)
-                .is_some_and(|row| !domain_proof::is_onion(&row.domain))
-                && domains
-                    .iter()
-                    .any(|row| row.state(now).counts() && domain_proof::is_onion(&row.domain)),
             draft: has_draft,
         },
     }
@@ -858,8 +849,10 @@ pub async fn admin_list(
             checkout_pages::AdminPageRow {
                 store_id: listing.page.connection_id.to_string(),
                 store_name: listing.store_name,
-                domain: crate::checkout_pages::approver(&listing.domains, now)
-                    .map_or_else(|| "None".to_string(), |row| row.domain.clone()),
+                domain: match crate::checkout_pages::approver_names(&listing.domains, now) {
+                    names if names.is_empty() => "None".to_string(),
+                    names => names.join(", "),
+                },
                 status: match standing {
                     crate::checkout_pages::PageStanding::Working => "Working",
                     crate::checkout_pages::PageStanding::Failing { .. } => "Failing",
