@@ -17,9 +17,10 @@ pub enum Feature {
     Refund,
     Payments,
     Merchant,
+    Message,
 }
 
-pub const ALL_FEATURES: [Feature; 12] = [
+pub const ALL_FEATURES: [Feature; 13] = [
     Feature::Store,
     Feature::Amount,
     Feature::Fiat,
@@ -32,6 +33,7 @@ pub const ALL_FEATURES: [Feature; 12] = [
     Feature::Refund,
     Feature::Payments,
     Feature::Merchant,
+    Feature::Message,
 ];
 
 /// One use of a feature in a template.
@@ -58,6 +60,7 @@ impl Feature {
             Feature::Refund => "refund",
             Feature::Payments => "payments",
             Feature::Merchant => "merchant",
+            Feature::Message => "message",
         }
     }
 
@@ -73,6 +76,7 @@ impl Feature {
             Feature::Amount => &["bare"],
             Feature::Qr => &["small", "medium", "large"],
             Feature::Address => &["short"],
+            Feature::Status => &["icon"],
             _ => &[],
         }
     }
@@ -99,7 +103,7 @@ impl Feature {
         match self {
             Feature::OrderId | Feature::Store => 2,
             Feature::Amount | Feature::Fiat => 3,
-            Feature::Address | Feature::Countdown | Feature::Merchant => 6,
+            Feature::Address | Feature::Countdown | Feature::Merchant | Feature::Message => 6,
             Feature::Progress | Feature::Status => 10,
             Feature::Payments => 30,
             Feature::Refund | Feature::Qr => 40,

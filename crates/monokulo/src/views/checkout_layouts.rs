@@ -12,6 +12,7 @@ use checkout_template::Template;
 pub enum Layout {
     Detailed,
     Compact,
+    Tiny,
 }
 
 const DETAILED: &str = r#"{{merchant}}
@@ -49,14 +50,36 @@ const COMPACT: &str = r#"{{merchant}}
 </div>
 "#;
 
+/// Status icon, amounts and code, in a 280px frame. Everything but the code
+/// and address is a word or two, and once nothing is owed a message takes their
+/// place, in the same space, so nothing moves.
+const TINY: &str = r#"<div class="tiny">
+  <div class="tiny-head">
+    {{status icon}}
+    <div class="tiny-amounts">{{amount}}{{fiat}}</div>
+  </div>
+  {{if awaiting, double_spend}}
+    {{message}}
+  {{end}}
+  {{if awaiting}}
+    {{qr small}}
+    {{address short}}
+  {{end}}
+  {{if !awaiting}}
+    <div class="tiny-instead">{{message}}</div>
+  {{end}}
+</div>
+"#;
+
 impl Layout {
-    pub const ALL: [Layout; 2] = [Layout::Detailed, Layout::Compact];
+    pub const ALL: [Layout; 3] = [Layout::Detailed, Layout::Compact, Layout::Tiny];
 
     /// What `?view=` calls it.
     pub fn name(self) -> &'static str {
         match self {
             Layout::Detailed => "detailed",
             Layout::Compact => "compact",
+            Layout::Tiny => "tiny",
         }
     }
 
@@ -73,9 +96,11 @@ impl Layout {
         }
         static DETAILED_PARSED: LazyLock<Template> = LazyLock::new(|| parsed(DETAILED));
         static COMPACT_PARSED: LazyLock<Template> = LazyLock::new(|| parsed(COMPACT));
+        static TINY_PARSED: LazyLock<Template> = LazyLock::new(|| parsed(TINY));
         match self {
             Layout::Detailed => &DETAILED_PARSED,
             Layout::Compact => &COMPACT_PARSED,
+            Layout::Tiny => &TINY_PARSED,
         }
     }
 }

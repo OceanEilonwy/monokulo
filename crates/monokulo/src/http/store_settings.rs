@@ -62,6 +62,7 @@ struct Plan {
     thresholds: Option<(Vec<String>, Option<NewThreshold>)>,
     fx: Option<(Vec<String>, crate::fx_provider_settings::FxProviderSettings)>,
     client_logging: Option<bool>,
+    layout: Option<crate::views::checkout_layouts::Layout>,
 }
 
 impl Plan {
@@ -73,6 +74,7 @@ impl Plan {
             && self.thresholds.is_none()
             && self.fx.is_none()
             && self.client_logging.is_none()
+            && self.layout.is_none()
     }
 }
 
@@ -206,6 +208,17 @@ async fn plan(
             .unwrap_or_default();
         if description != row.payment_description {
             plan.payment_description = Some(description);
+        }
+    }
+
+    // The checkout's layout.
+    if let Some(name) = form.get("checkout_layout") {
+        let layout = crate::views::checkout_layouts::Layout::from_name(name).ok_or((
+            StoreSection::Layout,
+            "That isn't one of the layouts.".to_string(),
+        ))?;
+        if layout != row.checkout_layout {
+            plan.layout = Some(layout);
         }
     }
 
@@ -437,6 +450,16 @@ async fn apply(
         if !saved.contains(&StoreSection::Store) {
             saved.push(StoreSection::Store);
         }
+    }
+
+    if let Some(layout) = plan.layout {
+        let store_id = row.id.clone();
+        state
+            .db
+            .write(move |db| db.set_store_checkout_layout(&store_id, layout))
+            .await
+            .map_err(|_| (StoreSection::Layout, something_went_wrong()))?;
+        saved.push(StoreSection::Layout);
     }
 
     if let Some(code) = plan.base_currency {

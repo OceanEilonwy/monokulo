@@ -115,3 +115,21 @@ body:has(.checkout-compact) { padding: .4rem; }
 /* A template's regions take no room of their own. */
 mk-if { display: contents; }
 .amount, .fiat-amount { display: block; }
+/* Tiny: 280px, code or words in the same box, so nothing moves. */
+.checkout-tiny { max-width: 280px; margin: 0 auto; }
+body:has(.checkout-tiny) { padding: var(--space-sm); }
+.tiny { display: grid; gap: var(--space-sm); justify-items: center; }
+.tiny-head { display: flex; align-items: center; gap: var(--space-sm); justify-self: stretch; justify-content: center; }
+.tiny-amounts { flex: 1; min-width: 0; container-type: inline-size; }
+.tiny .amount { font-size: clamp(var(--text-sm), 11cqi, var(--text-xl)); margin: 0; }
+.tiny .fiat-amount { font-size: var(--text-xs); margin: 0; }
+.tiny-icon { display: inline-grid; place-items: center; flex: none; width: 2em; height: 2em; border: 2px solid var(--state-border); border-radius: 50%; color: var(--state-ink); background: var(--state-bg); }
+.tiny-icon svg { width: 60%; height: 60%; }
+.tiny .qr-wrap { display: block; width: fit-content; margin: 0 auto; line-height: 0; }
+.tiny .qr-note { margin: var(--space-sm) 0 0; text-align: center; }
+.qr-small svg { width: 168px; height: 168px; }
+.tiny-instead { display: grid; place-items: center; min-height: 204px; text-align: center; }
+.tiny-message { margin: 0; font-size: var(--text-sm); font-weight: 700; }
+.address-short { justify-self: stretch; }
+.qr-medium svg { width: 208px; height: 208px; }
+.qr-large svg { width: 280px; height: 280px; }

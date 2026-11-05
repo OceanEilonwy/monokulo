@@ -220,6 +220,9 @@ pub struct CheckoutOptions {
     /// order is final. What the checkout page itself uses now; `fragments`
     /// stays for pages already open with the earlier script.
     routed: Option<bool>,
+    /// `/events` only: the layout the page is in, which its store may change
+    /// while it's open.
+    layout: Option<String>,
     /// `/events` only: `2` asks for the parts a page's template has, by their
     /// own ids. Without it, the parts a page from before that split has
     /// (`views::checkout::live_parts`).
@@ -260,12 +263,16 @@ impl CheckoutOptions {
     fn theme(&self) -> crate::db::Theme {
         crate::db::Theme::from_db_str(self.theme.as_deref().unwrap_or(""))
     }
-    fn layout(&self) -> views::checkout_layouts::Layout {
-        use views::checkout_layouts::Layout;
-        self.view
+    /// The layout an embed asked for; a stream, which layout its page is in.
+    fn asked_layout(&self) -> Option<views::checkout_layouts::Layout> {
+        self.layout
             .as_deref()
-            .and_then(Layout::from_name)
-            .unwrap_or(Layout::Detailed)
+            .or(self.view.as_deref())
+            .and_then(views::checkout_layouts::Layout::from_name)
+    }
+    /// The layout to show: what was asked for, otherwise the store's own.
+    fn layout(&self, row: &StoreConnectionRow) -> views::checkout_layouts::Layout {
+        self.asked_layout().unwrap_or(row.checkout_layout)
     }
     fn refund_enabled(&self) -> bool {
         self.refund != Some(false)
@@ -275,8 +282,12 @@ impl CheckoutOptions {
     }
     fn suffix(&self) -> String {
         let mut params = Vec::new();
-        if self.layout() == views::checkout_layouts::Layout::Compact {
-            params.push("view=compact");
+        if let Some(layout) = self.asked_layout() {
+            params.push(match layout {
+                views::checkout_layouts::Layout::Detailed => "view=detailed",
+                views::checkout_layouts::Layout::Compact => "view=compact",
+                views::checkout_layouts::Layout::Tiny => "view=tiny",
+            });
         }
         if !self.refund_enabled() {
             params.push("refund=false");
@@ -525,6 +536,7 @@ async fn build_checkout_view(
         status_label: status_text.to_string(),
         status: detail.order.status,
         address: detail.order.address.clone(),
+        payment_uri: payment_uri(&detail.order),
         qr_code_svg: payment_qr_svg(&detail.order).unwrap_or_default(),
         amount_due_xmr: pricing::exchange_rate::format_piconero_as_xmr(
             detail
@@ -559,7 +571,7 @@ async fn build_checkout_view(
         refund_address_locked: detail.order.refund_address.is_some()
             && detail.order.amount_received_piconero > pricing::xmr_amount::Piconero::ZERO,
         refund_address_error,
-        layout: options.layout(),
+        layout: options.layout(row),
         refund_enabled: options.refund_enabled(),
         query_suffix: options.suffix(),
         auto_refresh: options.auto_refresh(),
@@ -843,7 +855,7 @@ pub async fn checkout_events(
     // changed ones are sent.
     let sent: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
         Default::default();
-    let template = options.layout().template();
+    let template = options.layout(&row).template();
     // What the page says it shows; if it says nothing readable, it's taken to
     // show what it should, as a region it wrongly shows flips on the next change.
     let showing = std::sync::Arc::new(parking_lot::Mutex::new(views::checkout::page_showing(
@@ -1778,7 +1790,8 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        let events_url = format!("/checkout/{order_id}/events?routed=true&parts=2&r=");
+        let events_url =
+            format!("/checkout/{order_id}/events?routed=true&parts=2&layout=detailed&r=");
         assert!(
             html.contains(&format!(
                 r#"id="checkout-stream" hidden fx-action="{}" fx-trigger="fx:inited""#,
@@ -1895,6 +1908,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(event, "status");
+    }
+
+    /// A store chooses its checkout's layout; an embed can still ask for
+    /// another, a layout that doesn't exist is refused, and the share page
+    /// always frames the whole page.
+    #[tokio::test]
+    async fn a_stores_layout_is_saved_and_an_embed_can_ask_for_another() {
+        use crate::views::checkout_layouts::Layout;
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "laid-out-store@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &state, &session_token).await;
+        let row = |state: &AppState| {
+            state
+                .db
+                .lock()
+                .get_store_connection_by_public_key(&pk)
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(row(&state).checkout_layout, Layout::Detailed);
+        let settings = format!("/stores/{}/settings", row(&state).id);
+        let cookie = format!("session={session_token}");
+        let save = |layout: &str| {
+            crate::http::test_support::form_post(
+                &settings,
+                Some(&cookie),
+                &[("checkout_layout", layout)],
+            )
+        };
+        let saved = router.clone().oneshot(save("tiny")).await.unwrap();
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        assert_eq!(row(&state).checkout_layout, Layout::Tiny);
+        let refused = router.clone().oneshot(save("nope")).await.unwrap();
+        assert_ne!(refused.status(), StatusCode::SEE_OTHER);
+        assert_eq!(row(&state).checkout_layout, Layout::Tiny);
+
+        let order = create_order(&router, &pk, "10.00").await;
+        let page = |query: &str| {
+            Request::builder()
+                .uri(format!("/checkout/{order}{query}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let html = body_text(router.clone().oneshot(page("")).await.unwrap()).await;
+        assert!(html.contains("pay-wrap checkout-tiny"), "{html}");
+        let html = body_text(router.clone().oneshot(page("?view=compact")).await.unwrap()).await;
+        assert!(html.contains("pay-wrap checkout-compact"), "{html}");
+        let html = body_text(
+            router
+                .clone()
+                .oneshot(page("?view=detailed"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            html.contains(r#"class="pay-wrap" id="checkout-root""#),
+            "{html}"
+        );
+        let share = body_text(router.clone().oneshot(page("/share")).await.unwrap()).await;
+        assert!(share.contains("view=detailed"), "{share}");
     }
 
     #[tokio::test]

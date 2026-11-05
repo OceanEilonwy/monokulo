@@ -131,4 +131,11 @@ Newest last. Each says what was chosen and why, so it can be reversed.
 24. **Status changes are announced from a permanent element.** `#checkout-announce`
     keeps its place with only its text replaced, which is what a screen reader
     needs; the plain track otherwise left no live region in normal states.
+25. **Tiny's address is `ui::CopyValue` in its middle form.** It's the existing
+    shortened copy control: without JavaScript it's selectable and focus shows
+    it whole, which replaces the extra line the mockup caption proposed.
+26. **The Layout setting uses radio cards, with words rather than the mockup's
+    thumbnails.** Thumbnails are decoration a real preview page (PR 8) does better.
+27. **A page's stream is told its layout (`layout=`).** A store can change its
+    choice while a page is open, and the two mustn't disagree.
 

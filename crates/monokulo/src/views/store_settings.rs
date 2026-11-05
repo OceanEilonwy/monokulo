@@ -67,6 +67,8 @@ pub struct StoreSettingsData {
     pub clock: super::time::Clock,
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
+    /// The layout its checkout shows unless an embed asks for another.
+    pub checkout_layout: super::checkout_layouts::Layout,
     /// Its site's host; empty when it has none.
     pub site: String,
     /// What its payments are for, shown on the checkout when an order has
@@ -171,6 +173,7 @@ pub struct WalletPeriodView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreSection {
     Store,
+    Layout,
     Integrations,
     Wallet,
     BaseCurrency,
@@ -195,6 +198,7 @@ impl StoreSection {
             Self::Domains,
             Self::Webhooks,
             Self::Diagnostics,
+            Self::Layout,
         ]
         .into_iter()
         .find(|section| section.id() == id)
@@ -205,6 +209,7 @@ impl StoreSection {
     pub fn id(self) -> &'static str {
         match self {
             StoreSection::Store => "store",
+            StoreSection::Layout => "checkout-layout",
             StoreSection::Integrations => "integrations",
             StoreSection::Wallet => "wallet",
             StoreSection::BaseCurrency => "base-currency",
@@ -226,6 +231,7 @@ impl StoreSection {
 pub enum StoreTab {
     General,
     Payments,
+    Checkout,
     Wallet,
     Domains,
     Apps,
@@ -234,9 +240,10 @@ pub enum StoreTab {
 }
 
 impl StoreTab {
-    pub const ALL: [StoreTab; 7] = [
+    pub const ALL: [StoreTab; 8] = [
         StoreTab::General,
         StoreTab::Payments,
+        StoreTab::Checkout,
         StoreTab::Wallet,
         StoreTab::Domains,
         StoreTab::Apps,
@@ -249,6 +256,7 @@ impl StoreTab {
         match self {
             StoreTab::General => "general",
             StoreTab::Payments => "payments",
+            StoreTab::Checkout => "checkout",
             StoreTab::Wallet => "wallet",
             StoreTab::Domains => "domains",
             StoreTab::Apps => "apps",
@@ -261,6 +269,7 @@ impl StoreTab {
         match self {
             StoreTab::General => "General",
             StoreTab::Payments => "Payments",
+            StoreTab::Checkout => "Checkout",
             StoreTab::Wallet => "Wallet",
             StoreTab::Domains => "Domains",
             StoreTab::Apps => "Apps",
@@ -280,6 +289,7 @@ impl StoreTab {
                 StoreTab::General
             }
             StoreSection::Confirmations | StoreSection::FxProvider => StoreTab::Payments,
+            StoreSection::Layout => StoreTab::Checkout,
             StoreSection::Wallet | StoreSection::KeyStorage => StoreTab::Wallet,
             StoreSection::Domains => StoreTab::Domains,
             StoreSection::Integrations => StoreTab::Integrations,
@@ -334,8 +344,9 @@ pub struct StoreSettingsViewModel {
 }
 
 /// The settings form's cards, in the order they're saved.
-pub const SETTINGS_CARDS: [StoreSection; 5] = [
+pub const SETTINGS_CARDS: [StoreSection; 6] = [
     StoreSection::Store,
+    StoreSection::Layout,
     StoreSection::BaseCurrency,
     StoreSection::Confirmations,
     StoreSection::FxProvider,
@@ -693,6 +704,53 @@ fn store_card(store: &StoreSettingsData) -> Markup {
                         .value(payment_description.as_str())
                         .attr("maxlength", crate::stores::MAX_DESCRIPTION_CHARS.to_string())
                         .maybe_attr("data-saved", store.saved_attr(&store.payment_description)))
+                }))
+        },
+    )
+}
+
+/// "Layout": what customers see when a store's site shows its checkout.
+fn layout_card(store: &StoreSettingsData) -> Markup {
+    use super::checkout_layouts::Layout;
+    let choice = |layout: Layout| match layout {
+        Layout::Detailed => (
+            "Detailed",
+            "Everything, including refund address and payments.",
+        ),
+        Layout::Compact => (
+            "Compact",
+            "Status, amount, code and address, for a side panel or modal.",
+        ),
+        Layout::Tiny => (
+            "Tiny",
+            "Status icon, amounts, code and short address. Fits a 280px frame.",
+        ),
+    };
+    let shown = store.shown("checkout_layout", store.checkout_layout.name());
+    settings_card(
+        store,
+        StoreSection::Layout,
+        "Layout",
+        html! {
+            (Field::group("Layout", "checkout-layout-label")
+                .help(None, html! {
+                    "What customers see when your site shows the checkout. An embed can still ask for another with "
+                    code { "?view=tiny" } ". Payment links you share always show Detailed. An embed's frame stays the size it sets, so a smaller layout needs a smaller frame."
+                })
+                .render(html! {
+                    (ui::RadioCards::new("checkout_layout", Layout::ALL
+                        .into_iter()
+                        .map(|layout| {
+                            let (name, help) = choice(layout);
+                            ui::RadioCard {
+                                value: layout.name().into(),
+                                label: html! { span class="layout-choice" { strong { (name) } (ui::Hint::new(help)) } }.into(),
+                                picture: None,
+                                checked: layout.name() == shown,
+                                saved: Some(ui::Saved::from(layout == store.checkout_layout)),
+                            }
+                        })
+                        .collect::<Vec<_>>()))
                 }))
         },
     )
@@ -1061,7 +1119,11 @@ fn save_bar(store: &StoreSettingsData) -> Markup {
             strong { @if partly { "Changes partly saved." } @else { "Nothing saved." } } " " (message) " "
             a href=(format!("#{}", super::settings::card_id(section.id()))) data-show-card=(section.id()) { "Show" }
         } @else {
-            "Saving applies the changes to this store's next orders."
+            @if store.tab == StoreTab::Checkout {
+                "Saving applies the changes the next time a checkout page loads."
+            } @else {
+                "Saving applies the changes to this store's next orders."
+            }
         }
     };
     super::settings::save_bar(
@@ -1129,6 +1191,9 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                     }))
                     (super::store_site::delete_card(&store.sites))
                 },
+                StoreTab::Checkout => (settings_form(store, html! {
+                    (layout_card(store))
+                })),
                 StoreTab::Payments => (settings_form(store, html! {
                     (confirmations_card(store))
                     (fx_provider_card(store))
@@ -1192,6 +1257,7 @@ mod tests {
 
     fn base_store() -> StoreSettingsData {
         StoreSettingsData {
+            checkout_layout: crate::views::checkout_layouts::Layout::Detailed,
             tab: StoreTab::General,
             clock: crate::views::time::Clock::utc(0),
             connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),
