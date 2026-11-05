@@ -249,7 +249,22 @@ pub(super) fn near_stores(
                 }
                 NearReason::DomainCovers
             }
-            None => NearReason::NoSite,
+            // A store with a site's web domain elsewhere is that website's:
+            // another website means another store.
+            None => {
+                let domains = db.list_store_domains(&store.id)?;
+                // Either side of a change of domain is still this website's,
+                // and an onion shop has its own place beside a web domain.
+                let elsewhere = !domain_proof::is_onion(host.host())
+                    && domains.iter().any(|d| !domain_proof::is_onion(&d.domain))
+                    && !domains
+                        .iter()
+                        .any(|d| crate::embed_domains::covers(&d.domain, host.host()));
+                if elsewhere {
+                    continue;
+                }
+                NearReason::NoSite
+            }
         };
         near.push((store, reason));
     }
@@ -2200,6 +2215,62 @@ mod tests {
             row.site.as_ref().map(crate::stores::Site::as_str),
             Some("elsewhere.example")
         );
+    }
+
+    /// A store with no website, but a web domain elsewhere, belongs to that
+    /// domain's website, so a shop on another isn't offered it: it goes on to
+    /// make a store of its own. One its domain covers still is.
+    #[tokio::test]
+    async fn a_store_with_a_web_domain_elsewhere_is_not_offered_for_another_shop() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "second-site@example.com").await;
+        let store = create_a_store(&router, &cookie, "first.example").await;
+        let store = engine_protocol::ids::ConnectionId::new(store);
+        let name = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&store)
+            .unwrap()
+            .unwrap()
+            .name;
+        state
+            .db
+            .lock()
+            .set_store_name_and_site(&store, &name, None)
+            .unwrap();
+
+        let start = |host: &str| {
+            connect_uri(
+                &format!("https://{host}/"),
+                &format!("https://{host}/settings"),
+                "nonce-second",
+            )
+        };
+        let elsewhere = get(&router, &start("second.example"), &cookie).await;
+        assert!(location(&elsewhere).starts_with("/setup?"));
+
+        let covered = body_text(get(&router, &start("www.first.example"), &cookie).await).await;
+        assert!(covered.contains("Has no website yet."), "{covered}");
+
+        // Mid-change, it's still offered to a shop on either domain.
+        let old = state
+            .db
+            .lock()
+            .list_store_domains(&store)
+            .unwrap()
+            .remove(0);
+        state
+            .db
+            .lock()
+            .create_store_domain("new", &store, "moved.example", "t", 0, Some(&old.id))
+            .unwrap()
+            .unwrap();
+        for host in ["first.example", "moved.example"] {
+            let html = body_text(get(&router, &start(host), &cookie).await).await;
+            assert!(html.contains("Has no website yet."), "{host}: {html}");
+        }
     }
 
     /// Another account's store has the shop's site: the page says so, and

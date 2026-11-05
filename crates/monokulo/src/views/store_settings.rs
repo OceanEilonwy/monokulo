@@ -1384,7 +1384,7 @@ mod tests {
             help.contains("<details open><summary>How do I add my website?</summary>"),
             "{help}"
         );
-        assert_eq!(help.matches("<details>").count(), 3, "{help}");
+        assert_eq!(help.matches("<details>").count(), 4, "{help}");
         assert!(
             help.contains("the domain keeps working for 3 days while you put it back."),
             "{help}"

@@ -193,6 +193,8 @@ pub const COLUMNS: Classification = Classification {
         ("store_domains", "failing_since_utc", Visible),
         ("store_domains", "last_checked_at_utc", Visible),
         ("store_domains", "last_error", Visible),
+        ("store_domains", "replaces_id", Visible),
+        ("store_domains", "onion", Visible),
         ("store_integrations", "id", Visible),
         ("store_integrations", "store_id", Visible),
         ("store_integrations", "kind", Visible),
