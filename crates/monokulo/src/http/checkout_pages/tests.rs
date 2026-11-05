@@ -12,13 +12,17 @@ use crate::http::test_support::{
 };
 use crate::http::{build_router, Engine};
 
-const GOOD: &str = "{{status}}{{qr}}<p>{{amount}} {{fiat}}</p>{{address}}<div class=\"pay\"></div>";
+const GOOD: &str = "<h1>Fern and Wire's own page</h1>{{status}}{{qr}}<p>{{amount}} {{fiat}}</p>{{address}}<div class=\"pay\"></div>";
+const CUSTOM: &str = "Fern and Wire's own page";
+use crate::checkout_pages::TEMPLATE;
 
 struct Wizard {
     state: AppState,
     router: Router,
     cookie: String,
     store: ConnectionId,
+    public_key: String,
+    dns: Arc<FakeDns>,
     _engine: engine_test_support::TestEngineHandle,
 }
 
@@ -52,6 +56,7 @@ impl Wizard {
                     .uri(uri)
                     .header("sec-fetch-dest", dest)
                     .header("sec-fetch-site", site)
+                    .header("referer", "https://store-home.example/cart")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -67,6 +72,87 @@ impl Wizard {
                 Some(&self.cookie),
                 &[("template", template), ("css", css)],
             ))
+            .await
+            .unwrap()
+    }
+
+    async fn post(&self, uri: &str, cookie: Option<&str>) -> (StatusCode, String) {
+        let response = self
+            .router
+            .clone()
+            .oneshot(form_post(uri, cookie.or(Some(&self.cookie)), &[]))
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, body_text(response).await)
+    }
+
+    /// Publishes `GOOD`, with its record in DNS.
+    async fn publish(&self) -> String {
+        self.save(GOOD, ".pay{color:red}").await;
+        let token = self.publish_record();
+        let (status, _) = self.post(&format!("{}/publish", self.page()), None).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert!(self.published().is_some());
+        token
+    }
+
+    fn publish_record(&self) -> String {
+        let draft = self.draft().unwrap();
+        let token =
+            checkout_template::version_token(self.store.as_str(), &draft.template, &draft.css);
+        self.dns.publish(
+            &TEMPLATE.record_name("store-home.example"),
+            &TEMPLATE.value(&token),
+        );
+        token
+    }
+
+    fn published(&self) -> Option<crate::db::PublishedCheckoutPage> {
+        self.state
+            .db
+            .lock()
+            .published_checkout_page(&self.store)
+            .unwrap()
+    }
+
+    async fn order(&self) -> String {
+        let response = self
+            .router
+            .clone()
+            .oneshot(crate::http::test_support::api_request(
+                "POST",
+                "/api/v1/orders",
+                Some(&self.public_key),
+                Some(serde_json::json!({ "amount": "0.01", "currency": "XMR" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        crate::http::test_support::body_json(response).await["order_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// `uri` as a browser asks for it, with what it says about where it's loaded.
+    async fn visit(
+        &self,
+        uri: &str,
+        dest: Option<&str>,
+        site: Option<&str>,
+    ) -> axum::response::Response {
+        let mut request = Request::builder().uri(uri);
+        if let Some(dest) = dest {
+            request = request.header("sec-fetch-dest", dest);
+        }
+        if let Some(site) = site {
+            request = request.header("sec-fetch-site", site);
+        }
+        request = request.header("referer", "https://store-home.example/cart");
+        self.router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap()
     }
@@ -96,7 +182,8 @@ async fn wizard(email: &str, verified: bool) -> Wizard {
     let router = build_router(state.clone());
     let session =
         signed_up_and_logged_in_session_token(&router, email, "correct horse battery staple").await;
-    let store = store_with_keys(&router, &state, &session, "shop.example", "XMR").await;
+    let store = store_with_keys(&router, &state, &session, "store-home.example", "XMR").await;
+    let public_key = store.public_key.clone();
     let store = ConnectionId::new(store.id);
     if verified {
         let row = state
@@ -118,6 +205,8 @@ async fn wizard(email: &str, verified: bool) -> Wizard {
         router,
         cookie: format!("session={session}"),
         store,
+        public_key,
+        dns,
         _engine: engine,
     }
 }
@@ -397,4 +486,545 @@ fn draft_checks_report_the_template_and_css_together() {
     .ok()
     .unwrap();
     assert!(!checked.template.contains('\r'));
+}
+
+/// Nothing is published without its proof: not by skipping the check, not with
+/// another version's value, and not during an outage.
+#[tokio::test]
+async fn a_version_is_published_only_with_its_own_proof_in_place() {
+    let wizard = wizard("approve@example.com", true).await;
+    wizard.save(GOOD, "").await;
+    let publish = format!("{}/publish", wizard.page());
+    let approve = format!("{}/approve", wizard.page());
+
+    let (_, html) = wizard.get(&approve).await;
+    assert!(html.contains("_monokulo-template"), "{html}");
+    assert!(html.contains("store-home.example"), "{html}");
+
+    // Not there.
+    let (status, _) = wizard.post(&publish, None).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(wizard.published(), None);
+    let (_, html) = wizard.post(&approve, None).await;
+    assert!(html.contains("Not found."), "{html}");
+    assert!(!html.contains("Use this template"), "{html}");
+
+    // Another version's value.
+    let name = TEMPLATE.record_name("store-home.example");
+    wizard.dns.publish(&name, &TEMPLATE.value("an-old-version"));
+    wizard.post(&publish, None).await;
+    assert_eq!(wizard.published(), None);
+    let (_, html) = wizard.post(&approve, None).await;
+    assert!(html.contains("holds a different value"), "{html}");
+
+    // An outage says so, rather than that it's missing.
+    wizard.dns.fail(&name, "timed out");
+    wizard.post(&publish, None).await;
+    assert_eq!(wizard.published(), None);
+    let (_, html) = wizard.post(&approve, None).await;
+    assert!(
+        html.contains("Can&#39;t check") || html.contains("Can't check"),
+        "{html}"
+    );
+
+    // There: found, and it's the button that publishes it.
+    let token = wizard.publish_record();
+    let (_, html) = wizard.post(&approve, None).await;
+    assert!(html.contains("Found the record."), "{html}");
+    assert!(html.contains("Use this template"), "{html}");
+    assert_eq!(wizard.published(), None, "not until the button");
+    wizard.post(&publish, None).await;
+    let page = wizard.published().unwrap();
+    assert_eq!(page.token, token);
+    assert_eq!(wizard.draft(), None, "the draft became the page");
+}
+
+/// The value is bound to the store and the version, so neither can be reused.
+#[tokio::test]
+async fn editing_a_page_keeps_it_showing_until_the_new_version_is_approved() {
+    let wizard = wizard("versions@example.com", true).await;
+    let first = wizard.publish().await;
+    let changed = GOOD.replace("own page", "new page");
+    wizard.save(&changed, "").await;
+    assert_eq!(
+        wizard.published().unwrap().token,
+        first,
+        "still the old one"
+    );
+    let (_, _) = wizard
+        .post(&format!("{}/publish", wizard.page()), None)
+        .await;
+    assert_eq!(
+        wizard.published().unwrap().token,
+        first,
+        "the old record doesn't approve it"
+    );
+    let second = wizard.publish_record();
+    assert_ne!(first, second);
+    wizard
+        .post(&format!("{}/publish", wizard.page()), None)
+        .await;
+    assert_eq!(wizard.published().unwrap().token, second);
+}
+
+/// A custom page shows only as a frame of another site. Anywhere else, the store's
+/// layout, so a payment link sent to someone is never a merchant's words at this
+/// Monokulo's address, including under its own share page.
+#[tokio::test]
+async fn a_custom_page_shows_only_in_a_frame_of_another_site() {
+    let wizard = wizard("serving@example.com", true).await;
+    wizard.publish().await;
+    let order = wizard.order().await;
+    let uri = format!("/checkout/{order}");
+    for (dest, site, shown) in [
+        (Some("iframe"), Some("cross-site"), true),
+        (Some("iframe"), Some("same-site"), true),
+        (Some("iframe"), Some("same-origin"), false),
+        (Some("document"), Some("none"), false),
+        (None, None, false),
+        (Some("iframe"), None, false),
+    ] {
+        let page = wizard.visit(&uri, dest, site).await;
+        assert_eq!(page.status(), StatusCode::OK);
+        let vary = page.headers()["vary"].to_str().unwrap().to_string();
+        assert!(vary.contains("Sec-Fetch-Site"), "{vary}");
+        let policy = page.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let html = body_text(page).await;
+        assert_eq!(html.contains(CUSTOM), shown, "{dest:?} {site:?}");
+        assert_eq!(
+            policy.contains("frame-ancestors"),
+            shown,
+            "only a custom page is locked to its site: {policy}"
+        );
+        assert!(policy.starts_with("default-src 'none'"), "{policy}");
+    }
+    // An embed asking for a layout gets it.
+    let asked = wizard
+        .visit(
+            &format!("{uri}?view=tiny"),
+            Some("iframe"),
+            Some("cross-site"),
+        )
+        .await;
+    assert!(!body_text(asked).await.contains(CUSTOM));
+
+    // A frame moving itself on says same-origin. Its refresh, forms and links carry
+    // a mark that keeps it on the page, and that's no use opened any other way.
+    let html = body_text(wizard.visit(&uri, Some("iframe"), Some("cross-site")).await).await;
+    assert!(
+        html.contains(&format!("content=\"60;url={uri}?framed=true\"")),
+        "{html}"
+    );
+    let marked = format!("{uri}?framed=true");
+    for (dest, site, shown) in [
+        ("iframe", "same-origin", true),
+        ("document", "same-origin", false),
+        ("document", "none", false),
+    ] {
+        let html = body_text(wizard.visit(&marked, Some(dest), Some(site)).await).await;
+        assert_eq!(html.contains(CUSTOM), shown, "{dest} {site}");
+    }
+    // A layout page has no mark to pass on, whatever it was opened with.
+    let html = body_text(wizard.visit(&marked, Some("document"), Some("none")).await).await;
+    assert!(!html.contains("framed=true"), "{html}");
+
+    let framed = wizard.visit(&uri, Some("iframe"), Some("cross-site")).await;
+    let policy = framed.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        policy.contains(
+            "frame-ancestors 'self' https://store-home.example https://*.store-home.example"
+        ),
+        "{policy}"
+    );
+    let html = body_text(framed).await;
+    assert!(
+        html.contains(&format!("&amp;page={}", wizard.published().unwrap().token)),
+        "{html}"
+    );
+    assert!(html.contains("/static-style/"), "{html}");
+}
+
+/// An answer without the proof starts the grace period, and it shows through it;
+/// no answer changes nothing, however long; and it comes back by itself.
+#[tokio::test]
+async fn a_pages_proof_is_checked_with_a_grace_period_and_no_answer_means_nothing() {
+    use crate::checkout_pages::{check_and_record, standing, PageStanding};
+    let wizard = wizard("rechecks@example.com", true).await;
+    let token = wizard.publish().await;
+    let name = TEMPLATE.record_name("store-home.example");
+    let domains = wizard
+        .state
+        .db
+        .lock()
+        .list_store_domains(&wizard.store)
+        .unwrap();
+    let (db, proofs) = (wizard.state.db.clone(), wizard.state.proofs.clone());
+    let store = wizard.store.clone();
+    let check = |at: i64| {
+        let (db, proofs, store, token) = (db.clone(), proofs.clone(), store.clone(), token.clone());
+        async move {
+            check_and_record(&db, &proofs, &store, "store-home.example", &token, at)
+                .await
+                .unwrap()
+        }
+    };
+    let now = crate::now_unix();
+    let at = |wizard: &Wizard, when: i64| standing(&wizard.published().unwrap(), &domains, when);
+
+    // An outage, longer than the grace period: still working.
+    wizard.dns.fail(&name, "timed out");
+    check(now).await;
+    let later = now + domain_proof::GRACE_SECS * 2;
+    check(later).await;
+    assert_eq!(at(&wizard, later), PageStanding::Working);
+    assert!(wizard.published().unwrap().last_error.is_some());
+
+    // Gone: failing, then not showing.
+    wizard.dns.remove(&name);
+    check(later).await;
+    assert_eq!(at(&wizard, later), PageStanding::Failing { since: later });
+    assert_eq!(
+        at(&wizard, later + domain_proof::GRACE_SECS),
+        PageStanding::NotShowing
+    );
+    // An outage doesn't stop the clock it didn't start.
+    wizard.dns.fail(&name, "timed out");
+    check(later + 60).await;
+    assert_eq!(
+        at(&wizard, later + 60),
+        PageStanding::Failing { since: later }
+    );
+
+    // Back: working, with nothing for the merchant to do.
+    wizard.dns.publish(&name, &TEMPLATE.value(&token));
+    check(later + domain_proof::GRACE_SECS + 60).await;
+    assert_eq!(wizard.published().unwrap().failing_since, None);
+    assert_eq!(wizard.published().unwrap().last_error, None);
+}
+
+/// A store's domain lapsing takes its page with it.
+#[tokio::test]
+async fn a_page_stops_showing_when_its_domain_stops_counting() {
+    let wizard = wizard("lapsed@example.com", true).await;
+    wizard.publish().await;
+    let order = wizard.order().await;
+    let uri = format!("/checkout/{order}");
+    let shown = |html: String| html.contains(CUSTOM);
+    assert!(shown(
+        body_text(wizard.visit(&uri, Some("iframe"), Some("cross-site")).await).await
+    ));
+    {
+        let db = wizard.state.db.lock();
+        let domain = db.list_store_domains(&wizard.store).unwrap().remove(0);
+        db.delete_store_domain(&wizard.store, &domain.id).unwrap();
+    }
+    assert!(!shown(
+        body_text(wizard.visit(&uri, Some("iframe"), Some("cross-site")).await).await
+    ));
+}
+
+/// An onion shop approves with a file, fetched only over Tor, with nothing in DNS.
+#[tokio::test]
+async fn an_onion_only_store_approves_with_a_file_over_tor() {
+    const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+    let wizard = wizard("onion-page@example.com", false).await;
+    let onion = Arc::new(domain_proof::test_support::FakeOnion::default());
+    let state = AppState {
+        proofs: domain_proof::test_support::proofs(wizard.dns.clone(), onion.clone()),
+        ..wizard.state.clone()
+    };
+    let router = build_router(state.clone());
+    let id = wizard.store.clone();
+    {
+        let db = state.db.lock();
+        let web = db.list_store_domains(&id).unwrap().remove(0);
+        db.delete_store_domain(&id, &web.id).unwrap();
+        db.create_store_domain("o", &id, ONION, "t", 1, None)
+            .unwrap()
+            .unwrap();
+        db.record_store_domain_check("o", crate::now_unix(), None)
+            .unwrap();
+    }
+    let wizard = Wizard {
+        router,
+        state,
+        ..wizard
+    };
+    wizard.save(GOOD, "").await;
+    let draft = wizard.draft().unwrap();
+    let (_, html) = wizard.get(&format!("{}/approve", wizard.page())).await;
+    assert!(html.contains("/.well-known/monokulo-template"), "{html}");
+    assert!(html.contains("weaker than DNS"), "{html}");
+    let token = checkout_template::version_token(id.as_str(), &draft.template, &draft.css);
+    onion.serve(ONION, &TEMPLATE.value(&token));
+    wizard.dns.asked.lock().unwrap().clear();
+    wizard
+        .post(&format!("{}/publish", wizard.page()), None)
+        .await;
+    assert_eq!(wizard.published().unwrap().token, token);
+    assert_eq!(
+        *onion.asked.lock().unwrap(),
+        ["/.well-known/monokulo-template"]
+    );
+    assert!(
+        wizard.dns.asked.lock().unwrap().is_empty(),
+        "no onion name in DNS"
+    );
+}
+
+/// The operator turns a page off: it stops showing, a fresh record doesn't bring it
+/// back, nor removing it, and the merchant sees why and can still edit a draft.
+#[tokio::test]
+async fn an_operator_can_turn_a_page_off_and_only_they_can_turn_it_back_on() {
+    let wizard = wizard("turned-off@example.com", true).await;
+    wizard.publish().await;
+    let order = wizard.order().await;
+    let uri = format!("/checkout/{order}");
+    let shown = async || {
+        body_text(wizard.visit(&uri, Some("iframe"), Some("cross-site")).await)
+            .await
+            .contains(CUSTOM)
+    };
+    let admin = crate::http::test_support::admin_session_cookie(&wizard.router).await;
+    let off = format!("/admin/custom-pages/{}/off", wizard.store);
+
+    // Not for anyone else.
+    let (status, _) = wizard.get(&off).await;
+    assert_ne!(status, StatusCode::OK);
+    let refused = wizard
+        .router
+        .clone()
+        .oneshot(form_post(&off, Some(&wizard.cookie), &[("reason", "x")]))
+        .await
+        .unwrap();
+    assert_ne!(refused.status(), StatusCode::SEE_OTHER);
+    assert!(shown().await);
+
+    let turned = wizard
+        .router
+        .clone()
+        .oneshot(form_post(
+            &off,
+            Some(&admin),
+            &[("reason", "Impersonating another shop")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(turned.status(), StatusCode::SEE_OTHER);
+    assert!(!shown().await);
+
+    // What the merchant sees, and what they can't do about it.
+    let (_, html) = wizard
+        .get(&format!("/stores/{}/settings?tab=checkout", wizard.store))
+        .await;
+    assert!(html.contains("Turned off by admin"), "{html}");
+    assert!(html.contains("Impersonating another shop"), "{html}");
+    wizard
+        .save(GOOD.replace("own", "another").as_str(), "")
+        .await;
+    assert!(wizard.draft().is_some(), "a draft can still be edited");
+    wizard.publish_record();
+    wizard
+        .post(&format!("{}/publish", wizard.page()), None)
+        .await;
+    assert!(wizard.published().unwrap().turned_off_at.is_some());
+    assert!(!shown().await);
+    wizard.post(&format!("{}/stop", wizard.page()), None).await;
+    assert!(wizard.published().is_some(), "removing it isn't a way back");
+
+    let on = wizard
+        .router
+        .clone()
+        .oneshot(form_post(
+            &format!("/admin/custom-pages/{}/on", wizard.store),
+            Some(&admin),
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(on.status(), StatusCode::SEE_OTHER);
+    assert!(shown().await);
+
+    // The operator's list finds it by domain and by order, and nothing by anything else.
+    for (query, found) in [
+        ("", true),
+        ("store-home", true),
+        (order.as_str(), true),
+        ("nope", false),
+    ] {
+        let list = wizard
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/admin/custom-pages?q={query}"))
+                    .header("cookie", admin.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(list).await;
+        assert_eq!(
+            html.contains("store-home.example"),
+            found,
+            "{query}: {html}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_card_says_where_a_page_stands() {
+    let wizard = wizard("card@example.com", false).await;
+    let tab = format!("/stores/{}/settings?tab=checkout", wizard.store);
+    assert!(wizard.get(&tab).await.1.contains("Not available yet"));
+    let row = wizard
+        .state
+        .db
+        .lock()
+        .list_store_domains(&wizard.store)
+        .unwrap()
+        .remove(0);
+    wizard
+        .state
+        .db
+        .lock()
+        .record_store_domain_check(&row.id, crate::now_unix(), None)
+        .unwrap();
+    assert!(wizard.get(&tab).await.1.contains("Create a custom page"));
+    wizard.save(GOOD, "").await;
+    assert!(wizard.get(&tab).await.1.contains("Waiting for approval"));
+    wizard.publish_record();
+    wizard
+        .post(&format!("{}/publish", wizard.page()), None)
+        .await;
+    assert!(
+        wizard.get(&tab).await.1.contains(">Working<")
+            || wizard.get(&tab).await.1.contains("Working")
+    );
+    {
+        let db = wizard.state.db.lock();
+        let token = db
+            .published_checkout_page(&wizard.store)
+            .unwrap()
+            .unwrap()
+            .token;
+        db.record_checkout_page_check(&wizard.store, &token, crate::now_unix(), true, Some("gone"))
+            .unwrap();
+    }
+    assert!(wizard.get(&tab).await.1.contains("Failing"));
+    wizard.post(&format!("{}/stop", wizard.page()), None).await;
+    assert_eq!(wizard.published(), None);
+    assert!(wizard.get(&tab).await.1.contains("Create a custom page"));
+}
+
+/// A page on a version that's been replaced loads again, rather than following the
+/// order on a template it wasn't written from.
+#[tokio::test]
+async fn a_stream_on_an_old_version_tells_the_page_to_load_again() {
+    let wizard = wizard("reload@example.com", true).await;
+    let token = wizard.publish().await;
+    let order = wizard.order().await;
+    let events = format!("/checkout/{order}/events?routed=true&parts=2&page={token}");
+    let first_event = |response: axum::response::Response| async move {
+        let mut body = response.into_body();
+        let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
+        crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap()
+            .0
+    };
+    let current = first_event(wizard.visit(&events, None, None).await).await;
+    assert_ne!(current, "reload");
+    let stale = format!("/checkout/{order}/events?routed=true&parts=2&page=an-old-version");
+    assert_eq!(
+        first_event(wizard.visit(&stale, None, None).await).await,
+        "reload"
+    );
+}
+
+/// What happens while a lookup runs: a draft saved meanwhile stays, and a slow answer
+/// about the old version doesn't land on the new one.
+#[tokio::test]
+async fn nothing_slow_touches_what_replaced_it() {
+    let wizard = wizard("races@example.com", true).await;
+    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    let db = wizard.state.db.lock();
+    db.save_checkout_page_draft(&store, GOOD, "", "", "t1", now)
+        .unwrap();
+    let looked_up = db.checkout_page_draft(&store, now).unwrap().unwrap();
+    db.save_checkout_page_draft(&store, GOOD, "p{}", "", "t2", now)
+        .unwrap();
+    assert!(db.publish_checkout_page(&looked_up, "v1", now).unwrap());
+    let draft = db.checkout_page_draft(&store, now).unwrap();
+    assert_eq!(draft.unwrap().preview_token, "t2", "the newer draft stays");
+
+    db.record_checkout_page_check(&store, "v0", now, true, Some("gone"))
+        .unwrap();
+    let page = db.published_checkout_page(&store).unwrap().unwrap();
+    assert_eq!((page.failing_since, page.last_error), (None, None));
+    db.record_checkout_page_check(&store, "v1", now, true, Some("gone"))
+        .unwrap();
+    let page = db.published_checkout_page(&store).unwrap().unwrap();
+    assert_eq!(page.failing_since, Some(now));
+}
+
+/// An open page follows its standing, not only its version: when its proof has
+/// lapsed or its domain has gone, it's told to load again.
+#[tokio::test]
+async fn an_open_page_stops_following_a_page_that_stopped_showing() {
+    let wizard = wizard("open-page@example.com", true).await;
+    wizard.publish().await;
+    let token = wizard.published().unwrap().token;
+    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    let db = wizard.state.db.lock();
+    let showing = |at: i64| {
+        crate::checkout_pages::page_still_showing(&db, &store, &token, at)
+            .unwrap()
+            .is_some()
+    };
+    assert!(showing(now));
+    assert!(
+        crate::checkout_pages::page_still_showing(&db, &store, "older", now)
+            .unwrap()
+            .is_none()
+    );
+    db.record_checkout_page_check(&store, &token, now, true, Some("gone"))
+        .unwrap();
+    assert!(showing(now), "its grace period");
+    assert!(!showing(now + domain_proof::GRACE_SECS));
+}
+
+/// A release that fixes the sanitiser reaches pages already live, from what their
+/// domain approved.
+#[tokio::test]
+async fn each_start_writes_a_live_pages_css_again() {
+    let wizard = wizard("refresh-page@example.com", true).await;
+    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    let css = "p{color:red}";
+    let written = check_draft(GOOD, css).unwrap().written_css;
+    let db = wizard.state.db.lock();
+    db.save_checkout_page_draft(&store, GOOD, css, "#checkout-root old{}", "t1", now)
+        .unwrap();
+    let draft = db.checkout_page_draft(&store, now).unwrap().unwrap();
+    assert!(db.publish_checkout_page(&draft, "v1", now).unwrap());
+
+    assert_eq!(db.refresh_checkout_pages(now).unwrap(), 1);
+    let page = db.published_checkout_page(&store).unwrap().unwrap();
+    assert_eq!(page.written_css, written);
+    assert!(db
+        .checkout_stylesheet(&stylesheet_hash(&written))
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        db.refresh_checkout_pages(now).unwrap(),
+        0,
+        "already current"
+    );
 }

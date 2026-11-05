@@ -195,6 +195,9 @@ pub fn backfill_at_start(db: &crate::db::Db, key: &crate::crypto::AtRestKey) {
     if let Err(e) = db.refresh_checkout_stylesheets(crate::now_unix()) {
         tracing::error!(error = %e, "could not write stores' checkout stylesheets");
     }
+    if let Err(e) = db.refresh_checkout_pages(crate::now_unix()) {
+        tracing::error!(error = %e, "could not write custom checkout pages' stylesheets");
+    }
     match crate::embed_domains::import_existing_domains(db) {
         Ok(true) => tracing::info!(
             step = crate::db::STORE_DOMAINS_STEP,

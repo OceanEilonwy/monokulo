@@ -751,6 +751,7 @@ fn nav(chrome: &PageChrome, width: ui::PageWidth) -> Markup {
             a href=(crate::base::url("/admin/settings")) { "Admin" }
             a href=(crate::base::url("/admin/invites")) { "Invites" }
             a href=(crate::base::url("/admin/logs")) { "Logs" }
+            a href=(crate::base::url("/admin/custom-pages")) { "Custom pages" }
             @if chrome.query_enabled {
                 a href=(crate::base::url(query::PAGE)) { "Query" }
             }

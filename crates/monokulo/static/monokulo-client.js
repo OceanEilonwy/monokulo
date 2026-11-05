@@ -356,6 +356,9 @@
     // this mount() still follows status independently for merchant callbacks.
     iframe.setAttribute("sandbox", "allow-same-origin allow-scripts allow-forms allow-popups");
     iframe.setAttribute("allow", "camera");
+    // A custom page shows only for the site that approved it, which says who it is
+    // this way, even from a page that otherwise sends no Referer.
+    iframe.referrerPolicy = "strict-origin";
 
     el.innerHTML = "";
     el.appendChild(iframe);

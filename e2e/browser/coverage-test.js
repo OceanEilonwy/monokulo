@@ -60,6 +60,8 @@ async function installCspReports(context, violations) {
   await context.addInitScript(() => {
     document.addEventListener('securitypolicyviolation', (event) => {
       if (event.effectiveDirective === 'frame-ancestors') return;
+      // What a test sends on purpose, to see the policy refuse it.
+      if (event.blockedURI.includes('evil.example')) return;
       window.__cspViolation(`${event.effectiveDirective} refused ${event.blockedURI} on ${event.documentURI}`);
     });
   });

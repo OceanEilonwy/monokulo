@@ -16,7 +16,7 @@ use maud::html;
 use serde::Deserialize;
 
 use super::orders::load_owned_connection;
-use super::{AppState, AuthedUser};
+use super::{AppState, AuthedAdmin, AuthedUser};
 use crate::db::{ConnectionId, UserRow};
 use crate::views::checkout_layouts::Layout;
 use crate::views::checkout_pages::{self, WizardStore, PREVIEW_STATES};
@@ -140,7 +140,20 @@ pub async fn edit(
         // Its classes aren't the draft's, so the draft's CSS wouldn't fit.
         (Some(layout), _) => (layout.source().to_string(), String::new()),
         (None, Some(draft)) => (draft.template, draft.css),
-        (None, None) => (Layout::Compact.source().to_string(), String::new()),
+        // Editing what's in use starts a new version of it.
+        (None, None) => {
+            let store_id = row.id.clone();
+            let page = state
+                .db
+                .read(move |db| db.published_checkout_page(&store_id))
+                .await
+                .ok()
+                .flatten();
+            match page {
+                Some(page) => (page.template, page.css),
+                None => (Layout::Compact.source().to_string(), String::new()),
+            }
+        }
     };
     let size = checkout_template::Template::load(&template)
         .ok()
@@ -276,7 +289,13 @@ pub async fn preview_step(
         &draft.preview_token,
         &link,
         size,
-        html! {},
+        html! {
+            (ui::LinkButton::new(
+                "Approve this version",
+                crate::base::url(format!("/stores/{id}/settings/checkout-page/approve")),
+            )
+            .variant(ui::ButtonVariant::Primary))
+        },
     )
     .into_response()
 }
@@ -300,6 +319,344 @@ pub async fn discard(
     {
         Ok(()) => crate::base::see_other(format!("/stores/{id}/settings?tab=checkout")),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// How many times a minute one store can ask for its proof to be looked up. Each
+/// can take DNS or Tor up to twenty seconds, so it's kept low.
+const CHECKS_PER_MINUTE: u32 = 12;
+static CHECKS: LazyLock<rate_limit::RateLimiter<ConnectionId>> =
+    LazyLock::new(|| rate_limit::RateLimiter::new(CHECKS_PER_MINUTE));
+
+/// What's needed to approve a store's draft.
+pub struct Approval {
+    pub domain: String,
+    pub token: String,
+    pub draft: crate::db::CheckoutPageDraft,
+}
+
+/// A store's draft and where its approval goes, if it has both.
+pub async fn approval_for(
+    state: &AppState,
+    id: &ConnectionId,
+) -> Result<Option<Approval>, crate::db::DbError> {
+    let now = crate::now_unix();
+    let store_id = id.clone();
+    let (draft, domains) = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.checkout_page_draft(&store_id, now)?,
+                db.list_store_domains(&store_id)?,
+            ))
+        })
+        .await?;
+    let (Some(draft), Some(domain)) = (draft, crate::checkout_pages::approver(&domains, now))
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Approval {
+        token: checkout_template::version_token(id.as_str(), &draft.template, &draft.css),
+        domain: domain.domain.clone(),
+        draft,
+    }))
+}
+
+/// Why a draft wasn't published.
+pub enum PublishRefused {
+    /// No draft, or no domain that counts.
+    NothingToPublish,
+    /// The proof wasn't there.
+    NotFound(String),
+    /// The lookup got no answer.
+    CantCheck(String),
+    /// This Monokulo's operator has turned the store's page off.
+    TurnedOff,
+    Failed,
+}
+
+/// Looks up a draft's proof and, if it's there, makes it the page in use. The
+/// lookup is here, not just on the page before: publishing is what the approval
+/// is for.
+pub async fn publish_draft(state: &AppState, id: &ConnectionId) -> Result<(), PublishRefused> {
+    let approval = match approval_for(state, id).await {
+        Ok(Some(approval)) => approval,
+        Ok(None) => return Err(PublishRefused::NothingToPublish),
+        Err(_) => return Err(PublishRefused::Failed),
+    };
+    let outcome = domain_proof::check(
+        &state.proofs,
+        &crate::checkout_pages::TEMPLATE,
+        &approval.domain,
+        &approval.token,
+    )
+    .await;
+    let reason = outcome
+        .error_message(
+            &crate::checkout_pages::TEMPLATE,
+            &approval.domain,
+            &approval.token,
+        )
+        .unwrap_or_default();
+    match outcome {
+        domain_proof::CheckOutcome::Found => {}
+        domain_proof::CheckOutcome::LookupFailed(_) => {
+            return Err(PublishRefused::CantCheck(reason))
+        }
+        _ => return Err(PublishRefused::NotFound(reason)),
+    }
+    let now = crate::now_unix();
+    let Approval {
+        mut draft, token, ..
+    } = approval;
+    // Saved by an earlier release, perhaps: what goes live is what today's checks
+    // write. The approval still stands, as it's for what the merchant wrote.
+    draft.written_css = match check_draft(&draft.template, &draft.css) {
+        Ok(checked) => checked.written_css,
+        Err(_) => {
+            return Err(PublishRefused::NotFound(
+                "This version no longer passes our checks. Edit it, then save it again."
+                    .to_string(),
+            ))
+        }
+    };
+    let store_id = id.clone();
+    let published = state
+        .db
+        .write(move |db| db.publish_checkout_page(&draft, &token, now))
+        .await;
+    match published {
+        Ok(true) => {
+            tracing::info!(store.id = %store_id, "custom checkout page published");
+            Ok(())
+        }
+        Ok(false) => Err(PublishRefused::TurnedOff),
+        Err(_) => Err(PublishRefused::Failed),
+    }
+}
+
+/// `GET /stores/{id}/settings/checkout-page/approve`: step 3.
+pub async fn approve_step(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<ConnectionId>,
+) -> Response {
+    show_approval(state, user, id, None).await
+}
+
+/// `POST .../approve`: looks for the proof, and says what it found.
+pub async fn check_approval(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<ConnectionId>,
+) -> Response {
+    show_approval(state, user, id, Some(())).await
+}
+
+async fn show_approval(
+    state: AppState,
+    user: UserRow,
+    id: ConnectionId,
+    check: Option<()>,
+) -> Response {
+    let row = match store_for_wizard(&state, &user, &id).await {
+        Ok(row) => row,
+        Err(response) => return *response,
+    };
+    let approval = match approval_for(&state, &row.id).await {
+        Ok(Some(approval)) => approval,
+        Ok(None) => return crate::base::see_other(format!("/stores/{id}/settings/checkout-page")),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let result = if check.is_none() {
+        checkout_pages::ApproveResult::NotChecked
+    } else if !CHECKS.check(row.id.clone(), crate::now_unix()) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    } else {
+        let scheme = crate::checkout_pages::TEMPLATE;
+        let outcome =
+            domain_proof::check(&state.proofs, &scheme, &approval.domain, &approval.token).await;
+        let reason = outcome
+            .error_message(&scheme, &approval.domain, &approval.token)
+            .unwrap_or_default();
+        match outcome {
+            domain_proof::CheckOutcome::Found => checkout_pages::ApproveResult::Found,
+            domain_proof::CheckOutcome::LookupFailed(_) => {
+                checkout_pages::ApproveResult::CantCheck(reason)
+            }
+            _ => checkout_pages::ApproveResult::NotFound(reason),
+        }
+    };
+    let chrome = super::page_chrome(&state, Some(&user), format!("/stores/{id}/settings")).await;
+    checkout_pages::approve_step(
+        &chrome,
+        &wizard_store(&row),
+        &approval.domain,
+        &approval.token,
+        &result,
+    )
+    .into_response()
+}
+
+/// `POST .../publish`: the "Use this template" button.
+pub async fn publish(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<ConnectionId>,
+) -> Response {
+    let row = match store_for_wizard(&state, &user, &id).await {
+        Ok(row) => row,
+        Err(response) => return *response,
+    };
+    if !CHECKS.check(row.id.clone(), crate::now_unix()) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    match publish_draft(&state, &row.id).await {
+        Ok(()) => crate::base::see_other(format!(
+            "/stores/{id}/settings?tab=checkout#card-custom-page"
+        )),
+        // Back to where it says what's wrong.
+        Err(PublishRefused::NotFound(_) | PublishRefused::CantCheck(_)) => {
+            crate::base::see_other(format!("/stores/{id}/settings/checkout-page/approve"))
+        }
+        Err(PublishRefused::NothingToPublish | PublishRefused::TurnedOff) => {
+            crate::base::see_other(format!(
+                "/stores/{id}/settings?tab=checkout#card-custom-page"
+            ))
+        }
+        Err(PublishRefused::Failed) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// `POST .../stop`: back to the store's layout.
+pub async fn stop(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<ConnectionId>,
+) -> Response {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let store_id = row.id.clone();
+    match state
+        .db
+        .write(move |db| db.stop_using_checkout_page(&store_id))
+        .await
+    {
+        Ok(_) => crate::base::see_other(format!(
+            "/stores/{id}/settings?tab=checkout#card-custom-page"
+        )),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// `POST .../recheck`: looks for the proof of the page in use, now.
+pub async fn recheck(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<ConnectionId>,
+) -> Response {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let now = crate::now_unix();
+    if !CHECKS.check(row.id.clone(), now) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    let store_id = row.id.clone();
+    let found = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.published_checkout_page(&store_id)?,
+                db.list_store_domains(&store_id)?,
+            ))
+        })
+        .await;
+    let (page, domains) = match found {
+        Ok(found) => found,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if let (Some(page), Some(domain)) = (page, crate::checkout_pages::approver(&domains, now)) {
+        let checked = crate::checkout_pages::check_and_record(
+            &state.db,
+            &state.proofs,
+            &row.id,
+            &domain.domain,
+            &page.token,
+            now,
+        )
+        .await;
+        if checked.is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+    crate::base::see_other(format!(
+        "/stores/{id}/settings?tab=checkout#card-custom-page"
+    ))
+}
+
+/// What the Checkout tab's card says about a store's custom page.
+pub(super) async fn page_card(
+    state: &AppState,
+    id: &ConnectionId,
+    domains: &[crate::db::StoreDomainRow],
+    now: i64,
+) -> checkout_pages::PageCard {
+    use crate::checkout_pages::{approver, standing, PageStanding};
+    use checkout_pages::PageCard;
+    let store_id = id.clone();
+    let found = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.published_checkout_page(&store_id)?,
+                db.checkout_page_draft(&store_id, now)?,
+            ))
+        })
+        .await;
+    let Ok((page, draft)) = found else {
+        return PageCard::None;
+    };
+    let domain = approver(domains, now).map(|row| row.domain.clone());
+    let has_draft = draft.is_some();
+    let Some(page) = page else {
+        return match (domain, draft) {
+            (None, _) => PageCard::NeedsDomain,
+            (Some(domain), Some(draft)) => PageCard::Draft {
+                domain,
+                days_left: (draft.created_at + crate::db::DRAFT_SECS - now) / (24 * 60 * 60) + 1,
+            },
+            (Some(_), None) => PageCard::None,
+        };
+    };
+    match standing(&page, domains, now) {
+        PageStanding::TurnedOff => PageCard::TurnedOff {
+            reason: page.turned_off_reason.filter(|reason| !reason.is_empty()),
+        },
+        PageStanding::NotShowing => PageCard::NotShowing { draft: has_draft },
+        PageStanding::Failing { since } => PageCard::Failing {
+            domain: domain.unwrap_or_default(),
+            token: page.token,
+            days_left: (since + domain_proof::GRACE_SECS - now) / (24 * 60 * 60) + 1,
+            draft: has_draft,
+        },
+        PageStanding::Working => PageCard::Working {
+            domain: domain.unwrap_or_default(),
+            checked: crate::views::time::Clock::utc(now)
+                .relative(page.last_checked_at.unwrap_or(page.published_at)),
+            trouble: page.last_error,
+            onion_gets_layout: approver(domains, now)
+                .is_some_and(|row| !domain_proof::is_onion(&row.domain))
+                && domains
+                    .iter()
+                    .any(|row| row.state(now).counts() && domain_proof::is_onion(&row.domain)),
+            draft: has_draft,
+        },
     }
 }
 
@@ -402,22 +759,34 @@ pub async fn preview_frame(
             Ok(store.map(|store| (draft, store)))
         })
         .await;
-    let (draft, store) = match found {
-        Ok(Some(found)) => found,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    match found {
+        Ok(Some((draft, store))) => {
+            frame_of(&store, &draft.template, &draft.written_css, &query, now)
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// One state of a page on a made-up order, sandboxed.
+fn frame_of(
+    store: &crate::db::StoreConnectionRow,
+    source: &str,
+    written_css: &str,
+    query: &PreviewQuery,
+    now: i64,
+) -> Response {
     // Checked when it was saved; a release may have changed what reads.
-    let Ok(template) = checkout_template::Template::load(&draft.template) else {
+    let Ok(template) = checkout_template::Template::load(source) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let style_hash = store.checkout_style.css().map(|css| stylesheet_hash(&css));
     let Ok(order) =
-        checkout_pages::sample_order(preview_state(&query), &store.name, style_hash, now)
+        checkout_pages::sample_order(preview_state(query), &store.name, style_hash, now)
     else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let page_css = (!draft.written_css.is_empty()).then(|| stylesheet_hash(&draft.written_css));
+    let page_css = (!written_css.is_empty()).then(|| stylesheet_hash(written_css));
     let chrome = crate::views::PageChrome::from_user(None, "/");
     (
         [
@@ -430,6 +799,185 @@ pub async fn preview_frame(
         crate::views::checkout::preview_page(&chrome, &order, &template, page_css.as_deref()),
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct AdminListQuery {
+    q: Option<String>,
+}
+
+/// `GET /admin/custom-pages`: every custom page here, for the operator.
+pub async fn admin_list(
+    State(state): State<AppState>,
+    AuthedAdmin(admin, _): AuthedAdmin,
+    Query(query): Query<AdminListQuery>,
+) -> Response {
+    let now = crate::now_unix();
+    let find = query.q.clone().filter(|q| !q.trim().is_empty());
+    let listings = match state
+        .db
+        .read(move |db| db.list_custom_pages(find.as_deref().map(str::trim)))
+        .await
+    {
+        Ok(listings) => listings,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let clock = crate::views::time::Clock::utc(now);
+    let rows: Vec<checkout_pages::AdminPageRow> = listings
+        .into_iter()
+        .map(|listing| {
+            let standing = crate::checkout_pages::standing(&listing.page, &listing.domains, now);
+            checkout_pages::AdminPageRow {
+                store_id: listing.page.connection_id.to_string(),
+                store_name: listing.store_name,
+                domain: crate::checkout_pages::approver(&listing.domains, now)
+                    .map_or_else(|| "None".to_string(), |row| row.domain.clone()),
+                status: match standing {
+                    crate::checkout_pages::PageStanding::Working => "Working",
+                    crate::checkout_pages::PageStanding::Failing { .. } => "Failing",
+                    crate::checkout_pages::PageStanding::NotShowing => "Not showing",
+                    crate::checkout_pages::PageStanding::TurnedOff => "Turned off",
+                },
+                published: clock.relative(listing.page.published_at),
+                off: standing == crate::checkout_pages::PageStanding::TurnedOff,
+            }
+        })
+        .collect();
+    let chrome = super::page_chrome(&state, Some(&admin), "/admin/custom-pages").await;
+    checkout_pages::admin_list(&chrome, &rows, query.q.as_deref().unwrap_or("")).into_response()
+}
+
+async fn store_with_page(
+    state: &AppState,
+    id: &ConnectionId,
+) -> Result<
+    (
+        crate::db::StoreConnectionRow,
+        crate::db::PublishedCheckoutPage,
+    ),
+    StatusCode,
+> {
+    let store_id = id.clone();
+    let found = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.get_store_connection_by_id(&store_id)?,
+                db.published_checkout_page(&store_id)?,
+            ))
+        })
+        .await;
+    match found {
+        Ok((Some(store), Some(page))) => Ok((store, page)),
+        Ok(_) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// `GET /admin/custom-pages/{id}`: the operator looks at a store's page, on a
+/// made-up order so no real one is needed.
+pub async fn admin_view(
+    State(state): State<AppState>,
+    AuthedAdmin(admin, _): AuthedAdmin,
+    Path(id): Path<ConnectionId>,
+    Query(query): Query<PreviewQuery>,
+) -> Response {
+    let store = match store_with_page(&state, &id).await {
+        Ok((store, _)) => store,
+        Err(status) => return status.into_response(),
+    };
+    let chrome = super::page_chrome(&state, Some(&admin), "/admin/custom-pages").await;
+    checkout_pages::admin_view(&chrome, id.as_str(), &store.name, preview_state(&query))
+        .into_response()
+}
+
+/// `GET /admin/custom-pages/{id}/frame`.
+pub async fn admin_frame(
+    State(state): State<AppState>,
+    AuthedAdmin(_, _): AuthedAdmin,
+    Path(id): Path<ConnectionId>,
+    Query(query): Query<PreviewQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if !framed_here(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match store_with_page(&state, &id).await {
+        Ok((store, page)) => frame_of(
+            &store,
+            &page.template,
+            &page.written_css,
+            &query,
+            crate::now_unix(),
+        ),
+        Err(status) => status.into_response(),
+    }
+}
+
+/// `GET /admin/custom-pages/{id}/off`: asks first.
+pub async fn admin_ask_off(
+    State(state): State<AppState>,
+    AuthedAdmin(admin, _): AuthedAdmin,
+    Path(id): Path<ConnectionId>,
+) -> Response {
+    let store = match store_with_page(&state, &id).await {
+        Ok((store, _)) => store,
+        Err(status) => return status.into_response(),
+    };
+    let chrome = super::page_chrome(&state, Some(&admin), "/admin/custom-pages").await;
+    checkout_pages::admin_turn_off(&chrome, id.as_str(), &store.name, store.checkout_layout)
+        .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct TurnOffForm {
+    #[serde(default)]
+    reason: String,
+}
+
+/// `POST /admin/custom-pages/{id}/off`.
+pub async fn admin_turn_off(
+    State(state): State<AppState>,
+    AuthedAdmin(admin, _): AuthedAdmin,
+    Path(id): Path<ConnectionId>,
+    Form(form): Form<TurnOffForm>,
+) -> Response {
+    let reason: String = form.reason.trim().chars().take(280).collect();
+    let now = crate::now_unix();
+    let (store_id, logged) = (id.clone(), reason.clone());
+    let changed = state
+        .db
+        .write(move |db| db.set_checkout_page_turned_off(&store_id, Some((now, &logged))))
+        .await;
+    match changed {
+        Ok(true) => {
+            tracing::info!(admin.id = %admin.id, store.id = %id, reason = %reason, "custom checkout page turned off");
+            crate::base::see_other("/admin/custom-pages")
+        }
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// `POST /admin/custom-pages/{id}/on`.
+pub async fn admin_turn_on(
+    State(state): State<AppState>,
+    AuthedAdmin(admin, _): AuthedAdmin,
+    Path(id): Path<ConnectionId>,
+) -> Response {
+    let store_id = id.clone();
+    let changed = state
+        .db
+        .write(move |db| db.set_checkout_page_turned_off(&store_id, None))
+        .await;
+    match changed {
+        Ok(true) => {
+            tracing::info!(admin.id = %admin.id, store.id = %id, "custom checkout page turned back on");
+            crate::base::see_other("/admin/custom-pages")
+        }
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 #[cfg(test)]

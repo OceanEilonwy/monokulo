@@ -981,6 +981,8 @@ pub(super) async fn render_store_settings_page_with(
     let embed_can_restrict = embed_domain_rows
         .iter()
         .any(|domain| domain.state(now).counts());
+    let custom_page =
+        super::checkout_pages::page_card(state, &row.id, &embed_domain_rows, now).await;
     let embed_domains = super::embed_domains::domain_views(embed_domain_rows, now);
 
     let webhooks = super::webhooks::card(
@@ -1004,6 +1006,7 @@ pub(super) async fn render_store_settings_page_with(
             display_name: row.name.clone(),
             checkout_layout: row.checkout_layout,
             checkout_style: row.checkout_style.clone(),
+            custom_page,
             site: crate::stores::stored_site(row.site.as_ref()).to_owned(),
             payment_description: row.payment_description.clone(),
             sites,

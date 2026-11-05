@@ -110,6 +110,8 @@ pub struct CheckoutViewModel {
     pub layout: Layout,
     /// The store's stylesheet, by the hash of its content, if it has one.
     pub style_hash: Option<String>,
+    /// Which version of a custom page this is, if it's on one.
+    pub page_token: Option<String>,
     pub refund_enabled: bool,
     pub query_suffix: String,
     /// Whether the no-JavaScript meta refresh is on (`?refresh=false` turns
@@ -211,7 +213,7 @@ fn merchant_header(data: &CheckoutViewModel) -> Markup {
 
 /// The order's event stream, routed part by part, with the page's own
 /// options.
-fn events_url(data: &CheckoutViewModel) -> String {
+fn events_url(data: &CheckoutViewModel, template: &Template) -> String {
     let join = if data.query_suffix.is_empty() {
         '?'
     } else {
@@ -227,13 +229,11 @@ fn events_url(data: &CheckoutViewModel) -> String {
         ),
         data.query_suffix,
         data.layout.name(),
-        showing_bits(
-            &data
-                .layout
-                .template()
-                .regions_showing(&template_state(data))
-        ),
-    )
+        showing_bits(&template.regions_showing(&template_state(data))),
+    ) + &data
+        .page_token
+        .as_ref()
+        .map_or_else(String::new, |token| format!("&page={token}"))
 }
 
 /// The refund address: the form, or once a payment has arrived, what's recorded.
@@ -438,6 +438,16 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
     page(chrome, data, data.layout.template(), None, true)
 }
 
+/// A store's custom page on a real order.
+pub fn custom_page(
+    chrome: &PageChrome,
+    data: &CheckoutViewModel,
+    template: &Template,
+    page_css: Option<&str>,
+) -> Markup {
+    page(chrome, data, template, page_css, true)
+}
+
 fn page(
     chrome: &PageChrome,
     data: &CheckoutViewModel,
@@ -450,7 +460,15 @@ fn page(
         // `checkout.js` streams changes in place instead (`noscript` content
         // is never parsed as markup when scripting is on).
         @if scripts && !data.is_terminal && data.auto_refresh {
-            noscript { meta http-equiv="refresh" content="60" id="checkout-refresh"; }
+            noscript {
+                // A custom page says so as it refreshes: to the browser that's no
+                // longer a frame of another site.
+                @if data.page_token.is_some() {
+                    meta http-equiv="refresh" content=(format!("60;url={}{}", checkout_url(&data.order_id), data.query_suffix)) id="checkout-refresh";
+                } @else {
+                    meta http-equiv="refresh" content="60" id="checkout-refresh";
+                }
+            }
         }
         (super::stylesheet("checkout.css"))
         // The store's colours and shape, over the theme.
@@ -477,7 +495,7 @@ fn page(
         }
     };
     let body = html! {
-        div class=(match data.layout { Layout::Detailed => "pay-wrap", Layout::Compact => "pay-wrap checkout-compact", Layout::Tiny => "pay-wrap checkout-tiny" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
+        div class=(match data.layout { _ if data.page_token.is_some() => "pay-wrap checkout-custom", Layout::Detailed => "pay-wrap", Layout::Compact => "pay-wrap checkout-compact", Layout::Tiny => "pay-wrap checkout-tiny" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
             h1 class="sr-only" { "Monero payment of " (data.xmr_amount) " XMR" }
             // Always here, and only its text replaced, so a screen reader
             // announces each change of status.
@@ -496,7 +514,7 @@ fn page(
             // as it sees this, and ssexi routes each changed part of the
             // page into place. Not for a final order: nothing will change.
             @if scripts && !data.is_terminal {
-                span id="checkout-stream" hidden fx-action=(events_url(data)) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect fx-own-errors {}
+                span id="checkout-stream" hidden fx-action=(events_url(data, template)) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect fx-own-errors {}
             }
 
             (PreEscaped(page_body(template, data)))
@@ -1190,6 +1208,7 @@ mod tests {
             refund_address_error: None,
             layout: Layout::Detailed,
             style_hash: None,
+            page_token: None,
             refund_enabled: true,
             query_suffix: String::new(),
             auto_refresh: true,
