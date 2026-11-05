@@ -158,4 +158,48 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     in the device font, which is also what a custom page can choose.
 34. **The wizard's first two steps merge with no way in from the settings page.**
     Step 3 and the Custom page card come in the next PR, so it's never a dead end.
-
+35. **The store's Layout is the custom page's fallback.** The design had Custom in
+    the Layout list plus a separate "if it can't be shown" choice. One setting says
+    what shows where the custom page doesn't, with a card for the page itself:
+    a page in use is on, "Stop using" is off.
+36. **Publishing looks up the proof itself.** Finding it on the step before isn't
+    what authorises the change; publishing is. An attacker with a session can't
+    skip the page that checks.
+37. **`Sec-Fetch-Dest` or `Sec-Fetch-Site` missing means not framed.** That's the
+    opposite of `must_open_from_shop`, because here the safe answer to not knowing
+    is the store's ordinary layout. If Tor Browser turns out not to send them,
+    onion shops get their layout rather than their page, which needs one manual
+    check.
+38. **A turned-off page keeps its row.** Stop using is refused while it's off, as
+    deleting it would be a way back.
+39. **An open page on an old version reloads.** Its stream checks the version on
+    every change, and says `reload` if the page was replaced or turned off.
+40. **A page shows only on the site that approved it.** A security review found
+    that a stolen dashboard could add its own web domain to a store with an onion
+    address, approve a page there, and have it show on the shop's onion address,
+    whose owner never saw it. So the frame policy lists only the approver, and a
+    store with both shows its layout on Tor, which its card says. This reverses the
+    plan's "a store with both never needs the file". Letting an onion address
+    approve as well is possible later; it isn't needed to be safe.
+41. **A site that can't frame the page gets the layout, not a refused frame.**
+    Otherwise an unrestricted store embedding on one unverified site would stop its
+    customers paying there. Its `Referer` decides. With none, only an onion approver
+    gets the page, since Tor Browser hides it for onion shops; anything else asking
+    for no `Referer` gets the layout, which is safe.
+42. **A frame's own navigations carry `framed=true`.** A refresh, a form or a new
+    version is same-origin to the browser, as Monokulo's own share page is on first
+    load, so a customer mid-payment would flip to the layout. Only a custom page
+    writes the mark, and it counts only with `Sec-Fetch-Dest: iframe` and
+    `same-origin`. The page's frame policy still decides who may hold that frame.
+43. **"Can't check" still never lapses a custom page.** The review suggested expiring
+    a page whose proof hasn't been seen for two weeks, so that a dead name server
+    can't keep one showing. That's the agreed rule for domains (settled answer 3)
+    with the same accepted cost, and the page's token is public, so whoever held that
+    DNS could republish it anyway. Instead, the card now shows why the last look got
+    no answer. A page nobody views isn't rechecked until someone does: its first
+    view starts any grace period. Accepted, as a page with no views harms nobody.
+44. **Live pages follow today's checks.** A page's template and CSS go through the
+    same checks as saving when first read, and don't show if they fail. Each start
+    writes live pages' CSS again from what the domain approved, so a sanitiser fix
+    reaches them, and publishing a draft does the same. The approval stands, since
+    its hash covers what the merchant wrote and not what Monokulo writes from it.

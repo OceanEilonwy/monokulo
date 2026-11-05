@@ -138,6 +138,7 @@ pub fn sample_order(
         refund_address_error: None,
         layout: Layout::Detailed,
         style_hash,
+        page_token: None,
         refund_enabled: true,
         query_suffix: String::new(),
         auto_refresh: false,
@@ -351,6 +352,364 @@ pub fn shared_preview(chrome: &PageChrome, preview_token: &str, state: &PreviewS
         (preview_frame(preview_token, state))
     };
     super::layout_bare(chrome, "Preview only", body)
+}
+
+/// Where a domain or file a page's proof goes, from its name.
+fn proof_details(domain: &str, token: &str) -> Markup {
+    use crate::checkout_pages::TEMPLATE;
+    let value = TEMPLATE.value(token);
+    if domain_proof::is_onion(domain) {
+        html! {
+            dl class="template-proof" {
+                dt { "Address" }
+                dd { (ui::CopyValue::new(TEMPLATE.well_known_url(domain)).copy_label("Copy the file's address")) }
+                dt { "Contents" }
+                dd { (ui::CopyValue::new(value).copy_label("Copy the file's contents")) }
+            }
+        }
+    } else {
+        html! {
+            dl class="template-proof" {
+                dt { "Type" } dd { "TXT" }
+                dt { "Host" }
+                dd { (ui::CopyValue::new(TEMPLATE.label).copy_label("Copy the host")) }
+                dt { "Value" }
+                dd { (ui::CopyValue::new(value).copy_label("Copy the value")) }
+            }
+        }
+    }
+}
+
+/// What the last check of a page's proof found, when it was asked for.
+pub enum ApproveResult {
+    NotChecked,
+    Found,
+    NotFound(String),
+    CantCheck(String),
+}
+
+/// Step 3: the record or file that approves this version, and whether it's there.
+pub fn approve_step(
+    chrome: &PageChrome,
+    store: &WizardStore,
+    domain: &str,
+    token: &str,
+    result: &ApproveResult,
+) -> Markup {
+    let onion = domain_proof::is_onion(domain);
+    let check = format!("{}/approve", store.page());
+    let body = html! {
+        (super::settings::plain_card("template-approve", "Approve this version", html! {
+            @if onion {
+                p { "This store has no web domain, so its onion address approves instead. An onion address has no DNS, so your shop serves a small file. We fetch it over Tor, never over the web. Each version has its own." }
+                (ui::Hint::new("This is weaker than DNS: whoever can change your shop's files can approve a page."))
+            } @else {
+                p { "Add this record to " strong { (domain) } ". It proves this version is yours, so a stolen key can't change what customers see. Each version has its own." }
+            }
+            (proof_details(domain, token))
+            @match result {
+                ApproveResult::NotChecked => {}
+                ApproveResult::Found => {
+                    (ui::Alert::new(if onion { "Found the file." } else { "Found the record." }, ui::Tone::Success))
+                }
+                ApproveResult::NotFound(reason) => {
+                    (ui::Alert::new(format!("Not found. {reason}"), ui::Tone::Warning))
+                }
+                ApproveResult::CantCheck(reason) => {
+                    (ui::Alert::new(format!("Can't check right now. {reason}"), ui::Tone::Warning))
+                }
+            }
+        }))
+        @if matches!(result, ApproveResult::Found) {
+            form method="post" action=(format!("{}/publish", store.page())) {
+                (ui::FormActions::new(ui::Slot::many([
+                    ui::Slot::from(ui::Button::new("Use this template").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
+                    ui::Slot::from(ui::LinkButton::new("Preview every state", format!("{}/preview", store.page()))),
+                ])))
+            }
+        } @else {
+            form method="post" action=(check) {
+                (ui::FormActions::new(ui::Slot::many([
+                    ui::Slot::from(ui::Button::new(if onion { "Check for the file" } else { "Check for the record" }).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
+                    ui::Slot::from(ui::LinkButton::new("Back to the preview", format!("{}/preview", store.page()))),
+                ])))
+            }
+        }
+    };
+    wizard_page(chrome, store, 2, body)
+}
+
+/// What the Custom page card on the Checkout tab shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum PageCard {
+    /// A custom page needs a domain that's been verified.
+    #[default]
+    NeedsDomain,
+    /// Nothing written yet.
+    None,
+    /// Waiting for its record or file.
+    Draft { domain: String, days_left: i64 },
+    /// In use.
+    Working {
+        domain: String,
+        checked: String,
+        /// Why the last look got no answer: it keeps showing, which is worth saying.
+        trouble: Option<String>,
+        /// It approves on the web, so an onion address the store also has shows the
+        /// layout instead.
+        onion_gets_layout: bool,
+        draft: bool,
+    },
+    /// In use, with its proof missing: still showing.
+    Failing {
+        domain: String,
+        token: String,
+        days_left: i64,
+        draft: bool,
+    },
+    /// Published, but customers don't see it.
+    NotShowing { draft: bool },
+    /// This Monokulo's operator took it down.
+    TurnedOff { reason: Option<String> },
+}
+
+/// The card on the Checkout tab.
+pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
+    let page = crate::base::url(format!("/stores/{store_id}/settings/checkout-page"));
+    let edit = || ui::LinkButton::new("Edit", page.clone());
+    let recheck = || {
+        html! {
+            form method="post" action=(format!("{page}/recheck")) class="inline-form" {
+                (ui::Button::new("Check again").kind(ui::ButtonType::Submit))
+            }
+        }
+    };
+    let stop = || {
+        html! {
+            form method="post" action=(format!("{page}/stop")) class="inline-form" {
+                (ui::Button::new("Stop using").kind(ui::ButtonType::Submit))
+            }
+        }
+    };
+    let continue_draft = |draft: bool| {
+        html! {
+            @if draft { (ui::LinkButton::new("Continue your draft", format!("{page}/approve"))) }
+        }
+    };
+    let (tag, body) = match card {
+        PageCard::NeedsDomain => (
+            "Not available yet",
+            html! {
+                p { "A custom page needs a web domain or onion address you've proved is yours. Verify one, then come back here." }
+                (ui::LinkButton::new("Verify a domain", crate::base::url(format!("/stores/{store_id}/settings?tab=domains"))))
+            },
+        ),
+        PageCard::None => (
+            "Not set up",
+            html! {
+                p { "Write your own checkout with a template and optional CSS. Every version you publish is approved with a DNS record, so a leaked key can't change what customers see." }
+                (ui::FormActions::new(ui::Slot::many([
+                    ui::Slot::from(ui::LinkButton::new("Create a custom page", page.clone()).variant(ui::ButtonVariant::Primary)),
+                    ui::Slot::from(html! { a href=(super::docs_url("custom-pages")) { "Custom page guide" } }),
+                ])))
+            },
+        ),
+        PageCard::Draft { domain, days_left } => (
+            "Waiting for approval",
+            html! {
+                p { "Customers don't see this draft until it's approved on " strong { (domain) } ". It's kept for " (days_left) " more days." }
+                (ui::FormActions::new(ui::Slot::many([
+                    ui::Slot::from(ui::LinkButton::new("Continue", format!("{page}/approve")).variant(ui::ButtonVariant::Primary)),
+                    ui::Slot::from(edit()),
+                    ui::Slot::from(html! {
+                        form method="post" action=(format!("{page}/discard")) class="inline-form" {
+                            (ui::Button::new("Discard draft").kind(ui::ButtonType::Submit))
+                        }
+                    }),
+                ])))
+            },
+        ),
+        PageCard::Working {
+            domain,
+            checked,
+            trouble,
+            onion_gets_layout,
+            draft,
+        } => (
+            "Working",
+            html! {
+                p { "Showing to customers where your site frames it. Checked " (checked) " on " strong { (domain) } "." }
+                @if let Some(trouble) = trouble {
+                    (ui::Hint::new(trouble.as_str()))
+                }
+                (ui::Hint::new(format!("Direct visits to a payment link show {}.", fallback.label())))
+                @if *onion_gets_layout {
+                    (ui::Hint::new(format!("Your onion address shows {} too: only the domain that approved a page shows it.", fallback.label())))
+                }
+                (ui::FormActions::new(ui::Slot::many([
+                    ui::Slot::from(continue_draft(*draft)),
+                    ui::Slot::from(edit()),
+                    ui::Slot::from(stop()),
+                ])))
+            },
+        ),
+        PageCard::Failing {
+            domain,
+            token,
+            days_left,
+            draft,
+        } => (
+            "Failing",
+            html! {
+                p {
+                    "We can't find this version's proof on " strong { (domain) } ". Customers still see your page for "
+                    (days_left) " more days, then " (fallback.label()) ". Put it back, then check again:"
+                }
+                (proof_details(domain, token))
+                (ui::FormActions::new(ui::Slot::many([
+                    ui::Slot::from(recheck()),
+                    ui::Slot::from(continue_draft(*draft)),
+                    ui::Slot::from(edit()),
+                    ui::Slot::from(stop()),
+                ])))
+            },
+        ),
+        PageCard::NotShowing { draft } => (
+            "Not showing",
+            html! {
+                p { "Customers now see " strong { (fallback.label()) } " instead of your page. Open orders keep working. Your page comes back by itself once a check finds its record or file." }
+                (ui::FormActions::new(ui::Slot::many([
+                    ui::Slot::from(recheck()),
+                    ui::Slot::from(continue_draft(*draft)),
+                    ui::Slot::from(edit()),
+                    ui::Slot::from(stop()),
+                ])))
+            },
+        ),
+        PageCard::TurnedOff { reason } => (
+            "Turned off by admin",
+            html! {
+                p { "The operator of this Monokulo turned off your custom page. Customers see your layout, " strong { (fallback.label()) } "." }
+                @if let Some(reason) = reason { p { strong { "Reason: " } (reason) } }
+                (ui::Hint::new("You can edit a draft, but can't publish it while this is off."))
+                (edit())
+            },
+        ),
+    };
+    super::settings::plain_card_with_meta("custom-page", "Custom page", Some(tag), body)
+}
+
+/// One row of the operator's list.
+pub struct AdminPageRow {
+    pub store_id: String,
+    pub store_name: String,
+    pub domain: String,
+    pub status: &'static str,
+    pub published: String,
+    pub off: bool,
+}
+
+/// `/admin/custom-pages`: every custom page on this instance, for its operator.
+pub fn admin_list(chrome: &PageChrome, rows: &[AdminPageRow], query: &str) -> Markup {
+    let header = ui::PageHeader::new("Custom pages");
+    let body = html! {
+        (super::settings::plain_card("admin-custom-pages", "Custom pages", html! {
+            form method="get" class="admin-custom-find" {
+                (ui::Input::new("q")
+                    .id("custom-pages-find")
+                    .value(query)
+                    .placeholder("Find by domain or order ID")
+                    .attr("aria-label", "Find by domain or order ID"))
+                (ui::Button::new("Find").kind(ui::ButtonType::Submit))
+            }
+            @if rows.is_empty() {
+                (ui::Hint::new("No custom pages here."))
+            } @else {
+                table class="admin-custom-pages" {
+                    thead { tr { th { "Store" } th { "Domain" } th { "Status" } th { "Published" } th { "" } } }
+                    tbody {
+                        @for row in rows {
+                            tr {
+                                td { (row.store_name) }
+                                td { (row.domain) }
+                                td { (row.status) }
+                                td { (row.published) }
+                                td class="inline-actions" {
+                                    (ui::LinkButton::new("View", crate::base::url(format!("/admin/custom-pages/{}", row.store_id))))
+                                    @if row.off {
+                                        form method="post" action=(crate::base::url(format!("/admin/custom-pages/{}/on", row.store_id))) class="inline-form" {
+                                            (ui::Button::new("Turn on").kind(ui::ButtonType::Submit))
+                                        }
+                                    } @else {
+                                        (ui::LinkButton::new("Turn off", crate::base::url(format!("/admin/custom-pages/{}/off", row.store_id))))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+    };
+    super::Page::new("Custom pages - Monokulo", header)
+        .class("settings-page")
+        .render(chrome, body)
+}
+
+/// Asks before turning a store's page off.
+pub fn admin_turn_off(
+    chrome: &PageChrome,
+    store_id: &str,
+    store_name: &str,
+    fallback: Layout,
+) -> Markup {
+    let header = ui::PageHeader::new(format!("Turn off {store_name}'s custom page?"));
+    let body = html! {
+        form method="post" action=(crate::base::url(format!("/admin/custom-pages/{store_id}/off"))) {
+            (super::settings::plain_card("admin-turn-off", "Turn it off", html! {
+                p {
+                    "Customers see " strong { (fallback.label()) } ", the store's layout, from their next page load. Open pages reload. Orders keep working. "
+                    "A new DNS record won't bring the page back, and the merchant can't publish until you turn it on again."
+                }
+                (ui::Setting::new("Reason (optional, the merchant sees this)", "turn-off-reason", html! {
+                    (ui::Input::new("reason").id("turn-off-reason").attr("maxlength", "280"))
+                }))
+            }))
+            (ui::FormActions::new(ui::Slot::many([
+                ui::Slot::from(ui::Button::new("Turn off").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
+                ui::Slot::from(ui::LinkButton::new("Cancel", crate::base::url("/admin/custom-pages"))),
+            ])))
+        }
+    };
+    super::Page::new("Turn off a custom page - Monokulo", header)
+        .class("settings-page")
+        .render(chrome, body)
+}
+
+/// What the operator sees of a store's page: its frame, in a sandbox.
+pub fn admin_view(
+    chrome: &PageChrome,
+    store_id: &str,
+    store_name: &str,
+    state: &PreviewState,
+) -> Markup {
+    let header = ui::PageHeader::new(format!("{store_name}'s custom page"));
+    let body = html! {
+        nav class="template-preview-states" aria-label="Order states" {
+            @for other in &PREVIEW_STATES {
+                a href=(crate::base::url(format!("/admin/custom-pages/{store_id}?state={}", other.slug)))
+                    aria-current=[(other.slug == state.slug).then_some("page")] { (other.name) }
+            }
+        }
+        figure class="template-preview" {
+            figcaption { (state.name) }
+            iframe sandbox="" title=(format!("The page when: {}", state.name))
+                src=(crate::base::url(format!("/admin/custom-pages/{store_id}/frame?state={}", state.slug))) {}
+        }
+    };
+    super::Page::new("A custom page - Monokulo", header)
+        .class("settings-page")
+        .render(chrome, body)
 }
 
 #[cfg(test)]

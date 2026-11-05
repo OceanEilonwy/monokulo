@@ -7,6 +7,9 @@ const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixtu
 
 let fixture;
 test.describe.configure({ mode: 'default' });
+// The shop's page is made up at a public address; its frame is this fixture, on
+// loopback, which Chromium otherwise stops a public page reaching.
+test.use({ launchOptions: { args: ['--disable-features=LocalNetworkAccessChecks,BlockInsecurePrivateNetworkRequests'] } });
 test.beforeAll(async () => { fixture = await startCoverageFixture(); });
 test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 
@@ -72,3 +75,71 @@ test('a custom page can be written without JavaScript', async ({ browser, reques
   await expect(page.frameLocator('.template-preview iframe').first().locator('[data-part="status"]')).toBeVisible();
   await context.close();
 });
+
+// The real thing: a page on a merchant's site, framing their checkout. This fixture
+// serves plain http under an https page, where a browser would otherwise drop the
+// Referer it sends in production, so each frame asks to keep it.
+const site = 'https://coverage-shop.example';
+const template = `<h1>Fern and Wire</h1>{{status}}{{if awaiting}}{{qr}}{{amount}}{{fiat}}{{address}}{{end}}{{if !awaiting}}<p class="done">All done</p>{{end}}`;
+
+async function checkout(page, request, writtenCss = '') {
+  expect((await request.post(`${fixture.base_url}/__coverage/domains/verified`)).status()).toBe(204);
+  expect((await request.post(`${fixture.base_url}/__coverage/custom-page`, { data: { template, written_css: writtenCss } })).status()).toBe(204);
+  const made = await request.post(`${fixture.base_url}/__coverage/orders`);
+  const { order_id } = await made.json();
+  await page.route(`${site}/**`, (route) => route.fulfill({
+    contentType: 'text/html',
+    body: `<!doctype html><iframe id="pay" referrerpolicy="unsafe-url" src="${fixture.base_url}/checkout/${order_id}" style="width:420px;height:700px"></iframe>`,
+  }));
+  await page.goto(`${site}/cart`);
+  return { order_id, frame: page.frameLocator('#pay') };
+}
+
+test('a customer sees the page on the shop, it follows the order live, and a direct visit gets the layout', async ({ page, request }) => {
+  const { order_id, frame } = await checkout(page, request);
+  await expect(frame.locator('h1', { hasText: 'Fern and Wire' })).toBeVisible();
+  await expect(frame.locator('#checkout-root.checkout-custom')).toBeVisible();
+  // Regions flip by themselves on the real stream.
+  await request.post(`${fixture.base_url}/__coverage/orders/${order_id}/payment?fraction=1`);
+  await expect(frame.locator('.done')).toHaveText('All done');
+  await expect(frame.locator('[data-part="qr"]')).toHaveCount(0);
+
+  await page.goto(`${fixture.base_url}/checkout/${order_id}`);
+  await expect(page.locator('#checkout-root')).toBeVisible();
+  await expect(page.locator('h1', { hasText: 'Fern and Wire' })).toHaveCount(0);
+});
+
+test('nothing a page does in CSS hides how to pay, and an old version reloads', async ({ page, request }) => {
+  const hostile = '#checkout-root [data-part="qr"],#checkout-root [data-part="address"],#checkout-root [data-part="amount"],#checkout-root [data-part="status"]{visibility:hidden!important;opacity:0!important;}';
+  const { order_id, frame } = await checkout(page, request, hostile);
+  for (const part of ['qr', 'address', 'amount', 'status']) {
+    await expect(frame.locator(`[data-part="${part}"]`).first()).toBeVisible();
+  }
+  // Replaced while it's open: its stream notices the next time the order moves, and
+  // the frame moves itself on, staying on the page.
+  await request.post(`${fixture.base_url}/__coverage/custom-page`, { data: { template: template.replace('Fern and Wire', 'New version'), written_css: '' } });
+  await request.post(`${fixture.base_url}/__coverage/orders/${order_id}/payment?fraction=0.25`);
+  await expect(frame.locator('h1', { hasText: 'New version' })).toBeVisible();
+});
+
+test('another site can\'t frame it, and loading from elsewhere is refused by the browser', async ({ page, request }) => {
+  // What gets past the page's policy to the network, which a route would see.
+  const reached = [];
+  await page.route('https://evil.example/**', (route) => { reached.push(route.request().url()); route.abort(); });
+  // Past the checks on saving, as nothing should get: the page's policy still stops it.
+  const { order_id, frame } = await checkout(page, request, '@import url(https://evil.example/a.css);#checkout-root h1{background:url(https://evil.example/b.png)}');
+  await expect(frame.locator('h1', { hasText: 'Fern and Wire' })).toBeVisible();
+  await page.waitForTimeout(250);
+  expect(reached).toEqual([]);
+
+  const other = 'https://other-site.example';
+  await page.route(`${other}/**`, (route) => route.fulfill({
+    contentType: 'text/html',
+    body: `<!doctype html><iframe id="pay" referrerpolicy="unsafe-url" src="${fixture.base_url}/checkout/${order_id}"></iframe>`,
+  }));
+  await page.goto(`${other}/cart`);
+  // A site it isn't approved for still takes the payment, on the store's layout.
+  await expect(page.frameLocator('#pay').locator('[data-part="qr"]').first()).toBeVisible();
+  await expect(page.frameLocator('#pay').locator('h1', { hasText: 'Fern and Wire' })).toHaveCount(0);
+});
+

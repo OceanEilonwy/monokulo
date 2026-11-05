@@ -71,6 +71,8 @@ pub struct StoreSettingsData {
     pub checkout_layout: super::checkout_layouts::Layout,
     /// Its checkout's colours and shape.
     pub checkout_style: super::checkout_style::CheckoutStyle,
+    /// Its custom page, as the Checkout tab says.
+    pub custom_page: super::checkout_pages::PageCard,
     /// Its site's host; empty when it has none.
     pub site: String,
     /// What its payments are for, shown on the checkout when an order has
@@ -740,7 +742,7 @@ fn layout_card(store: &StoreSettingsData) -> Markup {
         html! {
             (Field::group("Layout", "checkout-layout-label")
                 .help(None, html! {
-                    "What customers see when your site shows the checkout. An embed can still ask for another with "
+                    "What customers see when your site shows the checkout, or where a custom page doesn't show. An embed can still ask for another with "
                     code { "?view=tiny" } ". Payment links you share always show Detailed. An embed's frame stays the size it sets, so a smaller layout needs a smaller frame."
                 })
                 .render(html! {
@@ -1300,10 +1302,13 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                     }))
                     (super::store_site::delete_card(&store.sites))
                 },
-                StoreTab::Checkout => (settings_form(store, html! {
-                    (layout_card(store))
-                    (style_card(store))
-                })),
+                StoreTab::Checkout => {
+                    (super::checkout_pages::page_card(store.connection_id.as_str(), store.checkout_layout, &store.custom_page))
+                    (settings_form(store, html! {
+                        (layout_card(store))
+                        (style_card(store))
+                    }))
+                },
                 StoreTab::Payments => (settings_form(store, html! {
                     (confirmations_card(store))
                     (fx_provider_card(store))
@@ -1369,6 +1374,7 @@ mod tests {
         StoreSettingsData {
             checkout_layout: crate::views::checkout_layouts::Layout::Detailed,
             checkout_style: Default::default(),
+            custom_page: Default::default(),
             tab: StoreTab::General,
             clock: crate::views::time::Clock::utc(0),
             connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),

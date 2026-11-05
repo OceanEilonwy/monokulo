@@ -542,6 +542,42 @@ pub fn build_router(state: AppState) -> Router {
             post(checkout_pages::discard),
         )
         .route(
+            "/stores/{id}/settings/checkout-page/approve",
+            axum::routing::get(checkout_pages::approve_step).post(checkout_pages::check_approval),
+        )
+        .route(
+            "/stores/{id}/settings/checkout-page/publish",
+            post(checkout_pages::publish),
+        )
+        .route(
+            "/stores/{id}/settings/checkout-page/stop",
+            post(checkout_pages::stop),
+        )
+        .route(
+            "/stores/{id}/settings/checkout-page/recheck",
+            post(checkout_pages::recheck),
+        )
+        .route(
+            "/admin/custom-pages",
+            axum::routing::get(checkout_pages::admin_list),
+        )
+        .route(
+            "/admin/custom-pages/{id}",
+            axum::routing::get(checkout_pages::admin_view),
+        )
+        .route(
+            "/admin/custom-pages/{id}/frame",
+            axum::routing::get(checkout_pages::admin_frame),
+        )
+        .route(
+            "/admin/custom-pages/{id}/off",
+            axum::routing::get(checkout_pages::admin_ask_off).post(checkout_pages::admin_turn_off),
+        )
+        .route(
+            "/admin/custom-pages/{id}/on",
+            post(checkout_pages::admin_turn_on),
+        )
+        .route(
             "/checkout-preview/{token}",
             axum::routing::get(checkout_pages::shared_preview),
         )

@@ -21,7 +21,7 @@ use crate::views::checkout_layouts::Layout;
 
 mod apps;
 mod checkout_pages;
-pub use checkout_pages::{CheckoutPageDraft, DRAFT_SECS};
+pub use checkout_pages::{CheckoutPageDraft, CustomPageListing, PublishedCheckoutPage, DRAFT_SECS};
 mod order_changes;
 mod order_requests;
 mod push;
@@ -215,6 +215,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         58,
         include_str!("../migrations/0058_checkout_page_drafts.sql"),
     ),
+    (59, include_str!("../migrations/0059_checkout_pages.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -1657,6 +1658,7 @@ impl Db {
         for table in [
             "checkout_stylesheets",
             "checkout_page_drafts",
+            "checkout_pages",
             "order_currency_metadata",
             "connect_tokens",
             "confirmation_thresholds",

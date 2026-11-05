@@ -775,6 +775,34 @@ async fn verified_domain(State(control): State<Controls>) -> StatusCode {
     }
 }
 
+/// `POST /__coverage/custom-page`: `{"template", "written_css"}`, in use on the
+/// fixture store just as sent. Past the checks on saving, so a test can see what the
+/// browser's own defences stop if anything hostile ever got this far.
+async fn seed_custom_page(
+    State(control): State<Controls>,
+    Json(body): Json<serde_json::Value>,
+) -> StatusCode {
+    let store = engine_protocol::ids::ConnectionId::new("coverage-store");
+    let text = |key: &str| body[key].as_str().unwrap_or_default().to_string();
+    let draft = monokulo::db::CheckoutPageDraft {
+        connection_id: store,
+        template: text("template"),
+        css: String::new(),
+        written_css: text("written_css"),
+        preview_token: uuid::Uuid::new_v4().to_string(),
+        created_at: monokulo::now_unix(),
+    };
+    let token = uuid::Uuid::new_v4().to_string();
+    match control
+        .db
+        .lock()
+        .publish_checkout_page(&draft, &token, monokulo::now_unix())
+    {
+        Ok(true) => StatusCode::NO_CONTENT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 async fn restrict_embed(State(control): State<Controls>) -> StatusCode {
     match control.db.lock().set_embed_restricted(
         &engine_protocol::ids::ConnectionId::new("coverage-store"),
@@ -1585,6 +1613,7 @@ async fn main() {
         .route("/__coverage/ready", get(ready))
         .route("/__coverage/challenge", get(challenge))
         .route("/__coverage/domains/verified", post(verified_domain))
+        .route("/__coverage/custom-page", post(seed_custom_page))
         .route("/__coverage/embed/restricted", post(restrict_embed))
         .route("/__coverage/embed/unrestricted", post(unrestrict_embed))
         .route("/__coverage/orders", post(create_order))

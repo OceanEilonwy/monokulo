@@ -332,6 +332,13 @@
     setTimeout(function () { streamElement.dispatchEvent(new CustomEvent('fx:inited')); }, retryDelay);
     retryDelay = Math.min(retryDelay * 2, STREAM_RETRY_MAX_MS);
   });
+  // The page this is on has changed: a new version, or it no longer shows here.
+  document.addEventListener('fx:sse:reload', function () {
+    // Marked, or the browser's same-origin reload would look like nobody's frame.
+    var url = new URL(window.location.href);
+    url.searchParams.set('framed', 'true');
+    window.location.replace(url.href);
+  });
   document.addEventListener('fx:sse:status', function (event) {
     var state;
     try { state = JSON.parse(event.detail.message.data); } catch (_) { return; }

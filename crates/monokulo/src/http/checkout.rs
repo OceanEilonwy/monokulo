@@ -230,6 +230,15 @@ pub struct CheckoutOptions {
     /// `/events` only: which of the template's regions the page shows
     /// (`views::checkout::showing_bits`), so one that has flipped since is sent.
     r: Option<String>,
+    /// `/events` only: the version of a custom page the page is on.
+    page: Option<String>,
+    /// Written by a custom page on its own links: this frame is already on it
+    /// (`checkout_pages::Frame`). Worth nothing from anywhere else.
+    framed: Option<bool>,
+    /// The custom page this page is showing, decided per request: never from
+    /// the query.
+    #[serde(skip)]
+    chosen: Option<crate::checkout_pages::ChosenPage>,
     /// `refresh=false` turns off the no-JavaScript meta refresh, so a
     /// customer can type a refund address without the page reloading under
     /// them. Set by the page's own "Auto Refresh" toggle link.
@@ -289,6 +298,9 @@ impl CheckoutOptions {
                 views::checkout_layouts::Layout::Tiny => "view=tiny",
             });
         }
+        if self.chosen.is_some() {
+            params.push("framed=true");
+        }
         if !self.refund_enabled() {
             params.push("refund=false");
         }
@@ -343,7 +355,9 @@ pub async fn checkout_page(
     if must_open_from_shop(&state, &row, &order_id, &headers).await {
         return open_from_shop_response(&order_id);
     }
-    with_vary_on_fetch_dest(render_checkout_page(&state, row, sk, detail, None, &options).await)
+    with_vary_on_fetch_dest(
+        render_checkout_page(&state, row, sk, detail, None, &options, &headers).await,
+    )
 }
 
 /// Whether this request for a checkout (or share) page must be turned away
@@ -415,6 +429,8 @@ fn open_from_shop_response(order_id: &crate::db::OrderId) -> Response {
 /// `Sec-Fetch-Dest` ([`must_open_from_shop`]), so any cache must key on it.
 fn with_vary_on_fetch_dest(mut response: Response) -> Response {
     super::add_vary(response.headers_mut(), "Sec-Fetch-Dest");
+    super::add_vary(response.headers_mut(), "Sec-Fetch-Site");
+    super::add_vary(response.headers_mut(), "Referer");
     response
 }
 
@@ -432,6 +448,45 @@ fn not_found_response() -> Response {
 /// same page with an inline error, rather than a bare error response, on a
 /// rejected refund-address submission) - both already hold a freshly
 /// loaded `(row, sk, detail)` from `load_order`, so this never re-fetches.
+/// The store's custom page for this request, if it's to show one. Also the moment
+/// its proof is looked at, if that's due, which this never waits for. A page that
+/// can't be read means the store's layout: nobody is stopped from paying.
+async fn choose_page(
+    state: &AppState,
+    row: &StoreConnectionRow,
+    options: &CheckoutOptions,
+    headers: &HeaderMap,
+) -> Option<crate::checkout_pages::ChosenPage> {
+    let frame = crate::checkout_pages::frame_of(headers, options.framed == Some(true));
+    let id = row.id.clone();
+    let (page, domains) = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.published_checkout_page(&id)?,
+                db.list_store_domains(&id)?,
+            ))
+        })
+        .await
+        .ok()?;
+    let page = page?;
+    let now = crate::now_unix();
+    crate::checkout_pages::recheck_if_due(
+        state.db.clone(),
+        state.proofs.clone(),
+        &page,
+        &domains,
+        now,
+    );
+    crate::checkout_pages::chosen_page(
+        Some(&page),
+        &domains,
+        &frame,
+        options.asked_layout().is_some(),
+        now,
+    )
+}
+
 async fn render_checkout_page(
     state: &AppState,
     row: Arc<StoreConnectionRow>,
@@ -439,11 +494,16 @@ async fn render_checkout_page(
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
     options: &CheckoutOptions,
+    headers: &HeaderMap,
 ) -> Response {
     if payment_qr_svg(&detail.order).is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     let order_id = detail.order.order_id.clone();
+    let options = &CheckoutOptions {
+        chosen: choose_page(state, &row, options, headers).await,
+        ..options.clone()
+    };
     let view = build_checkout_view(state, &row, &sk, detail, refund_address_error, options).await;
     let mut chrome = views::PageChrome::from_user(None, CheckoutPath { order_id }.to_string());
     chrome.theme = options.theme();
@@ -454,12 +514,26 @@ async fn render_checkout_page(
         .read(move |db| db.client_logging(&id))
         .await
         .unwrap_or(false);
+    let policy = views::checkout::content_security_policy(&view);
+    let (policy, page) = match &options.chosen {
+        Some(chosen) => (
+            // Beside the page's own: the two are enforced separately.
+            match &chosen.frame_ancestors {
+                Some(ancestors) => format!("{policy}, {ancestors}"),
+                None => policy,
+            },
+            views::checkout::custom_page(
+                &chrome,
+                &view,
+                &chosen.template,
+                chosen.css_hash.as_deref(),
+            ),
+        ),
+        None => (policy, views::checkout::checkout_page(&chrome, &view)),
+    };
     (
-        [(
-            axum::http::header::CONTENT_SECURITY_POLICY,
-            views::checkout::content_security_policy(&view),
-        )],
-        views::checkout::checkout_page(&chrome, &view),
+        [(axum::http::header::CONTENT_SECURITY_POLICY, policy)],
+        page,
     )
         .into_response()
 }
@@ -571,7 +645,13 @@ async fn build_checkout_view(
         refund_address_locked: detail.order.refund_address.is_some()
             && detail.order.amount_received_piconero > pricing::xmr_amount::Piconero::ZERO,
         refund_address_error,
-        layout: options.layout(row),
+        // A custom page's `{{merchant}}` is the whole line, as on the full page.
+        layout: if options.chosen.is_some() {
+            views::checkout_layouts::Layout::Detailed
+        } else {
+            options.layout(row)
+        },
+        page_token: options.chosen.as_ref().map(|page| page.token.clone()),
         style_hash: row
             .checkout_style
             .css()
@@ -680,7 +760,7 @@ pub async fn set_refund_address(
         Err(error) => return error.response(wants_json),
     };
     // The one way out for a rejected address.
-    let (page_state, page_options) = (&state, &options);
+    let (page_state, page_options, page_headers) = (&state, &options, &headers);
     let reject = |rejection: RefundRejection,
                   row: Arc<StoreConnectionRow>,
                   sk: credentials::auth::RawToken,
@@ -698,6 +778,7 @@ pub async fn set_refund_address(
             detail,
             Some(rejection.message().to_string()),
             page_options,
+            page_headers,
         )
         .await
     };
@@ -859,7 +940,25 @@ pub async fn checkout_events(
     // changed ones are sent.
     let sent: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
         Default::default();
-    let template = options.layout(&row).template();
+    // The custom page the page says it's on, if it's still that version and still
+    // showing. Otherwise the store's own, and the page is told to load again.
+    let on_page = match &options.page {
+        Some(token) => {
+            let (id, token) = (row.id.clone(), token.clone());
+            state
+                .db
+                .read(move |db| {
+                    crate::checkout_pages::page_still_showing(db, &id, &token, crate::now_unix())
+                })
+                .await
+                .ok()
+                .flatten()
+                .and_then(|page| crate::checkout_pages::parsed(&page))
+        }
+        None => None,
+    };
+    let template: Arc<checkout_template::Template> =
+        on_page.unwrap_or_else(|| Arc::new(options.layout(&row).template().clone()));
     // What the page says it shows; if it says nothing readable, it's taken to
     // show what it should, as a region it wrongly shows flips on the next change.
     let showing = std::sync::Arc::new(parking_lot::Mutex::new(views::checkout::page_showing(
@@ -876,6 +975,7 @@ pub async fn checkout_events(
         move || {
             let sent = sent.clone();
             let showing = showing.clone();
+            let template = template.clone();
             // Held by the stream, so the slot frees when the stream ends.
             let _permit = &permit;
             let (state, keys, store_id, order_id, options, shared) = (
@@ -912,6 +1012,33 @@ pub async fn checkout_events(
                 let status_json = serde_json::to_string(&status).ok()?;
                 let mut fingerprint = status_json.clone();
                 let mut events = Vec::new();
+                // A page on a version that isn't current any more loads again.
+                if let Some(token) = &options.page {
+                    let (id, token) = (store_id.clone(), token.clone());
+                    let current = state
+                        .db
+                        .read(move |db| {
+                            crate::checkout_pages::page_still_showing(
+                                db,
+                                &id,
+                                &token,
+                                crate::now_unix(),
+                            )
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    if !current {
+                        return Some(crate::live::LiveSnapshot {
+                            events: vec![axum::response::sse::Event::default()
+                                .event("reload")
+                                .data("reload")],
+                            fingerprint: "reload".to_string(),
+                            terminal: true,
+                        });
+                    }
+                }
                 // Fragment first: a client may close the stream on seeing a
                 // terminal `status`, and must have the final page state by then.
                 if fragments {
@@ -930,7 +1057,7 @@ pub async fn checkout_events(
                         let showing = showing.get_or_insert_with(|| {
                             template.regions_showing(&views::checkout::template_state(&view))
                         });
-                        views::checkout::live_updates(template, &view, showing)
+                        views::checkout::live_updates(&template, &view, showing)
                     } else {
                         views::checkout::live_parts(&view)
                             .into_iter()
