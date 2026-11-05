@@ -385,6 +385,34 @@ async fn a_store_with_both_domains_needs_both_to_approve() {
     let page = body_json(published).await;
     assert_eq!(page["status"], "working");
     assert_eq!(page["domains"].as_array().unwrap().len(), 2);
+    assert_eq!(page["waiting_on"], json!([]));
+}
+
+/// The two proofs can't be matched, which would tie the onion address to the web domain.
+#[tokio::test]
+async fn a_stores_two_proofs_cant_be_matched() {
+    const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+    let shop = Shop::new(Some("shop.example")).await;
+    let at = crate::now_unix();
+    shop.state
+        .db
+        .lock()
+        .conn_for_test()
+        .execute(
+            "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc, verified_at_utc)
+             VALUES ('onion', ?1, ?2, 't', ?3, ?3)",
+            rusqlite::params![shop.fixture.store_id, ONION, at],
+        )
+        .unwrap();
+    let draft = shop.save(TEMPLATE).await;
+    let values: Vec<&str> = draft["approvals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(values.len(), 2);
+    assert_ne!(values[0], values[1]);
 }
 
 /// An operator's decision isn't the merchant's to undo, however they ask.

@@ -11,7 +11,7 @@ those aren't enough.
 
 ## Where it shows
 
-A custom page shows only in a frame of your own sites, which have all approved it.
+A custom page shows only in a frame of your own sites, once each has approved it.
 Everywhere else customers get the layout you chose, so nothing here can stop anyone paying.
 
 | Where | What shows |
@@ -141,7 +141,7 @@ What the page shows customers is yours to answer for.
 
 ## Approve it
 
-Each version needs its own proof on your domain. Any edit needs a new one. This
+Each version needs its own proof on each of your domains. Any edit needs a new one. This
 is what keeps a stolen login from writing your page.
 
 From the preview, choose **Approve this version**. A web domain approves with a
@@ -153,15 +153,16 @@ verified subdomain such as `shop.example.com`, the host in `example.com`'s zone 
 | --- | --- | --- |
 | TXT | `_monokulo-template` | `monokulo-template=…` |
 
-A store with only an onion address has no DNS, so your shop serves a small file
-at `/.well-known/monokulo-template` instead, with that value as its contents.
+An onion address has no DNS, so your shop serves a small file at
+`/.well-known/monokulo-template` instead, with the contents the page gives you. They
+differ from the web domain's record, so the two can't be matched to link your sites.
 Monokulo fetches it over Tor, and only over Tor. This is weaker than DNS, as
 whoever can change your shop's files can approve a page.
 
-A store with both needs both, in the same step. The page then has one status: it
-shows on both sites or neither, and if either proof goes missing, both are affected.
-Adding a domain to a store with a page in use starts that page failing until the new
-domain approves it, so add its proof soon after.
+A store with both needs both, in the same step. The page then has one status, and if
+either proof goes missing, both sites are affected. A domain you add under a page in
+use shows your layout until it has that version's proof, and the page starts failing
+at the next look, within the hour, so add its proof soon after.
 
 Choose **Check for the record**, **Check for the file** or **Check both**, then
 **Use this template**, which appears once every proof is found. Monokulo looks again
@@ -240,4 +241,5 @@ On an onion address, the page shows in a frame of that address, and it needs Tor
 doesn't, customers there get your layout, which is safe but isn't what you wrote.
 Check it once on your own shop in Tor Browser after you publish. While the Monokulo
 you're on has Tor off, a new version can't be published on a store with an onion
-address, as its file can't be checked. A page in use keeps showing.
+address, as its file can't be checked. A page in use keeps showing, unless a proof
+was already missing when Tor went off: its 3 days keep running.

@@ -769,7 +769,10 @@ async fn an_onion_only_store_approves_with_a_file_over_tor() {
     assert!(html.contains("/.well-known/monokulo-template"), "{html}");
     assert!(html.contains("weaker than DNS"), "{html}");
     let token = checkout_template::version_token(id.as_str(), &draft.template, &draft.css);
-    onion.serve(ONION, &TEMPLATE.value(&token));
+    onion.serve(
+        ONION,
+        &TEMPLATE.value(&crate::checkout_pages::proof_token(&token, ONION)),
+    );
     wizard.dns.asked.lock().unwrap().clear();
     wizard
         .post(&format!("{}/publish", wizard.page()), None)
@@ -922,7 +925,7 @@ async fn the_card_says_where_a_page_stands() {
             .unwrap()
             .unwrap()
             .token;
-        db.record_checkout_page_check(&wizard.store, &token, crate::now_unix(), true, Some("gone"))
+        db.record_checkout_page_check(&wizard.store, &token, crate::now_unix(), true, "gone")
             .unwrap();
     }
     assert!(wizard.get(&tab).await.1.contains("Failing"));
@@ -968,15 +971,17 @@ async fn nothing_slow_touches_what_replaced_it() {
     let looked_up = db.checkout_page_draft(&store, now).unwrap().unwrap();
     db.save_checkout_page_draft(&store, GOOD, "p{}", "", "t2", now)
         .unwrap();
-    assert!(db.publish_checkout_page(&looked_up, "v1", now).unwrap());
+    assert!(db
+        .publish_checkout_page(&looked_up, "v1", &[], now)
+        .unwrap());
     let draft = db.checkout_page_draft(&store, now).unwrap();
     assert_eq!(draft.unwrap().preview_token, "t2", "the newer draft stays");
 
-    db.record_checkout_page_check(&store, "v0", now, true, Some("gone"))
+    db.record_checkout_page_check(&store, "v0", now, true, "gone")
         .unwrap();
     let page = db.published_checkout_page(&store).unwrap().unwrap();
     assert_eq!((page.failing_since, page.last_error), (None, None));
-    db.record_checkout_page_check(&store, "v1", now, true, Some("gone"))
+    db.record_checkout_page_check(&store, "v1", now, true, "gone")
         .unwrap();
     let page = db.published_checkout_page(&store).unwrap().unwrap();
     assert_eq!(page.failing_since, Some(now));
@@ -1002,7 +1007,7 @@ async fn an_open_page_stops_following_a_page_that_stopped_showing() {
             .unwrap()
             .is_none()
     );
-    db.record_checkout_page_check(&store, &token, now, true, Some("gone"))
+    db.record_checkout_page_check(&store, &token, now, true, "gone")
         .unwrap();
     assert!(showing(now), "its grace period");
     assert!(!showing(now + domain_proof::GRACE_SECS));
@@ -1020,7 +1025,7 @@ async fn each_start_writes_a_live_pages_css_again() {
     db.save_checkout_page_draft(&store, GOOD, css, "#checkout-root old{}", "t1", now)
         .unwrap();
     let draft = db.checkout_page_draft(&store, now).unwrap().unwrap();
-    assert!(db.publish_checkout_page(&draft, "v1", now).unwrap());
+    assert!(db.publish_checkout_page(&draft, "v1", &[], now).unwrap());
 
     assert_eq!(db.refresh_checkout_pages(now).unwrap(), 1);
     let page = db.published_checkout_page(&store).unwrap().unwrap();
@@ -1091,7 +1096,10 @@ async fn a_web_domain_and_an_onion_address_must_both_approve() {
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(wizard.published(), None, "the file isn't there");
 
-    onion.serve(ONION, &TEMPLATE.value(&token));
+    onion.serve(
+        ONION,
+        &TEMPLATE.value(&crate::checkout_pages::proof_token(&token, ONION)),
+    );
     let (_, html) = wizard.post(&approve, None).await;
     assert!(html.contains("Use this template"), "{html}");
     wizard
@@ -1111,16 +1119,71 @@ async fn a_web_domain_and_an_onion_address_must_both_approve() {
             at,
         )
     };
+    let onion_proof = TEMPLATE.value(&crate::checkout_pages::proof_token(&token, ONION));
+    let web_name = TEMPLATE.record_name("store-home.example");
     onion.serve(ONION, "someone else's");
     let found = check(now).await.unwrap();
     assert!(matches!(&found, crate::checkout_pages::Approved::Missing(why) if why.contains(ONION)));
     let page = wizard.published().unwrap();
     assert_eq!(page.failing_since, Some(now));
     assert!(page.last_error.unwrap().contains(ONION));
-    onion.serve(ONION, &TEMPLATE.value(&token));
+    onion.serve(ONION, &onion_proof);
     assert_eq!(
         check(now).await.unwrap(),
         crate::checkout_pages::Approved::Yes
     );
     assert_eq!(wizard.published().unwrap().failing_since, None);
+
+    wizard.dns.remove(&web_name);
+    let found = check(now + 1).await.unwrap();
+    assert!(
+        matches!(&found, crate::checkout_pages::Approved::Missing(why) if why.contains("store-home"))
+    );
+    assert_eq!(wizard.published().unwrap().failing_since, Some(now + 1));
+
+    // Back on the web while Tor says nothing: the clock keeps running, as an answer
+    // from one says nothing about the other.
+    wizard.dns.publish(&web_name, &TEMPLATE.value(&token));
+    onion.fail(ONION, "timed out");
+    let found = check(now + 2).await.unwrap();
+    assert!(matches!(
+        found,
+        crate::checkout_pages::Approved::NoAnswer(_)
+    ));
+    assert_eq!(wizard.published().unwrap().failing_since, Some(now + 1));
+}
+
+/// A domain added under a live page shows the layout until it approves, says so on the
+/// card, and is looked at soon. A stolen dashboard can't put a thief's page on it, nor
+/// the shop's page's words on a domain nobody approved them for.
+#[tokio::test]
+async fn a_domain_added_under_a_live_page_waits_for_its_own_proof() {
+    const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+    let wizard = wizard("added@example.com", true).await;
+    wizard.publish().await;
+    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    {
+        let db = wizard.state.db.lock();
+        db.create_store_domain("o", &store, ONION, "t", 1, None)
+            .unwrap()
+            .unwrap();
+        db.conn_for_test()
+            .execute(
+                "UPDATE store_domains SET verified_at_utc = ?1 WHERE id = 'o'",
+                [now],
+            )
+            .unwrap();
+    }
+    let page = wizard.published().unwrap();
+    assert_eq!(page.approved_domains, ["store-home.example"]);
+    let domains = wizard.state.db.lock().list_store_domains(&store).unwrap();
+    assert_eq!(
+        crate::checkout_pages::waiting_on(&page, &domains, now),
+        [ONION]
+    );
+    let (_, html) = wizard
+        .get(&format!("/stores/{store}/settings?tab=checkout"))
+        .await;
+    assert!(html.contains("until it has this version"), "{html}");
+    assert!(html.contains(ONION), "{html}");
 }

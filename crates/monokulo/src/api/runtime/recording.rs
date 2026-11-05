@@ -841,7 +841,12 @@ async fn record_custom_page_problems(
     assert!(state
         .db
         .lock()
-        .publish_checkout_page(&saved, "recorded", crate::now_unix())
+        .publish_checkout_page(
+            &saved,
+            "recorded",
+            &["bakery.example".to_string()],
+            crate::now_unix(),
+        )
         .unwrap());
 
     // Saved by an earlier release, and short of what today's checks ask.

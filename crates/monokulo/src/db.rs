@@ -216,6 +216,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0058_checkout_page_drafts.sql"),
     ),
     (59, include_str!("../migrations/0059_checkout_pages.sql")),
+    (
+        60,
+        include_str!("../migrations/0060_checkout_page_approved_domains.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {

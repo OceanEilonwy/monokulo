@@ -82,7 +82,7 @@ pub(crate) async fn current(
                 } else {
                     TEMPLATE.record_name(&row.domain)
                 },
-                value: TEMPLATE.value(&version),
+                value: TEMPLATE.value(&crate::checkout_pages::proof_token(&version, &row.domain)),
             }
         })
         .collect();

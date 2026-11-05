@@ -23,15 +23,51 @@ pub const TEMPLATE: Scheme = Scheme {
     well_known_path: "/.well-known/monokulo-template",
 };
 
-/// The domains that must approve a store's custom page, which are the sites it shows
-/// on: all it has that count. A page is one thing with one status, so a stolen
-/// dashboard adding a domain of its own can't approve a version by itself: the shop's
-/// domain has to as well.
+/// The domains that must approve a store's custom page: all it has that count. A
+/// stolen dashboard adding a domain of its own can't approve a version by itself, as
+/// the shop's domain has to as well.
 pub fn approvers(domains: &[StoreDomainRow], now: i64) -> Vec<&StoreDomainRow> {
     domains
         .iter()
         .filter(|row| row.state(now).counts())
         .collect()
+}
+
+/// The domains `page` shows on: those that count, and that its proof was last found
+/// on. A domain coming to count later hasn't approved these words, whoever wrote
+/// them: say a thief published while the shop's own domain was gone.
+pub fn showing_on<'a>(
+    page: &PublishedCheckoutPage,
+    domains: &'a [StoreDomainRow],
+    now: i64,
+) -> Vec<&'a StoreDomainRow> {
+    approvers(domains, now)
+        .into_iter()
+        .filter(|row| page.approved_domains.contains(&row.domain))
+        .collect()
+}
+
+/// The domains that count and haven't approved `page`, whose next look is soon.
+pub fn waiting_on(
+    page: &PublishedCheckoutPage,
+    domains: &[StoreDomainRow],
+    now: i64,
+) -> Vec<String> {
+    approver_names(domains, now)
+        .into_iter()
+        .filter(|name| !page.approved_domains.contains(name))
+        .collect()
+}
+
+/// What a domain's proof holds: the version on the web. An onion address's is hashed
+/// with its name, so the two public proofs can't be matched to tie a store's onion
+/// address to its web domain.
+pub fn proof_token(token: &str, domain: &str) -> String {
+    if domain_proof::is_onion(domain) {
+        checkout_template::version_token(domain, token, "")
+    } else {
+        token.to_string()
+    }
 }
 
 /// [`approvers`]' names.
@@ -121,7 +157,7 @@ pub fn standing(
     if page.turned_off_at.is_some() {
         return PageStanding::TurnedOff;
     }
-    if approvers(domains, now).is_empty() || parsed(page).is_none() {
+    if showing_on(page, domains, now).is_empty() || parsed(page).is_none() {
         return PageStanding::NotShowing;
     }
     match DomainState::of(Some(page.published_at), page.failing_since, now) {
@@ -168,15 +204,17 @@ pub fn parsed(page: &PublishedCheckoutPage) -> Option<Arc<Template>> {
 }
 
 /// The page to show this request, if any: an explicit `?view=` always wins, and
-/// the rest is its [`Frame`] and the page's [`standing`]. A frame of a site the
-/// store's domains don't cover gets the layout rather than a page its browser would
-/// refuse. Tor Browser sends no `Referer` from an onion shop, so with none, only a
-/// store with an onion address is taken to be the one framing it: the policy still
-/// holds it to that, and any other site asking for no `Referer` gets the layout.
+/// the rest is its [`Frame`] and the page's [`standing`]. A frame of a site it doesn't
+/// show on gets the layout rather than a page its browser would refuse. Tor Browser
+/// sends no `Referer` from an onion shop, so with none, only a request over Tor is
+/// taken to be that shop, and any other site asking for no `Referer` gets the layout.
+/// `over_tor` also says which of the store's sites the policy names: the one this
+/// network reaches, so no response ties its onion address to its web domain.
 pub fn chosen_page(
     page: Option<&PublishedCheckoutPage>,
     domains: &[StoreDomainRow],
     frame: &Frame,
+    over_tor: bool,
     asked_for_a_layout: bool,
     now: i64,
 ) -> Option<ChosenPage> {
@@ -187,10 +225,17 @@ pub fn chosen_page(
     if !standing(page, domains, now).shows() {
         return None;
     }
-    let approvers = approvers(domains, now);
+    let sites: Vec<StoreDomainRow> = showing_on(page, domains, now)
+        .into_iter()
+        .filter(|row| domain_proof::is_onion(&row.domain) == over_tor)
+        .cloned()
+        .collect();
+    if sites.is_empty() {
+        return None;
+    }
     let policy = crate::embed_domains::EmbedPolicy {
         restricted: true,
-        domains: approvers.iter().map(|row| (*row).clone()).collect(),
+        domains: sites,
     };
     let here = match frame {
         Frame::NotFramed => false,
@@ -198,9 +243,7 @@ pub fn chosen_page(
         Frame::OfAnotherSite {
             referrer: Some(origin),
         } => policy.allows_origin(origin, now),
-        Frame::OfAnotherSite { referrer: None } => approvers
-            .iter()
-            .any(|row| domain_proof::is_onion(&row.domain)),
+        Frame::OfAnotherSite { referrer: None } => over_tor,
     };
     if !here {
         return None;
@@ -244,10 +287,11 @@ pub struct DomainCheck {
 pub async fn check_every(proofs: &Proofs, domains: &[String], token: &str) -> Vec<DomainCheck> {
     let mut checks = Vec::with_capacity(domains.len());
     for domain in domains {
-        let outcome = domain_proof::check(proofs, &TEMPLATE, domain, token).await;
+        let token = proof_token(token, domain);
+        let outcome = domain_proof::check(proofs, &TEMPLATE, domain, &token).await;
         checks.push(DomainCheck {
             domain: domain.clone(),
-            reason: outcome.error_message(&TEMPLATE, domain, token),
+            reason: outcome.error_message(&TEMPLATE, domain, &token),
             outcome,
         });
     }
@@ -300,22 +344,31 @@ pub async fn check_and_record(
     now: i64,
 ) -> Result<Approved, crate::db::DbError> {
     let approved = approved(&check_every(proofs, domains, token).await);
-    let (answered, error) = match &approved {
-        Approved::Yes => (true, None),
-        Approved::Missing(reason) => (true, Some(reason.clone())),
-        Approved::NoAnswer(reason) => (false, Some(reason.clone())),
-    };
-    let id = id.clone();
-    let token = token.to_string();
-    db.write(move |db| db.record_checkout_page_check(&id, &token, now, answered, error.as_deref()))
-        .await?;
+    let (id, token, domains, result) = (
+        id.clone(),
+        token.to_string(),
+        domains.to_vec(),
+        approved.clone(),
+    );
+    db.write(move |db| match &result {
+        Approved::Yes => db.record_checkout_page_found(&id, &token, &domains, now),
+        Approved::Missing(reason) => db.record_checkout_page_check(&id, &token, now, true, reason),
+        Approved::NoAnswer(reason) => {
+            db.record_checkout_page_check(&id, &token, now, false, reason)
+        }
+    })
+    .await?;
     Ok(approved)
 }
 
-/// Whether a page is due a look at its proof: daily, or hourly while something's
-/// wrong, so a fix is noticed well inside the grace period.
-pub fn check_due(page: &PublishedCheckoutPage, now: i64) -> bool {
-    let every = if page.failing_since.is_some() || page.last_error.is_some() {
+/// Whether a page is due a look at its proofs: daily, or hourly while something's
+/// wrong or a domain hasn't approved it, so a fix or a new domain is noticed well
+/// inside the grace period.
+pub fn check_due(page: &PublishedCheckoutPage, domains: &[StoreDomainRow], now: i64) -> bool {
+    let every = if page.failing_since.is_some()
+        || page.last_error.is_some()
+        || !waiting_on(page, domains, now).is_empty()
+    {
         domain_proof::FAILING_RECHECK_EVERY_SECS
     } else {
         domain_proof::RECHECK_EVERY_SECS
@@ -333,7 +386,7 @@ pub fn recheck_if_due(
     now: i64,
 ) {
     static CHECKING: LazyLock<Mutex<HashSet<ConnectionId>>> = LazyLock::new(Mutex::default);
-    if page.turned_off_at.is_some() || !check_due(page, now) {
+    if page.turned_off_at.is_some() || !check_due(page, domains, now) {
         return;
     }
     let domains = approver_names(domains, now);
@@ -395,6 +448,7 @@ mod tests {
             last_error: None,
             turned_off_at: None,
             turned_off_reason: None,
+            approved_domains: vec!["shop.example".to_string(), ONION.to_string()],
         }
     }
 
@@ -519,7 +573,7 @@ mod tests {
             } else {
                 Frame::NotFramed
             };
-            chosen_page(page, domains, &frame, asked, NOW).is_some()
+            chosen_page(page, domains, &frame, false, asked, NOW).is_some()
         };
         assert!(shown(Some(&page()), &domains, true, false));
         assert!(!shown(None, &domains, true, false), "no page");
@@ -549,17 +603,19 @@ mod tests {
     #[test]
     fn a_chosen_page_can_only_be_framed_by_its_stores_sites() {
         let domains = [domain("shop.example", Some(1), None)];
-        let chosen = chosen_page(Some(&page()), &domains, &shop_frame(), false, NOW).unwrap();
+        let chosen =
+            chosen_page(Some(&page()), &domains, &shop_frame(), false, false, NOW).unwrap();
         assert_eq!(
             chosen.frame_ancestors.as_deref(),
             Some("frame-ancestors 'self' https://shop.example https://*.shop.example")
         );
     }
 
-    /// A page shows on all of a store's sites, and its policy lists them. An onion shop
-    /// sends no `Referer`, so with one among them, none is taken to be that shop.
+    /// A page shows on a store's sites, each on the network that reaches it. Its policy
+    /// names only that one, so no response ties an onion address to its web domain.
+    /// An onion shop sends no `Referer`, which only a request over Tor is taken to be.
     #[test]
-    fn a_page_shows_on_every_site_the_store_has() {
+    fn a_page_shows_on_every_site_each_on_its_own_network() {
         let both = [
             domain("shop.example", Some(1), None),
             domain(ONION, Some(1), None),
@@ -567,19 +623,89 @@ mod tests {
         let frame = |referrer: Option<&str>| Frame::OfAnotherSite {
             referrer: referrer.map(str::to_string),
         };
-        let on = |domains: &[StoreDomainRow], frame: &Frame| {
-            chosen_page(Some(&page()), domains, frame, false, NOW)
+        let on = |frame: &Frame, over_tor| {
+            chosen_page(Some(&page()), &both, frame, over_tor, false, NOW)
         };
-        let chosen = on(&both, &frame(Some("https://shop.example"))).unwrap();
-        let policy = chosen.frame_ancestors.unwrap();
-        assert!(policy.contains("https://shop.example"), "{policy}");
-        assert!(policy.contains(&format!("http://{ONION}")), "{policy}");
-        assert!(on(&both, &frame(Some(&format!("http://{ONION}")))).is_some());
-        assert!(on(&both, &frame(None)).is_some(), "an onion shop, as sent");
-        assert!(on(&both, &frame(Some("https://elsewhere.example"))).is_none());
+        let web = on(&frame(Some("https://shop.example")), false).unwrap();
+        let web_policy = web.frame_ancestors.unwrap();
+        assert!(web_policy.contains("https://shop.example"), "{web_policy}");
+        assert!(!web_policy.contains(ONION), "{web_policy}");
 
-        let web_only = [domain("shop.example", Some(1), None)];
-        assert!(on(&web_only, &frame(None)).is_none(), "no onion to be");
+        let tor = on(&frame(None), true).unwrap();
+        let tor_policy = tor.frame_ancestors.unwrap();
+        assert!(
+            tor_policy.contains(&format!("http://{ONION}")),
+            "{tor_policy}"
+        );
+        assert!(!tor_policy.contains("shop.example"), "{tor_policy}");
+        assert!(on(&frame(Some(&format!("http://{ONION}"))), true).is_some());
+
+        // Anywhere else, the layout, and never a frame its browser would refuse.
+        assert!(on(&frame(None), false).is_none(), "no Referer, on the web");
+        assert!(on(&frame(Some("https://elsewhere.example")), false).is_none());
+        assert!(on(&frame(Some("https://shop.example")), true).is_none());
+    }
+
+    /// A page shows only where its proof was found, however a domain came to count. A
+    /// thief can publish while the shop's domain is gone; when it's back it must not
+    /// show their words, and it's due a look. Finding it there is what adds it.
+    #[test]
+    fn a_domain_that_comes_to_count_later_doesnt_show_words_it_never_approved() {
+        let thief = "thief.example";
+        let domains = [
+            domain("shop.example", Some(1), None),
+            domain(thief, Some(1), None),
+        ];
+        let theirs = PublishedCheckoutPage {
+            approved_domains: vec![thief.to_string()],
+            ..page()
+        };
+        let chosen = |referrer: &str| {
+            let frame = Frame::OfAnotherSite {
+                referrer: Some(referrer.to_string()),
+            };
+            chosen_page(Some(&theirs), &domains, &frame, false, false, NOW)
+        };
+        assert!(chosen("https://shop.example").is_none());
+        let policy = chosen(&format!("https://{thief}"))
+            .unwrap()
+            .frame_ancestors
+            .unwrap();
+        assert!(!policy.contains("shop.example"), "{policy}");
+        assert_eq!(waiting_on(&theirs, &domains, NOW), ["shop.example"]);
+        assert!(check_due(
+            &PublishedCheckoutPage {
+                last_checked_at: Some(NOW - domain_proof::FAILING_RECHECK_EVERY_SECS),
+                ..theirs.clone()
+            },
+            &domains,
+            NOW
+        ));
+        // A page with nowhere left to show isn't showing, as its card says.
+        let shop_only = [domain("shop.example", Some(1), None)];
+        assert_eq!(standing(&theirs, &shop_only, NOW), PageStanding::NotShowing);
+    }
+
+    /// One domain lapsing leaves the other showing, and it's no longer asked.
+    #[test]
+    fn a_lapsed_or_pending_domain_isnt_asked_and_the_other_stays() {
+        let lapsed = domain(ONION, Some(1), Some(NOW - domain_proof::GRACE_SECS));
+        let pending = domain(ONION, None, None);
+        let web = domain("shop.example", Some(1), None);
+        for other in [lapsed, pending] {
+            let domains = [web.clone(), other];
+            assert_eq!(approver_names(&domains, NOW), ["shop.example"]);
+            assert_eq!(standing(&page(), &domains, NOW), PageStanding::Working);
+        }
+    }
+
+    /// The two proofs of a version can't be matched by anyone reading both.
+    #[test]
+    fn an_onions_proof_cant_be_matched_to_the_web_domains() {
+        assert_eq!(proof_token("version", "shop.example"), "version");
+        let onion = proof_token("version", ONION);
+        assert_ne!(onion, "version");
+        assert_ne!(onion, proof_token("other", ONION), "still per version");
     }
 
     /// A site the store hasn't verified can still take a payment there, so it gets
@@ -591,7 +717,7 @@ mod tests {
             let frame = Frame::OfAnotherSite {
                 referrer: referrer.map(str::to_string),
             };
-            chosen_page(Some(&page()), &domains, &frame, false, NOW).is_some()
+            chosen_page(Some(&page()), &domains, &frame, false, false, NOW).is_some()
         };
         assert!(shown(Some("https://shop.example")));
         assert!(shown(Some("https://www.shop.example")));
@@ -648,7 +774,7 @@ mod tests {
     fn a_page_that_no_longer_passes_the_checks_doesnt_show() {
         let domains = [domain("shop.example", Some(1), None)];
         let shown = |page: PublishedCheckoutPage| {
-            chosen_page(Some(&page), &domains, &shop_frame(), false, NOW).is_some()
+            chosen_page(Some(&page), &domains, &shop_frame(), false, false, NOW).is_some()
         };
         assert!(!shown(PublishedCheckoutPage {
             token: "no-address".to_string(),
@@ -670,15 +796,21 @@ mod tests {
         };
         assert!(!check_due(
             &fine,
+            &[],
             NOW + domain_proof::RECHECK_EVERY_SECS - 1
         ));
-        assert!(check_due(&fine, NOW + domain_proof::RECHECK_EVERY_SECS));
+        assert!(check_due(
+            &fine,
+            &[],
+            NOW + domain_proof::RECHECK_EVERY_SECS
+        ));
         let failing = PublishedCheckoutPage {
             failing_since: Some(NOW),
             ..fine.clone()
         };
         assert!(check_due(
             &failing,
+            &[],
             NOW + domain_proof::FAILING_RECHECK_EVERY_SECS
         ));
         let no_answer = PublishedCheckoutPage {
@@ -687,6 +819,7 @@ mod tests {
         };
         assert!(check_due(
             &no_answer,
+            &[],
             NOW + domain_proof::FAILING_RECHECK_EVERY_SECS
         ));
     }

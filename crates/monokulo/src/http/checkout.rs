@@ -482,6 +482,7 @@ async fn choose_page(
         Some(&page),
         &domains,
         &frame,
+        crate::base::network() == Some(crate::network::NetworkKind::Onion),
         options.asked_layout().is_some(),
         now,
     )

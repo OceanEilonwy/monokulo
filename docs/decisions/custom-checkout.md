@@ -227,7 +227,17 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     page has one status, and shows on both or neither. So a stolen dashboard adding a
     domain can't approve a version alone, which is what decision 40 was for, and the
     page shows on Tor. Its costs, accepted: either proof missing fails the page on
-    both sites; a domain added under a live page starts it failing at its next check,
-    and that domain can frame the page already approved until its 3 days end; and with
-    Tor off, a store with an onion address can't publish, though a live page keeps
-    showing, as no answer never counts as missing.
+    both sites, and with Tor off a store with an onion address can't publish. A live
+    page keeps showing through that outage, unless a clock was already running, which
+    no answer doesn't stop.
+50. **A page shows only on the domains its proof was last found on.** A review found
+    a thief could remove the shop's domain, publish on their own, and have those words
+    reach the real site once the shop's domain counted again. So each page keeps the
+    domains it was found on (migration 0060), and any other that counts shows the
+    layout, and is looked at within the hour.
+51. **Over each network, a page names only the site that network reaches.** The frame
+    policy would otherwise tie a store's onion address to its web domain in every
+    response, and so would an identical proof, so the onion's is hashed with its name.
+    It also settles a site sending no `Referer`: on the web that's never an onion shop,
+    so it gets the layout, not a frame its browser refuses. An onion shop framing
+    Monokulo's web address gets the layout, which the embed library never does.

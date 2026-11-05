@@ -22,7 +22,7 @@ pub struct CheckoutPageDraft {
     pub created_at: i64,
 }
 
-/// A store's custom page in use: the version its domain approved.
+/// A store's custom page in use: the version its domains approved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishedCheckoutPage {
     pub connection_id: ConnectionId,
@@ -37,6 +37,8 @@ pub struct PublishedCheckoutPage {
     pub last_error: Option<String>,
     pub turned_off_at: Option<i64>,
     pub turned_off_reason: Option<String>,
+    /// The domains the last look found its proof on.
+    pub approved_domains: Vec<String>,
 }
 
 /// A store's custom page, as the operator's list shows it.
@@ -47,7 +49,7 @@ pub struct CustomPageListing {
     pub domains: Vec<super::StoreDomainRow>,
 }
 
-const PAGE_COLUMNS: &str = "connection_id, template, css, written_css, token, published_at_utc, last_checked_at_utc, failing_since_utc, last_error, turned_off_at_utc, turned_off_reason";
+const PAGE_COLUMNS: &str = "connection_id, template, css, written_css, token, published_at_utc, last_checked_at_utc, failing_since_utc, last_error, turned_off_at_utc, turned_off_reason, approved_domains";
 
 fn page_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublishedCheckoutPage> {
     Ok(PublishedCheckoutPage {
@@ -62,6 +64,7 @@ fn page_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublishedCheckoutP
         last_error: row.get(8)?,
         turned_off_at: row.get(9)?,
         turned_off_reason: row.get(10)?,
+        approved_domains: serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or_default(),
     })
 }
 
@@ -221,12 +224,13 @@ impl Db {
             .optional()?)
     }
 
-    /// Makes `draft` the store's page in use, with its proof just seen. `false`,
-    /// changing nothing, if the operator has turned the store's page off.
+    /// Makes `draft` the store's page in use, with its proof just seen on `domains`.
+    /// `false`, changing nothing, if the operator has turned the store's page off.
     pub fn publish_checkout_page(
         &self,
         draft: &CheckoutPageDraft,
         token: &str,
+        domains: &[String],
         now: i64,
     ) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
@@ -238,13 +242,22 @@ impl Db {
             return Ok(false);
         }
         tx.execute(
-            "INSERT INTO checkout_pages (connection_id, template, css, written_css, token, published_at_utc, last_checked_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+            "INSERT INTO checkout_pages (connection_id, template, css, written_css, token, published_at_utc, last_checked_at_utc, approved_domains)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
              ON CONFLICT (connection_id) DO UPDATE SET template = excluded.template, css = excluded.css,
                 written_css = excluded.written_css, token = excluded.token,
                 published_at_utc = excluded.published_at_utc, last_checked_at_utc = excluded.last_checked_at_utc,
+                approved_domains = excluded.approved_domains,
                 failing_since_utc = NULL, last_error = NULL",
-            params![id, draft.template, draft.css, draft.written_css, token, now],
+            params![
+                id,
+                draft.template,
+                draft.css,
+                draft.written_css,
+                token,
+                now,
+                serde_json::to_string(domains).unwrap_or_default()
+            ],
         )?;
         tx.execute(
             // One saved while the lookup ran is newer work, not this one.
@@ -267,35 +280,54 @@ impl Db {
         Ok(changed == 1)
     }
 
-    /// Records one look at a page's proof, of the version `token`: a slow one mustn't
-    /// land on a version published meanwhile. Found clears what was wrong; an answer
-    /// without it starts the grace period; no answer changes neither.
+    /// Records a look that found the version `token`'s proof on each of `domains`, all
+    /// the store's: what was wrong clears, and the page shows on them. A slow look
+    /// mustn't land on a version published meanwhile.
+    pub fn record_checkout_page_found(
+        &self,
+        id: &ConnectionId,
+        token: &str,
+        domains: &[String],
+        checked_at: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE checkout_pages SET last_checked_at_utc = ?3, failing_since_utc = NULL, last_error = NULL,
+                approved_domains = ?4
+             WHERE connection_id = ?1 AND token = ?2",
+            params![
+                id,
+                token,
+                checked_at,
+                serde_json::to_string(domains).unwrap_or_default()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Records a look that didn't find every proof. An answer without one starts the
+    /// grace period; no answer changes neither.
     pub fn record_checkout_page_check(
         &self,
         id: &ConnectionId,
         token: &str,
         checked_at: i64,
         answered: bool,
-        error: Option<&str>,
+        error: &str,
     ) -> Result<()> {
-        match (answered, error) {
-            (true, None) => self.conn.execute(
-                "UPDATE checkout_pages SET last_checked_at_utc = ?3, failing_since_utc = NULL, last_error = NULL
-                 WHERE connection_id = ?1 AND token = ?2",
-                params![id, token, checked_at],
-            )?,
-            (true, Some(error)) => self.conn.execute(
+        if answered {
+            self.conn.execute(
                 "UPDATE checkout_pages SET last_checked_at_utc = ?3, last_error = ?4,
                     failing_since_utc = COALESCE(failing_since_utc, ?3)
                  WHERE connection_id = ?1 AND token = ?2",
                 params![id, token, checked_at, error],
-            )?,
-            (false, error) => self.conn.execute(
+            )?;
+        } else {
+            self.conn.execute(
                 "UPDATE checkout_pages SET last_checked_at_utc = ?3, last_error = ?4
                  WHERE connection_id = ?1 AND token = ?2",
                 params![id, token, checked_at, error],
-            )?,
-        };
+            )?;
+        }
         Ok(())
     }
 
@@ -355,7 +387,7 @@ impl Db {
         ))?;
         let rows = statement
             .query_map([], |row| {
-                Ok((page_from_row(row)?, row.get::<_, String>(11)?))
+                Ok((page_from_row(row)?, row.get::<_, String>(12)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let by_order = match query {
