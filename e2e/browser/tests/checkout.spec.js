@@ -419,12 +419,12 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   // The payment is listed by a shortened txid, not yet confirmed.
   await expect(page.locator('[data-table="payments"]')).toContainText(`test-p…`);
-  await expect(page.locator('.progress-fill')).toHaveAttribute('style', /width: 0%/);
+  await expect(page.locator('#progress-bar')).toHaveAttribute('value', '0');
   await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/confirm`);
   // The live stream carries the new state in; no reload.
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
   await expect(page.locator('#live-status .mk-stage')).toContainText('Paid.');
-  await expect(page.locator('.progress-fill')).toHaveAttribute('style', /width: 100%/);
+  await expect(page.locator('#progress-bar')).toHaveAttribute('value', '100');
   await captureCoverageStage(page, 'checkout-paid-live', test.info());
   // A final order closes its stream for good rather than reconnecting:
   // once the page has seen the stream end, no amount of time opens another

@@ -65,6 +65,10 @@ fn style_consts(source: &str) -> Vec<String> {
 fn stylesheets() -> Vec<(String, String)> {
     let mut sheets = vec![
         ("site.css".to_string(), served("site.css").to_string()),
+        (
+            "checkout.css".to_string(),
+            served("checkout.css").to_string(),
+        ),
         ("ui.css".to_string(), served("ui.css").to_string()),
         (
             "apps/pos/src/pos.css".to_string(),

@@ -11,7 +11,14 @@ fs.mkdirSync(output, { recursive: true });
 const initial = {};
 for (const name of ['checkout', 'challenge', 'monokulo-client']) {
   const source = `crates/monokulo/static/${name}.js`;
-  const instrumenter = createInstrumenter({ esModules: false, compact: false });
+  const instrumenter = createInstrumenter({
+    esModules: false,
+    compact: false,
+    // The checkout's Content-Security-Policy refuses the `new Function` the
+    // instrumenter finds the global with by default.
+    coverageGlobalScope: 'window',
+    coverageGlobalScopeFunc: false,
+  });
   const code = instrumenter.instrumentSync(fs.readFileSync(path.join(root, source), 'utf8'), source);
   fs.writeFileSync(path.join(output, `${name}.js`), code);
   initial[source] = instrumenter.lastFileCoverage();
