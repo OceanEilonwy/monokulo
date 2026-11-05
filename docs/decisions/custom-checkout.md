@@ -46,7 +46,15 @@ Newest last. Each says what was chosen and why, so it can be reversed.
    `MAX_DOMAINS_PER_STORE` and `new_token` stay in `monokulo`.** How often a
    proof is checked belongs with the proof. How many domains a store may have,
    and how a row's token is made, are the store's business.
-3. **Fetch metadata can't be verified on Tor Browser from this environment.**
+3. **A domain nobody can get an answer about stays verified, with no time
+   limit.** "Can't check never counts as missing" is the agreed rule. Its cost:
+   a domain whose name servers die for good, or an onion row on an instance
+   with Tor turned off, keeps counting, shown only as muted text on its card.
+   Accepted, since the token was public anyway, so whoever controlled that DNS
+   could republish it. An answer that lacks the record is still what lapses a
+   domain. Likewise a clock already running keeps running through an outage,
+   rather than an outage hiding a real warning.
+4. **Fetch metadata can't be verified on Tor Browser from this environment.**
    There is no Tor Browser here. So the gate fails safe: without
    `Sec-Fetch-Dest` a page is treated as not framed and gets the fallback
    layout, so the worst case on Tor is a stock page rather than a leak. It

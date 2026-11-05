@@ -9,11 +9,12 @@
 //! broke into.
 //!
 //! Verified domains are re-checked daily. A domain whose record goes missing
-//! is *failing*: it keeps counting as verified for [`GRACE_SECS`], then
-//! *lapses* until a check finds the record again. A check with no answer (an
-//! outage) says nothing about the record, so it never starts that clock. The store page warns about
-//! a failing or lapsed domain from its first failed check, and that warning
-//! can't be dismissed.
+//! is *failing*: it keeps counting as verified for
+//! [`domain_proof::GRACE_SECS`], then *lapses* until a check finds the record
+//! again. A check with no answer (an outage) says nothing about the record, so
+//! it never starts that clock. The store page warns about a failing or lapsed
+//! domain from its first check to find it missing, and that warning can't be
+//! dismissed.
 //!
 //! An onion address has no DNS, so a shop on one proves itself instead:
 //! it serves the same token at `/.well-known/monokulo-verify`, which
