@@ -22,6 +22,19 @@ the signed `order.paid` webhook arrives, never on the page's word.
 </script>
 ```
 
+## Choosing a layout
+
+The store's **Checkout** tab sets its layout: Detailed, Compact or Tiny, with its
+colours and corners. To choose one for a single embed, pass `view`, which also
+sizes the frame:
+
+```js One embed
+Monokulo.mount("#pay", order, { view: "tiny" });
+```
+
+Passing `view` always shows that layout. To write the page yourself, see
+[Custom checkout pages](../custom-pages/).
+
 ## Order statuses
 
 The status `onStatusChange` is called with. Updates stop at a final
