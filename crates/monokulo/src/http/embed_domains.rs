@@ -5,14 +5,14 @@
 //! page shows - plus [`embed_policy_middleware`], which enforces the
 //! restriction on the public routes (`/api/v1`, `/checkout/{order_id}`).
 
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
 
-use crate::db::StoreDomainRow;
+use crate::db::{AddDomainRefused, StoreDomainRow};
 use crate::embed_domains;
 use crate::templates::{format_duration_since, format_duration_until};
 use crate::views::domains::{DomainStatus, DomainView, StoreRef};
@@ -133,7 +133,23 @@ pub async fn embed_policy_middleware(
 /// One of a store's domains as its card and its pages show it; `wait` is
 /// the seconds left before it may be checked again, when a check was asked
 /// for too soon.
-pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> DomainView {
+///
+/// `rows` are the store's domains, to say what a change underway replaces and
+/// is replaced by.
+pub(super) fn domain_view(
+    row: StoreDomainRow,
+    rows: &[StoreDomainRow],
+    now: i64,
+    wait: Option<i64>,
+) -> DomainView {
+    let replaces = row.replaces_id.as_ref().and_then(|id| {
+        rows.iter()
+            .find(|other| other.id == *id)
+            .map(|other| other.domain.clone())
+    });
+    let being_replaced = rows
+        .iter()
+        .any(|other| other.replaces_id.as_deref() == Some(row.id.as_str()));
     let clock = Clock::utc(now);
     let checked = row.last_checked_at.map(|at| clock.relative(at));
     // An onion shop is proved by a file it serves over Tor, never by DNS.
@@ -213,13 +229,15 @@ pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> D
         meta,
         reason,
         wait,
+        replaces,
+        being_replaced,
     }
 }
 
 /// The settings page's cards for a store's domains.
 pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<DomainView> {
-    rows.into_iter()
-        .map(|row| domain_view(row, now, None))
+    rows.iter()
+        .map(|row| domain_view(row.clone(), &rows, now, None))
         .collect()
 }
 
@@ -354,22 +372,56 @@ pub async fn add_form(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
+    Query(query): Query<AddDomainQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    let replacing = match replacing(&state, &row, query.replaces).await {
+        Ok(replacing) => replacing,
+        Err(status) => return status.into_response(),
+    };
     store_page(&state, &user, &row, |chrome, store| {
-        crate::views::domains::add_page(chrome, store, "", None)
+        crate::views::domains::add_page(chrome, store, "", None, replacing.as_ref())
     })
     .await
     .into_response()
 }
 
+/// The store's domain `replaces` names, for the page changing it.
+async fn replacing(
+    state: &AppState,
+    row: &super::OwnedStore,
+    replaces: Option<String>,
+) -> Result<Option<StoreDomainRow>, StatusCode> {
+    let Some(replaces) = replaces else {
+        return Ok(None);
+    };
+    let store_id = row.id.clone();
+    match state
+        .db
+        .read(move |db| db.get_store_domain(&store_id, &replaces))
+        .await
+    {
+        Ok(Some(domain)) => Ok(Some(domain)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AddDomainQuery {
+    /// Changing this domain, rather than adding one.
+    replaces: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct AddDomainForm {
     pub domain: String,
+    /// Changing this domain, rather than adding one.
+    pub replaces: Option<String>,
 }
 
 /// `POST /stores/{id}/settings/domains` - adds a domain waiting
@@ -386,11 +438,22 @@ pub async fn add_domain(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    let replacing = match replacing(&state, &row, form.replaces.clone()).await {
+        Ok(replacing) => replacing,
+        Err(status) => return status.into_response(),
+    };
     let refused = |error: String| {
-        let (state, user, row, typed) = (&state, &user, &row, form.domain.clone());
+        let (state, user, row, typed, replacing) =
+            (&state, &user, &row, form.domain.clone(), &replacing);
         async move {
             let page = store_page(state, user, row, |chrome, store| {
-                crate::views::domains::add_page(chrome, store, &typed, Some(&error))
+                crate::views::domains::add_page(
+                    chrome,
+                    store,
+                    &typed,
+                    Some(&error),
+                    replacing.as_ref(),
+                )
             })
             .await;
             (StatusCode::UNPROCESSABLE_ENTITY, page).into_response()
@@ -402,6 +465,7 @@ pub async fn add_domain(
     };
     let domain_id = uuid::Uuid::new_v4().to_string();
     let (store_id, new_domain, new_id) = (row.id.clone(), domain.clone(), domain_id.clone());
+    let replaces = form.replaces.clone();
     let created = state
         .db
         .write(move |db| {
@@ -411,21 +475,35 @@ pub async fn add_domain(
                 &new_domain,
                 &embed_domains::new_token(),
                 crate::now_unix(),
-                embed_domains::MAX_DOMAINS_PER_STORE,
+                replaces.as_deref(),
             )
         })
         .await;
     let error = match created {
-        Ok(true) => {
+        Ok(Ok(())) => {
             return crate::base::see_other(format!(
                 "/stores/{id}/settings/domains/{domain_id}/record"
             ))
         }
-        Ok(false) => format!(
-            "A store can have at most {} domains. Remove one to add another.",
-            embed_domains::MAX_DOMAINS_PER_STORE
+        Ok(Err(AddDomainRefused::AlreadyOnStore)) => {
+            format!("{domain} is already on this store's list.")
+        }
+        Ok(Err(AddDomainRefused::SlotTaken(existing))) => format!(
+            "This store already has {existing}, and a store can have one web domain and one onion address. Change it, or create a store for another website."
         ),
-        Err(e) if e.is_unique_violation() => format!("{domain} is already on this store's list."),
+        Ok(Err(AddDomainRefused::ChangeUnderway)) => {
+            "A change of domain is already underway. Finish or cancel it first.".to_string()
+        }
+        Ok(Err(AddDomainRefused::NotSameKind)) => {
+            "A web domain can only change to a web domain, and an onion address to an onion address.".to_string()
+        }
+        Ok(Err(AddDomainRefused::NothingToReplace)) => {
+            "The domain you're changing has been removed.".to_string()
+        }
+        // Another add took the store's one place first.
+        Err(e) if e.is_unique_violation() => {
+            "This store's domains just changed. Check them, then try again.".to_string()
+        }
         Err(_) => "Something went wrong. Please try again.".to_string(),
     };
     refused(error).await
@@ -467,7 +545,7 @@ pub async fn record_page(
         Ok(loaded) => loaded,
         Err(status) => return status.into_response(),
     };
-    let view = domain_view(domain, crate::now_unix(), None);
+    let view = domain_view(domain, &[], crate::now_unix(), None);
     store_page(&state, &user, &row, |chrome, store| {
         crate::views::domains::record_page(chrome, store, &view)
     })
@@ -487,7 +565,7 @@ pub async fn check_page(
         Err(status) => return status.into_response(),
     };
     let checked = domain.last_checked_at.is_some();
-    let view = domain_view(domain, crate::now_unix(), None);
+    let view = domain_view(domain, &[], crate::now_unix(), None);
     store_page(&state, &user, &row, |chrome, store| {
         crate::views::domains::check_page(chrome, store, &view, checked)
     })
@@ -522,6 +600,7 @@ pub async fn check_domain(
         Err(status) => return status.into_response(),
     };
     let now = crate::now_unix();
+    let replaced = domain.replaces_id.clone();
     let wait = domain
         .last_checked_at
         .map(|last| domain_proof::MIN_CHECK_GAP_SECS - (now - last))
@@ -534,7 +613,7 @@ pub async fn check_domain(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     let store_id = row.id.clone();
-    let (domain, restricted, can_restrict) = match state
+    let (domain, domains, restricted, can_restrict) = match state
         .db
         .read(move |db| {
             let domains = db.list_store_domains(&store_id)?;
@@ -542,16 +621,21 @@ pub async fn check_domain(
                 domains.iter().find(|d| d.id == domain_id).cloned(),
                 db.embed_restricted(&store_id).unwrap_or(false),
                 domains.iter().any(|d| d.state(now).counts()),
+                domains,
             ))
         })
         .await
     {
-        Ok((Some(domain), restricted, can_restrict)) => (domain, restricted, can_restrict),
+        Ok((Some(domain), restricted, can_restrict, domains)) => {
+            (domain, domains, restricted, can_restrict)
+        }
         Ok((None, ..)) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let checked = domain.last_checked_at.is_some();
-    let view = domain_view(domain, now, wait);
+    // A check that found a domain changing to it took the old one's place.
+    let gone = replaced.filter(|id| !domains.iter().any(|d| d.id == *id));
+    let view = domain_view(domain, &domains, now, wait);
     let store = store_ref(&row);
     let from_check_page = form.from.as_deref() == Some("check");
     if fx.0 {
@@ -560,6 +644,9 @@ pub async fn check_domain(
         } else {
             maud::html! {
                 (crate::views::domains::card_only(&store, &view))
+                @if let Some(gone) = &gone {
+                    (crate::views::domains::removed_card_oob(gone))
+                }
                 (crate::views::domains::restriction_banner_oob(&store, restricted, can_restrict))
                 (crate::views::domains::guide_now_oob(restricted, can_restrict))
             }
@@ -1662,6 +1749,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["store-home.example"]
         );
+        // This merchant's website is another one, so that makes way for it.
+        state
+            .db
+            .lock()
+            .delete_store_domain(
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                &suggested[0].id,
+            )
+            .unwrap();
 
         // Before anything: the store page says any website can show the checkout.
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;
@@ -1896,7 +1992,7 @@ mod tests {
                 .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
                 .unwrap()
                 .len(),
-            1
+            0
         );
     }
 
@@ -2195,6 +2291,297 @@ mod tests {
         assert!(row.failing_since.is_none());
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;
         assert!(!html.contains("failed its DNS check"), "got: {html}");
+    }
+
+    /// A store has one web domain and one onion address. A second of either
+    /// is refused, naming the first; each kind has its own place.
+    #[tokio::test]
+    async fn a_store_has_one_web_domain_and_one_onion_address() {
+        const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+        let dns = Arc::new(FakeDns::default());
+        let (state, _engine) = test_state(dns).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "one-of-each@example.com").await;
+        let id = create_store(&router, &state, &session).await;
+        let store = engine_protocol::ids::ConnectionId::new(id.to_string());
+        let domains = |state: &AppState| {
+            let mut names: Vec<String> = state
+                .db
+                .lock()
+                .list_store_domains(&store)
+                .unwrap()
+                .into_iter()
+                .map(|d| d.domain)
+                .collect();
+            names.sort();
+            names
+        };
+        let add = format!("/stores/{id}/settings/domains");
+        assert_eq!(domains(&state), ["store-home.example"]);
+
+        let (status, html) = send(
+            &router,
+            "POST",
+            &add,
+            &session,
+            Some("domain=second.example"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            html.contains("This store already has store-home.example"),
+            "{html}"
+        );
+        let (status, html) = send(
+            &router,
+            "POST",
+            &add,
+            &session,
+            Some("domain=store-home.example"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(html.contains("is already on this store"), "{html}");
+        assert_eq!(domains(&state), ["store-home.example"]);
+
+        post_location(&router, &add, &session, &format!("domain={ONION}")).await;
+        let other_onion = ONION.replacen(
+            "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid",
+            "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd",
+            1,
+        );
+        let (status, _) = send(
+            &router,
+            "POST",
+            &add,
+            &session,
+            Some(&format!("domain={other_onion}")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(domains(&state), [ONION, "store-home.example"]);
+    }
+
+    /// Changing a domain keeps the old one counting until the new one is
+    /// verified, so a restricted store's checkout never stops: only then does
+    /// the new one take its place. There's one change at a time, of the same
+    /// kind, and removing the new one is how a change is cancelled.
+    #[tokio::test]
+    async fn changing_a_domain_swaps_it_only_once_the_new_one_is_verified() {
+        let dns = Arc::new(FakeDns::default());
+        let (state, _engine) = test_state(dns.clone()).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "change-domain@example.com").await;
+        let id = create_store(&router, &state, &session).await;
+        let store = engine_protocol::ids::ConnectionId::new(id.to_string());
+        let rows = |state: &AppState| state.db.lock().list_store_domains(&store).unwrap();
+        let old = rows(&state).pop().unwrap();
+        dns.publish(
+            &domain_proof::VERIFY.record_name(&old.domain),
+            &domain_proof::VERIFY.value(&old.token),
+        );
+        let now = crate::now_unix();
+        embed_domains::check_and_record(&state.db, &state.proofs, &old, now)
+            .await
+            .unwrap();
+        state.db.lock().set_embed_restricted(&store, true).unwrap();
+        let policy = |state: &AppState| embed_domains::EmbedPolicy {
+            restricted: true,
+            domains: rows(state),
+        };
+
+        let add = format!("/stores/{id}/settings/domains");
+        let form = |domain: &str| format!("domain={domain}&replaces={}", old.id);
+        post_location(&router, &add, &session, &form("new-home.example")).await;
+        let new = rows(&state).into_iter().find(|d| d.id != old.id).unwrap();
+        assert_eq!(new.replaces_id.as_deref(), Some(old.id.as_str()));
+        assert!(policy(&state).allows_origin("https://store-home.example", now));
+        assert!(!policy(&state).allows_origin("https://new-home.example", now));
+        let (_, html) = send(
+            &router,
+            "GET",
+            &format!("/stores/{id}/settings?tab=domains"),
+            &session,
+            None,
+        )
+        .await;
+        assert!(
+            html.contains("Replaces store-home.example once verified"),
+            "{html}"
+        );
+
+        // One change at a time, and an onion address can't replace a web domain.
+        let (status, html) = send(
+            &router,
+            "POST",
+            &add,
+            &session,
+            Some(&form("third.example")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(html.contains("already underway"), "{html}");
+        let onion = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+        let (status, html) = send(&router, "POST", &add, &session, Some(&form(onion))).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(html.contains("can only change"), "{html}");
+
+        // No record yet: nothing moves.
+        embed_domains::check_and_record(&state.db, &state.proofs, &new, now)
+            .await
+            .unwrap();
+        assert_eq!(rows(&state).len(), 2);
+
+        // Found: it takes the old one's place.
+        dns.publish(
+            &domain_proof::VERIFY.record_name(&new.domain),
+            &domain_proof::VERIFY.value(&new.token),
+        );
+        embed_domains::check_and_record(&state.db, &state.proofs, &new, now)
+            .await
+            .unwrap();
+        let after = rows(&state);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].domain, "new-home.example");
+        assert_eq!(after[0].replaces_id, None);
+        assert!(policy(&state).allows_origin("https://new-home.example", now));
+        assert!(!policy(&state).allows_origin("https://store-home.example", now));
+    }
+
+    /// What changing a domain must not allow: naming another store's domain,
+    /// or removing a restricted store's only verified domain while the new
+    /// one is still waiting. With JavaScript, a check that swaps them takes
+    /// the old card off the page.
+    #[tokio::test]
+    async fn a_change_of_domain_stays_within_its_store_and_keeps_one_that_counts() {
+        let dns = Arc::new(FakeDns::default());
+        let (state, _engine) = test_state(dns.clone()).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "change-limits@example.com").await;
+        let id = create_store(&router, &state, &session).await;
+        let store = engine_protocol::ids::ConnectionId::new(id.to_string());
+        let old = state
+            .db
+            .lock()
+            .list_store_domains(&store)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let add = format!("/stores/{id}/settings/domains");
+
+        let other_session = session_for(&router, "change-limits-other@example.com").await;
+        let other_id = crate::http::test_support::store_with_keys(
+            &router,
+            &state,
+            &other_session,
+            "other-store.example",
+            "XMR",
+        )
+        .await
+        .id;
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/stores/{other_id}/settings/domains"),
+            &other_session,
+            Some(&format!("domain=stolen.example&replaces={}", old.id)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        dns.publish(
+            &domain_proof::VERIFY.record_name(&old.domain),
+            &domain_proof::VERIFY.value(&old.token),
+        );
+        embed_domains::check_and_record(&state.db, &state.proofs, &old, crate::now_unix() - 60)
+            .await
+            .unwrap();
+        state.db.lock().set_embed_restricted(&store, true).unwrap();
+        post_location(
+            &router,
+            &add,
+            &session,
+            &format!("domain=new-home.example&replaces={}", old.id),
+        )
+        .await;
+        send(
+            &router,
+            "POST",
+            &format!("{add}/{}/delete", old.id),
+            &session,
+            None,
+        )
+        .await;
+        assert_eq!(
+            state.db.lock().list_store_domains(&store).unwrap().len(),
+            2,
+            "the old domain is the only one counting, so it stays"
+        );
+
+        let new = state
+            .db
+            .lock()
+            .list_store_domains(&store)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id != old.id)
+            .unwrap();
+        dns.publish(
+            &domain_proof::VERIFY.record_name(&new.domain),
+            &domain_proof::VERIFY.value(&new.token),
+        );
+        let (status, html) =
+            fx_post(&router, &format!("{add}/{}/check", new.id), &session, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(state.db.lock().list_store_domains(&store).unwrap().len(), 1);
+        assert!(
+            html.contains(&format!(r#"id="domain-{}" hidden data-fx-oob"#, old.id)),
+            "{html}"
+        );
+    }
+
+    /// Removing a domain while another is on its way to replacing it leaves
+    /// that one holding the store's place, so a later add is still refused.
+    #[tokio::test]
+    async fn removing_the_old_domain_mid_change_leaves_the_new_one_in_its_place() {
+        let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "mid-change@example.com").await;
+        let id = create_store(&router, &state, &session).await;
+        let store = engine_protocol::ids::ConnectionId::new(id.to_string());
+        let old = state
+            .db
+            .lock()
+            .list_store_domains(&store)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let add = format!("/stores/{id}/settings/domains");
+        post_location(
+            &router,
+            &add,
+            &session,
+            &format!("domain=new-home.example&replaces={}", old.id),
+        )
+        .await;
+
+        assert!(state
+            .db
+            .lock()
+            .delete_store_domain(&store, &old.id)
+            .unwrap());
+        let rows = state.db.lock().list_store_domains(&store).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].replaces_id, None);
+        let (status, _) = send(
+            &router,
+            "POST",
+            &add,
+            &session,
+            Some("domain=third.example"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     /// No answer leaves what is known about a proof alone, on the web and on

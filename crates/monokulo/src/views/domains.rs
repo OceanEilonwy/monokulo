@@ -40,6 +40,10 @@ pub struct DomainView {
     pub reason: Option<String>,
     /// A check asked for too soon after the last: the seconds left.
     pub wait: Option<i64>,
+    /// The domain this one takes the place of once verified.
+    pub replaces: Option<String>,
+    /// Another domain is waiting to take this one's place.
+    pub being_replaced: bool,
 }
 
 impl DomainView {
@@ -208,13 +212,25 @@ pub fn card_only(store: &StoreRef, domain: &DomainView) -> Markup {
         @if domain.status != DomainStatus::Verified {
             (check_form(store, domain, &format!("#{card_id}"), with_icon(icons::REFRESH, "Check again"), false))
         }
+        @if domain.replaces.is_none() && !domain.being_replaced {
+            (ui::LinkButton::new("Change", format!("{}/domains/new?replaces={}", store.settings(), domain.id))
+                .size(ui::ControlSize::Compact))
+        }
         (remove)
+    };
+    let meta = match &domain.replaces {
+        Some(old) => format!("Replaces {old} once verified · {}", domain.meta),
+        None if domain.being_replaced => format!(
+            "Being changed: stays until the new domain is verified · {}",
+            domain.meta
+        ),
+        None => domain.meta.clone(),
     };
     let card = ui::ItemCard::new(domain.domain.as_str())
         .icon(icon(icons::GLOBE))
         .status(tag(domain.status))
         .actions(actions)
-        .meta(domain.meta.as_str())
+        .meta(meta.as_str())
         .attr("id", card_id.as_str())
         .attr("data-domain", domain.domain.as_str());
     let card = match &domain.reason {
@@ -230,6 +246,12 @@ pub fn card_only(store: &StoreRef, domain: &DomainView) -> Markup {
         _ => card,
     };
     html! { (card) }
+}
+
+/// Takes a domain's card off the page (`data-fx-oob`): one a change of domain
+/// has just replaced.
+pub fn removed_card_oob(domain_id: &str) -> Markup {
+    html! { div id=(format!("domain-{domain_id}")) hidden data-fx-oob {} }
 }
 
 /// Whether only the store's verified domains may show its checkout, at the
@@ -316,6 +338,10 @@ pub fn guide(restricted: bool, can_restrict: bool) -> Markup {
             "Choose Add a domain and type its address. We'll show you a short code to add to your domain's DNS settings, at the company you bought the domain from. We look for it on our own while that page is open. A shop on a .onion address serves a file instead.".to_string(),
         ),
         (
+            "Can a store have more than one website?",
+            "No. A store has one web domain and one onion address, so you always know where its checkout shows. Selling on another website? Create a store for it. Moving to a new domain? Choose Change: your checkout keeps working on the old one until the new one is verified.".to_string(),
+        ),
+        (
             "Does it cover www and other parts of my site?",
             "Yes. Verifying shop.example also covers www.shop.example and anything else ending in shop.example.".to_string(),
         ),
@@ -377,9 +403,9 @@ fn guide_now(restricted: bool, can_restrict: bool, oob: bool) -> Markup {
     }
 }
 
-fn add_button(store: &StoreRef, primary: bool) -> Markup {
+fn add_button(store: &StoreRef, label: &str, primary: bool) -> Markup {
     let button = ui::LinkButton::new(
-        with_icon(icons::PLUS, "Add a domain"),
+        with_icon(icons::PLUS, label),
         format!("{}/domains/new", store.settings()),
     );
     let button = if primary {
@@ -405,13 +431,19 @@ pub fn domains_body(
             div class="box domains-empty" {
                 p { strong { "No domains yet" } }
                 (ui::Hint::new("Add the website your checkout runs on, like shop.example. It takes one DNS record and a few minutes."))
-                (add_button(store, true))
+                (add_button(store, "Add a domain", true))
             }
         } @else {
             div class="domain-list" {
                 @for domain in domains { (card(store, domain)) }
             }
-            (add_button(store, !can_restrict))
+            @let web = domains.iter().any(|domain| !domain.onion());
+            @let onion = domains.iter().any(DomainView::onion);
+            @match (web, onion) {
+                (false, _) => { (add_button(store, "Add a domain", !can_restrict)) }
+                (true, false) => { (add_button(store, "Add an onion address", !can_restrict)) }
+                (true, true) => {}
+            }
         }
     }
 }
@@ -469,9 +501,22 @@ fn domain_page(
 
 /// `GET .../domains/new`, and the answer to an add that was refused: the
 /// domain, what was typed and why it was refused.
-pub fn add_page(chrome: &PageChrome, store: &StoreRef, typed: &str, error: Option<&str>) -> Markup {
+///
+/// With `replacing`, the same for changing that domain: it stays until the new
+/// one is verified.
+pub fn add_page(
+    chrome: &PageChrome,
+    store: &StoreRef,
+    typed: &str,
+    error: Option<&str>,
+    replacing: Option<&crate::db::StoreDomainRow>,
+) -> Markup {
     let body = html! {
         form method="post" action=(format!("{}/domains", store.settings())) {
+            @if let Some(replacing) = replacing {
+                input type="hidden" name="replaces" value=(replacing.id);
+                (ui::Hint::new(format!("{} keeps working until the new domain is verified, then the new one takes its place.", replacing.domain)))
+            }
             (super::settings::plain_card("domain", "Your website", html! {
                 (ui::Setting::new("Domain", "new-domain", html! {
                     (ui::Input::new("domain")
@@ -487,7 +532,7 @@ pub fn add_page(chrome: &PageChrome, store: &StoreRef, typed: &str, error: Optio
                         (ui::FieldNote::new(error).tone(ui::NoteTone::Problem).id("new-domain-problem"))
                     }
                 })
-                .help("The website that shows your checkout, like shop.example, or an onion shop's .onion address. Its subdomains are covered too.")
+                .help("The website that shows your checkout, like shop.example, or an onion shop's .onion address. Its subdomains are covered too. A store has one of each.")
                 .help_id("new-domain-help"))
             }))
             (ui::FormActions::new(ui::Slot::many([
@@ -496,7 +541,12 @@ pub fn add_page(chrome: &PageChrome, store: &StoreRef, typed: &str, error: Optio
             ])))
         }
     };
-    domain_page(chrome, store, "Add a domain", 0, None, body)
+    let title = if replacing.is_some() {
+        "Change a domain"
+    } else {
+        "Add a domain"
+    };
+    domain_page(chrome, store, title, 0, None, body)
 }
 
 /// Where the DNS settings are at the providers most merchants use.

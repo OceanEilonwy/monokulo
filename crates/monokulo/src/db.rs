@@ -202,10 +202,65 @@ const MIGRATIONS: &[(i64, &str)] = &[
         54,
         include_str!("../migrations/0054_push_delivery_duration_and_tests.sql"),
     ),
+    (
+        55,
+        include_str!("../migrations/0055_one_domain_of_each.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
+    refuse_extra_domains(conn)?;
     sqlite::migrations::apply(conn, MIGRATIONS)
+}
+
+/// Stops an upgrade to one web domain and one onion address per store
+/// (migration 0055) while any store has more, naming them, before anything
+/// has changed: the older version still runs, and its Domains tab is where the
+/// extras are removed. Which domain a store keeps is its owner's to choose, as
+/// a checkout on a removed domain stops working.
+fn refuse_extra_domains(conn: &Connection) -> rusqlite::Result<()> {
+    let columns = conn
+        .prepare("SELECT name FROM pragma_table_info('store_domains')")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // No such table yet (a new database), or already upgraded.
+    if columns.is_empty() || columns.iter().any(|column| column == "replaces_id") {
+        return Ok(());
+    }
+    // This runs before any migration, on a database of any age: stores only
+    // have names from migration 0034.
+    let named = conn
+        .prepare("SELECT 1 FROM pragma_table_info('store_connections') WHERE name = 'name'")?
+        .exists([])?;
+    let store = if named {
+        "COALESCE(s.name, d.connection_id)"
+    } else {
+        "d.connection_id"
+    };
+    let extras = conn
+        .prepare(&format!(
+            "SELECT {store}, group_concat(d.domain, ', ')
+             FROM store_domains d LEFT JOIN store_connections s ON s.id = d.connection_id
+             GROUP BY d.connection_id, d.domain LIKE '%.onion'
+             HAVING COUNT(*) > 1
+             ORDER BY 1"
+        ))?
+        .query_map([], |row| {
+            Ok(format!(
+                "  {}: {}",
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if extras.is_empty() {
+        return Ok(());
+    }
+    Err(rusqlite::Error::ToSqlConversionFailure(Box::<dyn std::error::Error + Send + Sync>::from(format!(
+        "{} store(s) have more than one web domain or onion address, and each may now have one of each:\n{}\nNothing was changed. Remove the extras using your current version's Domains tab, then upgrade again.",
+        extras.len(),
+        extras.join("\n"),
+    ))))
 }
 
 /// The kind of monokulo's code steps (`sqlite::migrations::run_code_step`):
@@ -707,6 +762,26 @@ pub struct StoreDomainRow {
     pub failing_since: Option<i64>,
     pub last_checked_at: Option<i64>,
     pub last_error: Option<String>,
+    /// The domain of this store's that this one takes the place of once
+    /// verified: a change underway. It doesn't count until then.
+    pub replaces_id: Option<String>,
+}
+
+/// Why a domain couldn't be added to a store
+/// ([`Db::create_store_domain`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddDomainRefused {
+    /// The store already has this domain.
+    AlreadyOnStore,
+    /// The store already has its one domain of this kind: this one.
+    SlotTaken(String),
+    /// A change of this kind of domain is already underway.
+    ChangeUnderway,
+    /// A web domain can only replace a web domain, an onion address an
+    /// onion address.
+    NotSameKind,
+    /// The domain to replace isn't on this store any more.
+    NothingToReplace,
 }
 
 impl StoreDomainRow {
@@ -717,7 +792,7 @@ impl StoreDomainRow {
 }
 
 const STORE_DOMAIN_COLUMNS: &str =
-    "id, connection_id, domain, token, created_at_utc, verified_at_utc, failing_since_utc, last_checked_at_utc, last_error";
+    "id, connection_id, domain, token, created_at_utc, verified_at_utc, failing_since_utc, last_checked_at_utc, last_error, replaces_id";
 
 fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomainRow> {
     Ok(StoreDomainRow {
@@ -730,6 +805,7 @@ fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomai
         failing_since: row.get(6)?,
         last_checked_at: row.get(7)?,
         last_error: row.get(8)?,
+        replaces_id: row.get(9)?,
     })
 }
 
@@ -2556,10 +2632,10 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// Adds a domain waiting for its DNS record. `Ok(false)` when the store
-    /// already has `max` domains (checked in the same statement, so two
-    /// concurrent adds can't both take the last slot); a unique-violation
-    /// `DbError` when it already has this domain.
+    /// Adds a domain waiting for its DNS record: the store's one of its
+    /// kind, or with `replaces` the one to take that domain's place once
+    /// verified. The indexes of migration 0055 stop two concurrent adds both
+    /// taking a store's one place, as a unique-violation `DbError`.
     pub fn create_store_domain(
         &self,
         id: &str,
@@ -2567,15 +2643,41 @@ impl Db {
         domain: &str,
         token: &str,
         created_at: i64,
-        max: usize,
-    ) -> Result<bool> {
-        let changed = self.conn.execute(
-            "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc)
-             SELECT ?1, ?2, ?3, ?4, ?5
-             WHERE (SELECT COUNT(*) FROM store_domains WHERE connection_id = ?2) < ?6",
-            params![id, connection_id, domain, token, created_at, Unsigned(max)],
+        replaces: Option<&str>,
+    ) -> Result<std::result::Result<(), AddDomainRefused>> {
+        let existing = self.list_store_domains(connection_id)?;
+        let onion = domain_proof::is_onion(domain);
+        if existing.iter().any(|row| row.domain == domain) {
+            return Ok(Err(AddDomainRefused::AlreadyOnStore));
+        }
+        let same_kind = |row: &&StoreDomainRow| domain_proof::is_onion(&row.domain) == onion;
+        if existing
+            .iter()
+            .filter(same_kind)
+            .any(|row| row.replaces_id.is_some())
+        {
+            return Ok(Err(AddDomainRefused::ChangeUnderway));
+        }
+        match replaces {
+            Some(replaces) => match existing.iter().find(|row| row.id == replaces) {
+                None => return Ok(Err(AddDomainRefused::NothingToReplace)),
+                Some(row) if domain_proof::is_onion(&row.domain) != onion => {
+                    return Ok(Err(AddDomainRefused::NotSameKind))
+                }
+                Some(_) => {}
+            },
+            None => {
+                if let Some(row) = existing.iter().find(same_kind) {
+                    return Ok(Err(AddDomainRefused::SlotTaken(row.domain.clone())));
+                }
+            }
+        }
+        self.conn.execute(
+            "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc, replaces_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, connection_id, domain, token, created_at, replaces],
         )?;
-        Ok(changed == 1)
+        Ok(Ok(()))
     }
 
     /// The Logs page searches `user_id` saved, by name.
@@ -2627,17 +2729,26 @@ impl Db {
 
     /// Removes a domain; `false` when `connection_id` has no such domain.
     pub fn delete_store_domain(&self, connection_id: &ConnectionId, id: &str) -> Result<bool> {
-        let changed = self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        let changed = tx.execute(
             "DELETE FROM store_domains WHERE id = ?1 AND connection_id = ?2",
             params![id, connection_id],
         )?;
+        // A domain on its way to replacing this one now has its place.
+        tx.execute(
+            "UPDATE store_domains SET replaces_id = NULL WHERE replaces_id = ?1 AND connection_id = ?2",
+            params![id, connection_id],
+        )?;
+        tx.commit()?;
         Ok(changed == 1)
     }
 
     /// Records one check of a domain. `error: None` means the record was
     /// found: the domain is (still) verified and no longer failing. Any
     /// error leaves a never-verified domain waiting, and starts the grace
-    /// period of a verified one (unless it had already started).
+    /// period of a verified one (unless it had already started). A domain
+    /// found while replacing another takes its place, in the same write, so
+    /// a restricted store always has one that counts.
     pub fn record_store_domain_check(
         &self,
         id: &str,
@@ -2645,11 +2756,21 @@ impl Db {
         error: Option<&str>,
     ) -> Result<()> {
         match error {
-            None => self.conn.execute(
-                "UPDATE store_domains SET verified_at_utc = ?2, failing_since_utc = NULL, last_checked_at_utc = ?2, last_error = NULL
-                 WHERE id = ?1",
-                params![id, checked_at],
-            )?,
+            None => {
+                let tx = self.conn.unchecked_transaction()?;
+                tx.execute(
+                    "DELETE FROM store_domains
+                     WHERE id = (SELECT replaces_id FROM store_domains WHERE id = ?1)",
+                    params![id],
+                )?;
+                let changed = tx.execute(
+                    "UPDATE store_domains SET verified_at_utc = ?2, failing_since_utc = NULL, last_checked_at_utc = ?2, last_error = NULL, replaces_id = NULL
+                     WHERE id = ?1",
+                    params![id, checked_at],
+                )?;
+                tx.commit()?;
+                changed
+            }
             Some(error) => self.conn.execute(
                 "UPDATE store_domains SET last_checked_at_utc = ?2, last_error = ?3,
                     failing_since_utc = CASE WHEN verified_at_utc IS NULL THEN NULL ELSE COALESCE(failing_since_utc, ?2) END
@@ -2701,32 +2822,6 @@ impl Db {
         )?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(DbError::from)
-    }
-
-    /// Adds a domain waiting for DNS unless the store already has it or is
-    /// at `max` domains - for domains monokulo suggests on the merchant's
-    /// behalf (their site's own domain), where either is fine to skip.
-    pub fn suggest_store_domain(
-        &self,
-        connection_id: &ConnectionId,
-        domain: &str,
-        created_at: i64,
-        max: usize,
-    ) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO store_domains (id, connection_id, domain, token, created_at_utc)
-             SELECT ?1, ?2, ?3, ?4, ?5
-             WHERE (SELECT COUNT(*) FROM store_domains WHERE connection_id = ?2) < ?6",
-            params![
-                uuid::Uuid::new_v4().to_string(),
-                connection_id,
-                domain,
-                crate::embed_domains::new_token(),
-                created_at,
-                Unsigned(max)
-            ],
-        )?;
-        Ok(())
     }
 
     /// The embed policy of the store with this public key: whether it's
@@ -5778,5 +5873,71 @@ mod tests {
             names,
             ["Cake", "savings", "Feather test", "POS trial", "Lab"]
         );
+    }
+
+    /// An upgrade over a store with too many domains stops before anything
+    /// changes, naming them, so the older version still runs. A web domain
+    /// and an onion address together are fine, and once the extras are gone
+    /// it goes ahead and the indexes hold the rule from then on.
+    #[test]
+    fn an_upgrade_stops_for_a_store_with_extra_domains_and_changes_nothing() {
+        const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+        let conn = Connection::open_in_memory().unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..54]).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        let add = |id: &str, store: &str, domain: &str| {
+            conn.execute(
+                "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc)
+                 VALUES (?1, ?2, ?3, 'token', 0)",
+                params![id, store, domain],
+            )
+            .unwrap();
+        };
+        add("1", "fine", "fine.example");
+        add("2", "fine", ONION);
+        add("3", "extra", "one.example");
+        add("4", "extra", "two.example");
+
+        let error = apply_migrations(&conn).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "1 store(s) have more than one web domain or onion address, and each may now have one of each:\n  extra: one.example, two.example\nNothing was changed. Remove the extras using your current version's Domains tab, then upgrade again."
+        );
+        let columns = conn
+            .prepare("SELECT name FROM pragma_table_info('store_domains')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(!columns.iter().any(|column| column == "replaces_id"));
+
+        conn.execute("DELETE FROM store_domains WHERE id = '4'", [])
+            .unwrap();
+        apply_migrations(&conn).unwrap();
+        let again = conn.execute(
+            "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc)
+             VALUES ('5', 'extra', 'three.example', 'token', 0)",
+            [],
+        );
+        assert!(again.is_err(), "the index refuses a second web domain");
+        // And reopening an upgraded database doesn't ask again.
+        apply_migrations(&conn).unwrap();
+    }
+
+    /// On a database from before stores had names, the upgrade still stops
+    /// and says why, naming the store by its id.
+    #[test]
+    fn an_upgrade_from_before_store_names_still_says_which_store() {
+        let conn = Connection::open_in_memory().unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..33]).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc)
+             VALUES ('1', 'old', 'one.example', 't', 0), ('2', 'old', 'two.example', 't', 0);",
+        )
+        .unwrap();
+        let error = apply_migrations(&conn).unwrap_err().to_string();
+        assert!(error.contains("  old: one.example, two.example"), "{error}");
     }
 }

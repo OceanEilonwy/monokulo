@@ -60,3 +60,17 @@ Newest last. Each says what was chosen and why, so it can be reversed.
    layout, so the worst case on Tor is a stock page rather than a leak. It
    needs one manual check on real Tor Browser before relying on onion custom
    pages.
+5. **A shop on a second domain is told by going to store setup.** A store with
+   a web domain elsewhere is no longer offered to it, so the connect flow goes
+   to making a new store for that shop, which says which site it's for. No
+   separate notice: the setup page already is one.
+6. **A change of domain is a second row, not a second table.** `replaces_id`
+   on the waiting row, with partial unique indexes: one of each kind in place,
+   one change of each kind underway. Every reader already treats a waiting
+   domain as not counting, so the old domain keeps working with no new code.
+7. **A suggested site never vanishes.** A site its web domain doesn't cover
+   (a shop adopting a store one `www` away) waits as a change of that domain,
+   which keeps counting until the new one is verified. A waiting suggestion
+   does occupy the store's web place: Remove or Change makes room.
+8. **An onion shop may connect to a site-less store with a web domain.** It has
+   its own place beside that domain.

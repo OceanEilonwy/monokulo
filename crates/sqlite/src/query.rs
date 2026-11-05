@@ -534,7 +534,7 @@ pub fn schema(conn: &Connection, classes: &Classification) -> rusqlite::Result<V
         .into_iter()
         .map(|name| {
             let columns = conn
-                .prepare("SELECT name, type FROM pragma_table_info(?1) ORDER BY cid")?
+                .prepare("SELECT name, type FROM pragma_table_xinfo(?1) WHERE hidden IN (0, 2, 3) ORDER BY cid")?
                 .query_map([&name], |row| {
                     let column: String = row.get(0)?;
                     Ok(ColumnInfo {

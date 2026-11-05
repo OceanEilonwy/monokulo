@@ -1,7 +1,9 @@
 //! Verified embed domains - the optional step a merchant takes to prove they
 //! own the websites that show their store's checkout.
 //!
-//! A merchant adds a domain to a store; monokulo gives them a TXT record to
+//! A store has one web domain and one onion address: another website means
+//! another store, so a merchant never has to wonder which domains a custom
+//! page must be set up on. A merchant adds a domain to a store; monokulo gives them a TXT record to
 //! publish at `_monokulo.<domain>` holding a token unique to that store and
 //! domain; once a lookup finds it, the domain (and every subdomain under it)
 //! is verified. DNS is the proof because hacking a website rarely gives
@@ -35,9 +37,6 @@ use domain_proof::{
 };
 
 use crate::db::{Database, Db, StoreDomainRow};
-
-/// How many domains one store can have.
-pub const MAX_DOMAINS_PER_STORE: usize = 10;
 
 /// The scheme a page on `domain` is served over: onion services are plain
 /// `http` (Tor encrypts them itself), everything else must be `https`.
@@ -196,8 +195,10 @@ pub fn would_leave_restricted_store_without_domain(
 }
 
 /// Adds the site's domain to a store as a domain waiting for DNS, so the
-/// merchant only has to publish the record. Skipped quietly when the site
-/// has no verifiable domain, or the store already has it or is full.
+/// merchant only has to publish the record. A store with a web domain that
+/// doesn't cover the site gets it as a change of that domain, which keeps
+/// counting until the new one is verified. Skipped quietly when the site has no
+/// verifiable domain, or the store's web domain already covers it.
 pub fn suggest_site_domain(
     db: &Db,
     connection_id: &crate::db::ConnectionId,
@@ -210,7 +211,28 @@ pub fn suggest_site_domain(
 }
 
 fn suggest(db: &Db, connection_id: &crate::db::ConnectionId, domain: &str, now: i64) {
-    if let Err(e) = db.suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE) {
+    let result = db.list_store_domains(connection_id).and_then(|rows| {
+        let place = rows
+            .iter()
+            .find(|row| row.replaces_id.is_none() && is_onion(&row.domain) == is_onion(domain));
+        let replaces = match place {
+            Some(row) if covers(&row.domain, domain) => return Ok(()),
+            Some(row) => Some(row.id.as_str()),
+            None => None,
+        };
+        // Refused only if a change is already underway, which is the
+        // merchant's to finish first.
+        db.create_store_domain(
+            &uuid::Uuid::new_v4().to_string(),
+            connection_id,
+            domain,
+            &new_token(),
+            now,
+            replaces,
+        )
+        .map(|_| ())
+    });
+    if let Err(e) = result {
         tracing::warn!(store.id = %connection_id, domain = %domain, error = %e, "could not add a domain to a store");
     }
 }
@@ -440,6 +462,35 @@ mod tests {
         );
     }
 
+    /// A site its web domain doesn't cover waits as a change of that domain
+    /// rather than vanishing, and one it covers needs nothing.
+    #[test]
+    fn a_suggested_site_keeps_the_stores_one_domain_until_it_is_verified() {
+        let db = Db::open_in_memory().unwrap();
+        db.conn_for_test()
+            .execute_batch("PRAGMA foreign_keys = OFF")
+            .unwrap();
+        let store = engine_protocol::ids::ConnectionId::new("c1".to_string());
+        let site = |s: &str| crate::stores::Site::parse(s).ok();
+        let rows = || db.list_store_domains(&store).unwrap();
+
+        suggest_site_domain(&db, &store, site("www.a.example").as_ref(), 1);
+        assert_eq!(rows().len(), 1);
+        assert_eq!(rows()[0].domain, "www.a.example");
+
+        suggest_site_domain(&db, &store, site("shop.www.a.example").as_ref(), 2);
+        assert_eq!(rows().len(), 1, "already covered");
+
+        suggest_site_domain(&db, &store, site("a.example").as_ref(), 3);
+        let all = rows();
+        let new = all.iter().find(|row| row.domain == "a.example").unwrap();
+        let old = all
+            .iter()
+            .find(|row| row.domain == "www.a.example")
+            .unwrap();
+        assert_eq!(new.replaces_id.as_deref(), Some(old.id.as_str()));
+    }
+
     fn row(verified_at: Option<i64>, failing_since: Option<i64>) -> StoreDomainRow {
         StoreDomainRow {
             id: "d1".to_string(),
@@ -451,6 +502,7 @@ mod tests {
             failing_since,
             last_checked_at: None,
             last_error: None,
+            replaces_id: None,
         }
     }
 }
