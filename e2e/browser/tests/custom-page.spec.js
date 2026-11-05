@@ -77,6 +77,25 @@ test('a custom page can be written without JavaScript', async ({ browser, reques
   await context.close();
 });
 
+// The card sits among the settings form's cards, with its buttons sending forms of
+// their own: pressing one sends that form and none of the settings. Before any
+// test below publishes a page, as these run in order on one fixture.
+test('a draft is discarded from its card on the Checkout tab', async ({ page, context, request }) => {
+  await login(context);
+  expect((await request.post(`${fixture.base_url}/__coverage/domains/verified`)).status()).toBe(204);
+  await page.goto(fixture.base_url + page_);
+  await page.locator('#template').fill(good);
+  await page.getByRole('button', { name: 'Check and preview' }).click();
+  await expect(page).toHaveURL(/checkout-page\/preview/);
+
+  await page.goto(`${fixture.base_url}/stores/coverage-store/settings?tab=checkout`);
+  const card = page.locator('#card-custom-page');
+  await expect(card).toContainText('Waiting for approval');
+  await expect(page.locator('.layout-custom')).toContainText('Waiting for approval');
+  await card.getByRole('button', { name: 'Discard draft' }).click();
+  await expect(page.locator('#card-custom-page')).toContainText('Not set up');
+});
+
 // The real thing: a page on a merchant's site, framing their checkout. This fixture
 // serves plain http under an https page, where a browser would otherwise drop the
 // Referer it sends in production, so each frame asks to keep it.

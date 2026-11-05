@@ -757,6 +757,7 @@ fn framed_here(headers: &HeaderMap) -> bool {
             same_host
                 && (path.contains("/checkout-preview/")
                     || path.ends_with("/settings/checkout-page/preview")
+                    || path.ends_with("/settings/checkout-layout")
                     || path.contains("/admin/custom-pages/"))
         });
     from_a_preview
@@ -791,6 +792,65 @@ pub async fn preview_frame(
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+#[derive(Deserialize)]
+pub struct LayoutQuery {
+    layout: Option<String>,
+}
+
+impl LayoutQuery {
+    /// The layout asked for, or the store's own.
+    fn layout(&self, store: &crate::db::StoreConnectionRow) -> Layout {
+        self.layout
+            .as_deref()
+            .and_then(Layout::from_name)
+            .unwrap_or(store.checkout_layout)
+    }
+}
+
+/// `GET /stores/{id}/settings/checkout-layout`: every state of a stock layout.
+pub async fn layout_preview(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<ConnectionId>,
+    Query(query): Query<LayoutQuery>,
+) -> Response {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let layout = query.layout(&row);
+    let chrome = super::page_chrome(&state, Some(&user), format!("/stores/{id}/settings")).await;
+    checkout_pages::layout_preview(&chrome, &wizard_store(&row), layout).into_response()
+}
+
+/// `GET /stores/{id}/settings/checkout-layout/frame`: one state of a stock layout,
+/// in the store's colours, as a frame of the page above.
+pub async fn layout_preview_frame(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<ConnectionId>,
+    Query(layout): Query<LayoutQuery>,
+    Query(query): Query<PreviewQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if !framed_here(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let row = match load_owned_connection(&state.db, &user, &id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    frame_of(
+        &row,
+        layout.layout(&row).source(),
+        "",
+        &query,
+        crate::now_unix(),
+    )
 }
 
 /// One state of a page on a made-up order, sandboxed.

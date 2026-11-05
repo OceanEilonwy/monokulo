@@ -210,6 +210,20 @@ pub fn plain_card_with_meta(name: &str, title: &str, meta: Option<&str>, body: M
     }
 }
 
+/// [`plain_card`] with a tag right after its title ("Working").
+pub fn plain_card_with_tag(name: &str, title: &str, tag: ui::Tag, body: Markup) -> Markup {
+    let id = card_id(name);
+    html! {
+        section id=(id) class="settings-card" aria-labelledby=(format!("{id}-title")) {
+            header class="card-head" {
+                h3 id=(format!("{id}-title")) { (title) }
+                (tag)
+            }
+            div class="card-body" { (body) }
+        }
+    }
+}
+
 /// [`plain_card`] whose head opens `guide`: "How this works" at the
 /// right of the title, and what it explains in a panel between the head and
 /// the body, pushing the body down. A disclosure, so it works without

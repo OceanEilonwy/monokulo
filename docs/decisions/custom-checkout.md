@@ -134,15 +134,15 @@ Newest last. Each says what was chosen and why, so it can be reversed.
 25. **Tiny's address is `ui::CopyValue` in its middle form.** It's the existing
     shortened copy control: without JavaScript it's selectable and focus shows
     it whole, which replaces the extra line the mockup caption proposed.
-26. **The Layout setting uses radio cards, with words rather than the mockup's
-    thumbnails.** Thumbnails are decoration a real preview page (PR 8) does better.
+26. **Replaced by decision 52.** The Layout setting used radio cards with words
+    rather than the mockup's thumbnails.
 27. **A page's stream is told its layout (`layout=`).** A store can change its
     choice while a page is open, and the two mustn't disagree.
 28. **Stylesheets are served by hash alone.** The URL names no store, so a page's
     source reveals nothing new, and looking one up is one indexed read. A replaced
     one stays a week for pages still open.
-29. **Colours are typed as hex.** `<input type=color>` can't be empty, and empty
-    means the theme's own. It works without JavaScript, as everything here must.
+29. **Replaced by decision 53.** Colours were typed as hex, since `<input
+    type=color>` can't be empty, and empty meant the theme's own.
 30. **Order status colours aren't a merchant's, and their words use the merchant's
     text colour.** A review found the track's labels at 1.4:1 on a merchant's dark
     background. The dots keep the status colours, which the merchant can't change.
@@ -241,3 +241,22 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     It also settles a site sending no `Referer`: on the web that's never an onion shop,
     so it gets the layout, not a frame its browser refuses. An onion shop framing
     Monokulo's web address gets the layout, which the embed library never does.
+52. **The Checkout tab follows the canvas: skeletons, and cards in its order.** The
+    owner found the words-only cards didn't match the design. Each layout's card
+    shows its skeleton, and Layout, Custom page, Colours and shape run in the
+    canvas's order. Decision 35 stands, so Custom in the Layout row is a link to its
+    card showing the page's status, not a radio button. A custom page's buttons name
+    forms outside the settings form, because forms can't nest. "Preview every state"
+    needed a page the stock layouts didn't have: it shows their nine states in the
+    store's saved colours, to its owner only, as sandboxed frames.
+53. **Colours are picked, starting from the theme's own.** The owner found the empty
+    boxes ugly and wanted a picker. Every role shows its real colour, read from the
+    theme so it's written down once, in a swatch that opens the device's picker and
+    is what the form sends. JavaScript adds a hex box and a button to go back to the
+    theme's colour. A role holding the theme's colour stores nothing, so a store that
+    never chose one follows the theme. Its cost: a store can't pin today's theme
+    colour against a later change. Without JavaScript, a checkbox takes all the
+    colours back at once, as a swatch can't be emptied.
+54. **Contrast warnings read a role left alone as the theme's colour.** They only
+    compared two colours the store had set, so a dark background under the theme's
+    dark text went unwarned, which is the likeliest mistake with a picker.

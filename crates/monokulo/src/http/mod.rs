@@ -534,6 +534,14 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(checkout_pages::edit).post(checkout_pages::save),
         )
         .route(
+            "/stores/{id}/settings/checkout-layout",
+            axum::routing::get(checkout_pages::layout_preview),
+        )
+        .route(
+            "/stores/{id}/settings/checkout-layout/frame",
+            axum::routing::get(checkout_pages::layout_preview_frame),
+        )
+        .route(
             "/stores/{id}/settings/checkout-page/preview",
             axum::routing::get(checkout_pages::preview_step),
         )

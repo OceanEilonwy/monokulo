@@ -113,6 +113,37 @@ pub fn clean_colour(typed: &str) -> Option<Option<String>> {
     (digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_hexdigit())).then_some(Some(typed))
 }
 
+/// What a role looks like before a store changes it: the theme's own colour,
+/// read from the theme, which is the only place a colour is written down.
+/// `scheme` is `light` or `dark`, `role` a [`Roles`] field's name.
+pub fn theme_colour(scheme: &str, role: &str) -> Option<&'static str> {
+    let token = match role {
+        "accent" => "--accent-text",
+        "background" => "--paper",
+        "text" => "--ink",
+        "quiet" => "--muted",
+        "lines" => "--line",
+        _ => return None,
+    };
+    let opening = match scheme {
+        "light" => ":root {",
+        "dark" => ":root[data-theme=\"dark\"] {",
+        _ => return None,
+    };
+    let css = ui::assets::TOKENS_CSS;
+    let block = &css[css.find(opening)?..];
+    let block = &block[..block.find("\n}")?];
+    let value = &block[block.find(&format!("{token}: "))? + token.len() + 2..];
+    Some(value[..value.find(';')?].trim())
+}
+
+/// A colour as a store's form sends it: what to store for the role, which is
+/// nothing when it's empty or the theme's own, so a store that never chose a
+/// colour goes on following the theme. `None` for anything but a colour.
+pub fn chosen_colour(sent: &str, scheme: &str, role: &str) -> Option<Option<String>> {
+    Some(clean_colour(sent)?.filter(|colour| Some(colour.as_str()) != theme_colour(scheme, role)))
+}
+
 fn write_roles(css: &mut String, roles: &Roles) {
     let mut set = |tokens: &[&str], colour: &Option<String>| {
         // Checked again, whatever the stored form says: a restored or hand-edited
@@ -195,10 +226,22 @@ impl CheckoutStyle {
     pub fn contrast_warnings(&self) -> Vec<(&'static str, &'static str, f64)> {
         let mut warnings = Vec::new();
         for (scheme, roles) in [("light", &self.light), ("dark", &self.dark)] {
-            for (name, colour) in [("Text", &roles.text), ("Quiet text", &roles.quiet)] {
-                let ratio = colour
+            for (name, role, colour) in [
+                ("Text", "text", &roles.text),
+                ("Quiet text", "quiet", &roles.quiet),
+            ] {
+                // A role left alone shows the theme's colour, which is what a
+                // store's own background has to be read against.
+                if colour.is_none() && roles.background.is_none() {
+                    continue;
+                }
+                let colour = colour.as_deref().or(theme_colour(scheme, role));
+                let background = roles
+                    .background
                     .as_deref()
-                    .zip(roles.background.as_deref())
+                    .or(theme_colour(scheme, "background"));
+                let ratio = colour
+                    .zip(background)
                     .and_then(|(colour, background)| contrast(colour, background));
                 if let Some(ratio) = ratio.filter(|ratio| *ratio < 4.5) {
                     warnings.push((name, scheme, ratio));
@@ -328,12 +371,9 @@ mod tests {
     fn hard_to_read_quiet_text_is_warned_about() {
         let mut style = CheckoutStyle::default();
         assert_eq!(style.contrast_warnings(), []);
+        // Against the theme's own background, when the store left it alone.
         style.light.quiet = Some("#8b9a91".to_string());
-        assert_eq!(
-            style.contrast_warnings(),
-            [],
-            "against the theme: not known"
-        );
+        assert_eq!(style.contrast_warnings().len(), 1);
         style.light.background = Some("#fbfaf6".to_string());
         let warnings = style.contrast_warnings();
         assert_eq!(warnings.len(), 1);
@@ -344,6 +384,71 @@ mod tests {
         style.dark.text = Some("#333333".to_string());
         style.dark.background = Some("#222222".to_string());
         assert_eq!(style.contrast_warnings()[0].0, "Text");
+    }
+
+    /// A dark background of the store's own, with the light theme's dark text
+    /// left on it, is the mistake most worth warning about.
+    #[test]
+    fn a_stores_background_is_read_against_the_themes_text() {
+        let style = CheckoutStyle {
+            light: Roles {
+                background: Some("#102030".to_string()),
+                ..Roles::default()
+            },
+            ..CheckoutStyle::default()
+        };
+        let named: Vec<_> = style
+            .contrast_warnings()
+            .iter()
+            .map(|warning| warning.0)
+            .collect();
+        assert_eq!(named, ["Text", "Quiet text"]);
+    }
+
+    /// The form shows every role's real colour, and a browser's colour input can
+    /// only hold `#rrggbb` in lower case.
+    #[test]
+    fn every_role_has_a_theme_colour_a_colour_input_can_hold() {
+        for scheme in ["light", "dark"] {
+            for role in ["accent", "background", "text", "quiet", "lines"] {
+                let colour = theme_colour(scheme, role).unwrap();
+                assert_eq!(
+                    clean_colour(colour),
+                    Some(Some(colour.to_string())),
+                    "{scheme} {role}"
+                );
+            }
+        }
+        assert_ne!(
+            theme_colour("light", "background"),
+            theme_colour("dark", "background")
+        );
+        assert_eq!(theme_colour("sepia", "text"), None);
+        assert_eq!(theme_colour("light", "shadow"), None);
+    }
+
+    /// A store that saves the form as it came stays on the theme, and follows
+    /// it when the theme changes.
+    #[test]
+    fn the_themes_own_colour_is_not_stored() {
+        let own = theme_colour("light", "accent").unwrap();
+        assert_eq!(chosen_colour(own, "light", "accent"), Some(None));
+        assert_eq!(
+            chosen_colour(&own.to_ascii_uppercase(), "light", "accent"),
+            Some(None)
+        );
+        assert_eq!(chosen_colour("", "light", "accent"), Some(None));
+        assert_eq!(
+            chosen_colour("#2F6B4F", "light", "accent"),
+            Some(Some("#2f6b4f".to_string()))
+        );
+        // The other scheme's own is a choice here.
+        let dark = theme_colour("dark", "accent").unwrap();
+        assert_eq!(
+            chosen_colour(dark, "light", "accent"),
+            Some(Some(dark.to_string()))
+        );
+        assert_eq!(chosen_colour("red", "light", "accent"), None);
     }
 
     #[test]

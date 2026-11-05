@@ -18,6 +18,11 @@ export interface RadioCardsProps {
    * @default false
    */
   compact?: boolean;
+  /**
+   * After the choices, in their grid: what sits among them but isn't
+   * one, like a link to where another is set up.
+   */
+  after?: JSX.Element;
 }
 
 /**
@@ -42,6 +47,13 @@ export function RadioCards(props: RadioCardsProps): JSX.Element {
           </label>
         )}
       </For>
+      {props.after != null ? (
+        <>
+          {props.after}
+        </>
+      ) : (
+        null
+      )}
     </div>
   );
 }

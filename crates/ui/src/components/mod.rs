@@ -124,6 +124,7 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(forms::input_examples()),
         specimens(forms::money_input_examples()),
         specimens(forms::stepper_examples()),
+        specimens(forms::colour_input_examples()),
         specimens(forms::field_note_examples()),
         specimens(forms::locked_value_examples()),
         specimens(forms::text_area_examples()),

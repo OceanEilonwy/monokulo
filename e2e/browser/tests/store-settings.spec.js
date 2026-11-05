@@ -161,16 +161,113 @@ test('a store chooses its checkout layout on the Checkout tab', async ({ page, c
   await expect(page.getByRole('radio', { name: /Compact/ })).toBeChecked();
 });
 
-test('a store themes its checkout, and clearing a role goes back to the theme', async ({ page, context }) => {
+test('the Checkout tab shows each layout as a skeleton, with Custom among them, and previews them', async ({ page, context }) => {
+  await login(context);
+  await page.goto(tab('checkout'));
+  await expect(page.locator('.radio-card .layout-thumb')).toHaveCount(3);
+  const custom = page.locator('.layout-custom');
+  await expect(custom).toContainText('Custom');
+  await expect(custom).toContainText('{{ your template }}');
+  await custom.click();
+  await expect(page).toHaveURL(/#card-custom-page$/);
+  await expect(page.locator('#card-custom-page')).toBeInViewport();
+  // Layout, the custom page, then colours: though the custom page's forms can't be
+  // inside the settings form, its card is.
+  expect(await page.locator('#settings-form section.settings-card').evaluateAll(cards => cards.map(card => card.id)))
+    .toEqual(['card-checkout-layout', 'card-custom-page', 'card-checkout-style']);
+  await captureCoverageStage(page, 'store-checkout-tab', test.info(), { group: 'custom-page', shapes: ['mobile-portrait', 'desktop'] });
+
+  await page.locator('#card-checkout-layout').getByRole('link', { name: 'Preview every state' }).click();
+  await expect(page).toHaveURL(/settings\/checkout-layout/);
+  await page.getByRole('navigation', { name: 'Layouts' }).getByRole('link', { name: 'Tiny' }).click();
+  await expect(page).toHaveURL(/layout=tiny/);
+  const frames = page.locator('.template-preview iframe');
+  await expect(frames).toHaveCount(9);
+  await expect(frames.first()).toHaveAttribute('sandbox', '');
+  // Frames load as they're reached: every state shows, once it has been.
+  for (let at = 0; at < 9; at += 1) {
+    await frames.nth(at).scrollIntoViewIfNeeded();
+    await expect(page.frameLocator('.template-preview iframe').nth(at).locator('[data-part="status"]')).toBeVisible();
+  }
+  await captureCoverageStage(page, 'store-layout-preview', test.info(), { group: 'custom-page', shapes: ['desktop'] });
+});
+
+test('a store picks its checkout colours, starting from the theme\'s, and goes back to them', async ({ page, context }) => {
   await login(context);
   await page.goto(tab('checkout'));
   const save = () => page.locator('#save-bar').getByRole('button', { name: /^Save/ }).click();
-  await page.locator('#style_light_accent').fill('#2f6b4f');
+  const accent = page.locator('#style_light_accent');
+  const hex = page.getByRole('textbox', { name: 'Accent, light, as hex' });
+  const back = page.getByRole('button', { name: 'Accent, light: back to the default' });
+
+  // Nothing chosen: the theme's real colour, in the picker and as hex.
+  const own = await accent.inputValue();
+  expect(own).toMatch(/^#[0-9a-f]{6}$/);
+  await expect(hex).toHaveValue(own);
+  await expect(back).toBeHidden();
+  await captureCoverageStage(page, 'store-checkout-colours', test.info(), { group: 'custom-page', shapes: ['mobile-portrait', 'desktop'] });
+
+  // From the picker: the box follows, and it counts as a change.
+  await accent.fill('#2f6b4f');
+  await expect(hex).toHaveValue('#2f6b4f');
+  await expect(back).toBeVisible();
+  await page.locator('#save-bar').getByRole('link', { name: 'Discard changes' }).click();
+  await expect(accent).toHaveValue(own);
+  await expect(hex).toHaveValue(own);
+
+  // Typed: a part isn't a colour, a whole one moves the picker, a short one is
+  // read once typing is done.
+  await hex.fill('#2f6');
+  await expect(accent).toHaveValue(own);
+  await hex.blur();
+  await expect(accent).toHaveValue('#22ff66');
+  await hex.fill('not a colour');
+  await hex.blur();
+  await expect(accent).toHaveValue('#22ff66');
+  await expect(hex).toHaveJSProperty('validity.valid', false);
+  await hex.fill('2F6B4F');
+  await expect(accent).toHaveValue('#2f6b4f');
   await save();
   await expect(page).toHaveURL(/saved=checkout-style/);
-  await expect(page.locator('#style_light_accent')).toHaveValue('#2f6b4f');
-  await page.locator('#style_light_accent').fill('');
+  await expect(accent).toHaveValue('#2f6b4f');
+  await expect(hex).toHaveValue('#2f6b4f');
+  await captureCoverageStage(page, 'store-checkout-colours-chosen', test.info(), { group: 'custom-page', shapes: ['desktop'] });
+
+  // Back to the theme's, saved as the theme: nothing of the store's left.
+  await back.click();
+  await expect(accent).toHaveValue(own);
+  await expect(hex).toHaveValue(own);
+  await expect(back).toBeHidden();
   await save();
   await expect(page).toHaveURL(/saved=checkout-style/);
-  await expect(page.locator('#style_light_accent')).toHaveValue('');
+  await expect(accent).toHaveValue(own);
+  await expect(back).toBeHidden();
+
+  // Emptying the box goes there too.
+  await hex.fill('#123456');
+  await hex.fill('');
+  await hex.blur();
+  await expect(accent).toHaveValue(own);
+  await expect(hex).toHaveValue(own);
+});
+
+test('without JavaScript a store picks colours with the swatch, and a box takes them back', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  await login(context);
+  const page = await context.newPage();
+  await page.goto(tab('checkout'));
+  const accent = page.locator('#style_light_accent');
+  const own = await accent.inputValue();
+  await expect(page.locator('.mk-colour-hex')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: "Go back to the theme's colours" })).toHaveCount(0);
+
+  await accent.fill('#2f6b4f');
+  await page.locator('#save-bar').getByRole('button', { name: /^Save/ }).click();
+  await expect(accent).toHaveValue('#2f6b4f');
+  await captureCoverageStage(page, 'store-checkout-colours-no-js', test.info(), { group: 'custom-page', shapes: ['desktop'] });
+
+  await page.getByRole('checkbox', { name: "Go back to the theme's colours" }).check();
+  await page.locator('#save-bar').getByRole('button', { name: /^Save/ }).click();
+  await expect(accent).toHaveValue(own);
+  await context.close();
 });

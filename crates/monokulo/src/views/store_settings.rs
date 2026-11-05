@@ -475,6 +475,18 @@ fn settings_card(
     title: &str,
     body: Markup,
 ) -> Markup {
+    settings_card_with(store, section, title, None, None, body)
+}
+
+/// [`settings_card`] with what follows its title, and a link at its head's right.
+fn settings_card_with(
+    store: &StoreSettingsData,
+    section: StoreSection,
+    title: &str,
+    head: Option<Markup>,
+    link: Option<Markup>,
+    body: Markup,
+) -> Markup {
     // A card can be refused after part of it was written (the default
     // confirmations, then not the tiers): it says so.
     let failure = store.refusal(section).map(|message| {
@@ -484,10 +496,16 @@ fn settings_card(
             message.to_string()
         }
     });
-    Card::new(section.id(), title)
+    let mut card = Card::new(section.id(), title)
         .failed(failure.is_some(), failure.as_deref())
-        .saved(store.was_saved(section).then_some(""), false)
-        .render(body)
+        .saved(store.was_saved(section).then_some(""), false);
+    if let Some(head) = head {
+        card = card.head(head);
+    }
+    if let Some(link) = link {
+        card = card.link(link);
+    }
+    card.render(body)
 }
 
 /// "Key storage": where the store's view key is kept, and a form to move it
@@ -717,6 +735,30 @@ fn store_card(store: &StoreSettingsData) -> Markup {
     )
 }
 
+/// A skeleton of a stock layout, for its card: its parts' shapes in its order,
+/// nothing a customer would read.
+fn layout_thumb(layout: super::checkout_layouts::Layout) -> Markup {
+    use super::checkout_layouts::Layout;
+    let line = |width: &str| html! { span data-w=(width) {} };
+    let big = |width: &str| html! { span data-w=(width) data-big="" {} };
+    let code = |size: &str| html! { span data-qr=(size) {} };
+    html! {
+        span class="layout-thumb" aria-hidden="true" {
+            @match layout {
+                Layout::Detailed => {
+                    (line("70")) (big("44")) (code("s")) (line("80")) (line("80")) (line("60"))
+                },
+                Layout::Compact => {
+                    (line("60")) (big("40")) (code("m")) (line("70"))
+                },
+                Layout::Tiny => {
+                    (big("40")) (code("l"))
+                },
+            }
+        }
+    }
+}
+
 /// "Layout": what customers see when a store's site shows its checkout.
 fn layout_card(store: &StoreSettingsData) -> Markup {
     use super::checkout_layouts::Layout;
@@ -735,10 +777,25 @@ fn layout_card(store: &StoreSettingsData) -> Markup {
         ),
     };
     let shown = store.shown("checkout_layout", store.checkout_layout.name());
-    settings_card(
+    let custom = html! {
+        a class="layout-custom" href={ "#" (super::settings::card_id(super::checkout_pages::CARD_NAME)) } {
+            strong { "Custom " (store.custom_page.tag()) }
+            span class="layout-thumb" aria-hidden="true" { "{{ your template }}" }
+            (ui::Hint::new("Your own template and CSS. Needs a verified domain."))
+        }
+    };
+    let preview = html! {
+        (ui::LinkButton::new(
+            "Preview every state",
+            crate::base::url(format!("/stores/{}/settings/checkout-layout", store.connection_id)),
+        ))
+    };
+    settings_card_with(
         store,
         StoreSection::Layout,
         "Layout",
+        None,
+        Some(preview),
         html! {
             (Field::group("Layout", "checkout-layout-label")
                 .help(None, html! {
@@ -753,20 +810,25 @@ fn layout_card(store: &StoreSettingsData) -> Markup {
                             ui::RadioCard {
                                 value: layout.name().into(),
                                 label: html! { span class="layout-choice" { strong { (name) } (ui::Hint::new(help)) } }.into(),
-                                picture: None,
+                                picture: Some(layout_thumb(layout).into()),
                                 checked: layout.name() == shown,
                                 saved: Some(ui::Saved::from(layout == store.checkout_layout)),
                             }
                         })
-                        .collect::<Vec<_>>()))
+                        .collect::<Vec<_>>())
+                        .after(custom))
                 }))
         },
     )
 }
 
+/// What takes a store's colours back to the theme's without JavaScript, where a
+/// colour input has no way to.
+pub const THEME_COLOURS_FIELD: &str = "style_theme_colours";
+
 /// "Colours and shape": for every layout, a custom page included.
 fn style_card(store: &StoreSettingsData) -> Markup {
-    use super::checkout_style::{Corners, Font, Roles};
+    use super::checkout_style::{clean_colour, theme_colour, Corners, Font, Roles};
     let style = &store.checkout_style;
     type Role = fn(&Roles) -> &Option<String>;
     let roles: [(&str, &str, &str, Role); 5] = [
@@ -789,36 +851,44 @@ fn style_card(store: &StoreSettingsData) -> Markup {
     ];
     let colour = |scheme: &str, key: &str, name: &str, saved: &Option<String>| {
         let field = format!("style_{scheme}_{key}");
-        let saved = saved.as_deref().unwrap_or("");
+        let own = theme_colour(scheme, key).unwrap_or_default();
+        let saved = saved.as_deref().unwrap_or(own);
+        // A refused save's value only if it's a colour: one that isn't was
+        // never this control's, and a browser would show it as black.
+        let shown = clean_colour(&store.shown(&field, saved))
+            .flatten()
+            .unwrap_or_else(|| saved.to_string());
         html! {
-            (ui::Input::new(field.as_str())
+            (ui::ColourInput::new(field.as_str(), shown, format!("{name}, {scheme}"))
                 .id(field.as_str())
-                .value(store.shown(&field, saved).as_str())
-                .placeholder("Theme's own")
-                .autocomplete("off")
-                .attr("spellcheck", "false")
-                .attr("aria-label", format!("{name}, {scheme}"))
-                .attr("pattern", "\\s*(#[0-9a-fA-F]{6})?\\s*")
-                .attr("title", "A colour like #2f6b4f, or empty for the theme's own")
+                .default_value(own)
                 .maybe_attr("data-saved", store.saved_attr(saved)))
         }
     };
     let corners = store.shown("style_corners", style.corners.name());
     let font = store.shown("style_font", style.font.name());
     let transparent = store.ticked("style_transparent", style.transparent);
-    settings_card(
+    let has_own_colours = style.light != Roles::default() || style.dark != Roles::default();
+    settings_card_with(
         store,
         StoreSection::Style,
         "Colours and shape",
+        Some(html! { span class="card-meta" { "Used by every layout, Custom included" } }),
+        None,
         html! {
-            (ui::Hint::new("Used by every layout. The code stays dark on white so wallets can scan it, and order status colours are always our own."))
+            div class="setting-field style-heads" aria-hidden="true" {
+                div class="setting-about" {}
+                div class="setting-control" {
+                    div class="style-pair" { span { "Light" } span { "Dark" } }
+                }
+            }
             @for (name, key, help, role) in roles {
                 (Field::group(name, &format!("style-{key}-label"))
                     .help(None, html! { (help) })
                     .render(html! {
                         div class="style-pair" {
-                            label { (ui::Hint::new("Light")) (colour("light", key, name, role(&style.light))) }
-                            label { (ui::Hint::new("Dark")) (colour("dark", key, name, role(&style.dark))) }
+                            (colour("light", key, name, role(&style.light)))
+                            (colour("dark", key, name, role(&style.dark)))
                         }
                     }))
             }
@@ -826,6 +896,13 @@ fn style_card(store: &StoreSettingsData) -> Markup {
                 (ui::FieldNote::new(format!(
                     "{name} on Background is {ratio:.1}:1 in {scheme}. It may be hard to read; aim for 4.5:1. You can still save this."
                 )).tone(ui::NoteTone::Pending))
+            }
+            @if has_own_colours {
+                noscript {
+                    (ui::Checkbox::new()
+                        .name(THEME_COLOURS_FIELD)
+                        .text("Go back to the theme's colours"))
+                }
             }
             (Field::new("Transparent background", "style-transparent")
                 .help(Some("style-transparent-help"), html! {
@@ -1303,11 +1380,13 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                     (super::store_site::delete_card(&store.sites))
                 },
                 StoreTab::Checkout => {
-                    (super::checkout_pages::page_card(store.connection_id.as_str(), store.checkout_layout, &store.custom_page))
                     (settings_form(store, html! {
                         (layout_card(store))
+                        (super::checkout_pages::page_card(store.connection_id.as_str(), store.checkout_layout, &store.custom_page))
                         (style_card(store))
+                        (ui::Hint::new("The code stays dark on white so wallets can scan it, and order status colours stay readable. Neither can be changed here."))
                     }))
+                    (super::checkout_pages::page_card_forms(store.connection_id.as_str()))
                 },
                 StoreTab::Payments => (settings_form(store, html! {
                     (confirmations_card(store))

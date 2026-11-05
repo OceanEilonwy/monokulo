@@ -226,9 +226,12 @@ async fn plan(
 
     // The checkout's colours and shape.
     {
-        use crate::views::checkout_style::{clean_colour, Corners, Font};
+        use crate::views::checkout_style::{chosen_colour, Corners, Font};
         const STYLE: StoreSection = StoreSection::Style;
         let mut style = row.checkout_style.clone();
+        // Without JavaScript, the way back to the theme's colours: a colour
+        // input can't be emptied, and nothing else there knows the theme's.
+        let back_to_theme = form.contains_key(crate::views::store_settings::THEME_COLOURS_FIELD);
         for (scheme, roles) in [("light", &mut style.light), ("dark", &mut style.dark)] {
             for (key, name, role) in [
                 ("accent", "Accent", &mut roles.accent),
@@ -237,11 +240,13 @@ async fn plan(
                 ("quiet", "Quiet text", &mut roles.quiet),
                 ("lines", "Lines", &mut roles.lines),
             ] {
-                if let Some(typed) = form.get(&format!("style_{scheme}_{key}")) {
-                    *role = clean_colour(typed).ok_or_else(|| {
+                if back_to_theme {
+                    *role = None;
+                } else if let Some(sent) = form.get(&format!("style_{scheme}_{key}")) {
+                    *role = chosen_colour(sent, scheme, key).ok_or_else(|| {
                         (
                             STYLE,
-                            format!("{name} ({scheme}) must be a colour like #2f6b4f, or empty for the theme's own."),
+                            format!("{name} ({scheme}) must be a colour like #2f6b4f."),
                         )
                     })?;
                 }
