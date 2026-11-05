@@ -432,13 +432,15 @@ pub async fn publish_draft(state: &AppState, id: &ConnectionId) -> Result<(), Pu
     }
     let now = crate::now_unix();
     let Approval {
-        mut draft, token, ..
+        mut draft,
+        token,
+        domains,
     } = approval;
     draft.written_css = written_css;
     let store_id = id.clone();
     let published = state
         .db
-        .write(move |db| db.publish_checkout_page(&draft, &token, now))
+        .write(move |db| db.publish_checkout_page(&draft, &token, &domains, now))
         .await;
     match published {
         Ok(true) => {
@@ -627,7 +629,7 @@ pub(super) async fn page_card(
     domains: &[crate::db::StoreDomainRow],
     now: i64,
 ) -> checkout_pages::PageCard {
-    use crate::checkout_pages::{approver_names, standing, PageStanding};
+    use crate::checkout_pages::{approver_names, showing_on, standing, waiting_on, PageStanding};
     use checkout_pages::PageCard;
     let store_id = id.clone();
     let found = state
@@ -670,7 +672,11 @@ pub(super) async fn page_card(
             draft: has_draft,
         },
         PageStanding::Working => PageCard::Working {
-            domains: names,
+            domains: showing_on(&page, domains, now)
+                .into_iter()
+                .map(|row| row.domain.clone())
+                .collect(),
+            waiting: waiting_on(&page, domains, now),
             checked: crate::views::time::Clock::utc(now)
                 .relative(page.last_checked_at.unwrap_or(page.published_at)),
             trouble: page.last_error,

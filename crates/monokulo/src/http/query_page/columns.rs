@@ -194,6 +194,7 @@ pub const COLUMNS: Classification = Classification {
         ("checkout_pages", "last_error", Visible),
         ("checkout_pages", "turned_off_at_utc", Visible),
         ("checkout_pages", "turned_off_reason", Visible),
+        ("checkout_pages", "approved_domains", Visible),
         ("checkout_page_drafts", "connection_id", Visible),
         ("checkout_page_drafts", "template", Visible),
         ("checkout_page_drafts", "css", Visible),

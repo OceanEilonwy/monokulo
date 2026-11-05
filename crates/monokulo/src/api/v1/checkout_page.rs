@@ -1,6 +1,6 @@
 use super::{checkout_page_draft, store};
 use crate::api::{self, prelude::*};
-use crate::checkout_pages::{approver_names, standing, PageStanding};
+use crate::checkout_pages::{showing_on, standing, waiting_on, PageStanding};
 
 api::resource!(
     "/api/v1/checkout-page",
@@ -18,11 +18,13 @@ pub(crate) struct Body {
     /// Which version this is.
     version: String,
     /// `working`, `failing` (a proof is gone, and it shows until its grace period
-    /// ends), `not-showing` (its grace period ended, no domain counts any more, or it no longer passes the checks) or `turned-off` (by this
+    /// ends), `not-showing` (its grace period ended, no domain it was approved on counts, or it no longer passes the checks) or `turned-off` (by this
     /// Monokulo's admin).
     status: String,
     /// The domains it shows on, each of which must keep its proof.
     domains: Vec<String>,
+    /// Domains that count and haven't approved it, which show the layout so far.
+    waiting_on: Vec<String>,
     /// When its proof was last looked at, in Unix seconds.
     last_checked_at: i64,
     /// What the last look found wrong, for a person; left out when nothing was.
@@ -53,7 +55,11 @@ pub(crate) fn body_of(
     };
     Body {
         status: status.to_string(),
-        domains: approver_names(domains, now),
+        domains: showing_on(&page, domains, now)
+            .into_iter()
+            .map(|row| row.domain.clone())
+            .collect(),
+        waiting_on: waiting_on(&page, domains, now),
         last_checked_at: page.last_checked_at.unwrap_or(page.published_at),
         stops_showing_at: match standing {
             PageStanding::Failing { since } => Some(since + domain_proof::GRACE_SECS),

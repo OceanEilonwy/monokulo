@@ -356,8 +356,8 @@ pub fn shared_preview(chrome: &PageChrome, preview_token: &str, state: &PreviewS
 
 /// Where a domain or file a page's proof goes, from its name.
 fn proof_details(domain: &str, token: &str) -> Markup {
-    use crate::checkout_pages::TEMPLATE;
-    let value = TEMPLATE.value(token);
+    use crate::checkout_pages::{proof_token, TEMPLATE};
+    let value = TEMPLATE.value(&proof_token(token, domain));
     if domain_proof::is_onion(domain) {
         html! {
             dl class="template-proof" {
@@ -468,6 +468,8 @@ pub enum PageCard {
     /// In use.
     Working {
         domains: Vec<String>,
+        /// Domains that count and haven't approved it: they show the layout so far.
+        waiting: Vec<String>,
         checked: String,
         /// Why the last look got no answer: it keeps showing, which is worth saying.
         trouble: Option<String>,
@@ -546,6 +548,7 @@ pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
         ),
         PageCard::Working {
             domains,
+            waiting,
             checked,
             trouble,
             draft,
@@ -555,6 +558,9 @@ pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
                 p { "Showing to customers where your site frames it. Checked " (checked) " on " strong { (domains.join(" and ")) } "." }
                 @if let Some(trouble) = trouble {
                     (ui::Hint::new(trouble.as_str()))
+                }
+                @if !waiting.is_empty() {
+                    (ui::Hint::new(format!("{} shows {} until it has this version's proof. We'll look soon.", waiting.join(" and "), fallback.label())))
                 }
                 (ui::Hint::new(format!("Direct visits to a payment link show {}.", fallback.label())))
                 (ui::FormActions::new(ui::Slot::many([
@@ -575,7 +581,7 @@ pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
             html! {
                 p {
                     "We can't find every proof of this version. Customers still see your page for "
-                    (days_left) " more days, then " (fallback.label()) " on all your domains. Put it back, then check again."
+                    (days_left) " more days, then " (fallback.label()) " on all your domains. Add what's missing, then check again."
                 }
                 @if let Some(reason) = reason {
                     (ui::Hint::new(reason.as_str()))

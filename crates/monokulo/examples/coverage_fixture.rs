@@ -784,6 +784,14 @@ async fn seed_custom_page(
 ) -> StatusCode {
     let store = engine_protocol::ids::ConnectionId::new("coverage-store");
     let text = |key: &str| body[key].as_str().unwrap_or_default().to_string();
+    let domains: Vec<String> = control
+        .db
+        .lock()
+        .list_store_domains(&store)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| row.domain)
+        .collect();
     let draft = monokulo::db::CheckoutPageDraft {
         connection_id: store,
         template: text("template"),
@@ -796,7 +804,7 @@ async fn seed_custom_page(
     match control
         .db
         .lock()
-        .publish_checkout_page(&draft, &token, monokulo::now_unix())
+        .publish_checkout_page(&draft, &token, &domains, monokulo::now_unix())
     {
         Ok(true) => StatusCode::NO_CONTENT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
