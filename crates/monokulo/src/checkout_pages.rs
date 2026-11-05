@@ -1,9 +1,9 @@
 //! Which checkout a customer sees, and the custom page's standing.
 //!
 //! A custom page is a merchant's own words at this Monokulo's address, so it shows
-//! only where they own the frame around it: their verified domain has approved
-//! this version, by a DNS record or (for an onion shop) a file over Tor, and the
-//! browser says it's a frame of that domain's site. Everywhere else the store's
+//! only where they own the frame around it: every domain the store has has approved
+//! this version, by a DNS record or (on an onion address) a file over Tor, and the
+//! browser says it's a frame of one of their sites. Everywhere else the store's
 //! layout shows instead, so a problem here never stops anyone paying.
 
 use std::collections::{HashMap, HashSet};
@@ -23,18 +23,23 @@ pub const TEMPLATE: Scheme = Scheme {
     well_known_path: "/.well-known/monokulo-template",
 };
 
-/// The domain that approves a store's custom page, and the only site it shows on:
-/// its web domain if it has one that counts, otherwise its onion address. So a
-/// store with both shows its layout on Tor. Whoever approves a page must be the one
-/// it's shown for, or a stolen dashboard could add a domain of its own, approve a
-/// page there, and show it on the shop's onion address, whose owner never saw it.
-pub fn approver(domains: &[StoreDomainRow], now: i64) -> Option<&StoreDomainRow> {
-    let counting = |row: &&StoreDomainRow| row.state(now).counts();
+/// The domains that must approve a store's custom page, which are the sites it shows
+/// on: all it has that count. A page is one thing with one status, so a stolen
+/// dashboard adding a domain of its own can't approve a version by itself: the shop's
+/// domain has to as well.
+pub fn approvers(domains: &[StoreDomainRow], now: i64) -> Vec<&StoreDomainRow> {
     domains
         .iter()
-        .filter(counting)
-        .find(|row| !domain_proof::is_onion(&row.domain))
-        .or_else(|| domains.iter().find(counting))
+        .filter(|row| row.state(now).counts())
+        .collect()
+}
+
+/// [`approvers`]' names.
+pub fn approver_names(domains: &[StoreDomainRow], now: i64) -> Vec<String> {
+    approvers(domains, now)
+        .into_iter()
+        .map(|row| row.domain.clone())
+        .collect()
 }
 
 /// Whether the browser says this page is a frame of another site. Not to be
@@ -116,7 +121,7 @@ pub fn standing(
     if page.turned_off_at.is_some() {
         return PageStanding::TurnedOff;
     }
-    if approver(domains, now).is_none() || parsed(page).is_none() {
+    if approvers(domains, now).is_empty() || parsed(page).is_none() {
         return PageStanding::NotShowing;
     }
     match DomainState::of(Some(page.published_at), page.failing_since, now) {
@@ -164,10 +169,10 @@ pub fn parsed(page: &PublishedCheckoutPage) -> Option<Arc<Template>> {
 
 /// The page to show this request, if any: an explicit `?view=` always wins, and
 /// the rest is its [`Frame`] and the page's [`standing`]. A frame of a site the
-/// approver doesn't cover gets the layout rather than a page its browser would
-/// refuse. Tor Browser sends no `Referer` from an onion shop, so with none, only an
-/// onion approver is taken to be the one framing it: the policy still holds it to
-/// that, and any other site asking for no `Referer` gets the layout.
+/// store's domains don't cover gets the layout rather than a page its browser would
+/// refuse. Tor Browser sends no `Referer` from an onion shop, so with none, only a
+/// store with an onion address is taken to be the one framing it: the policy still
+/// holds it to that, and any other site asking for no `Referer` gets the layout.
 pub fn chosen_page(
     page: Option<&PublishedCheckoutPage>,
     domains: &[StoreDomainRow],
@@ -182,10 +187,10 @@ pub fn chosen_page(
     if !standing(page, domains, now).shows() {
         return None;
     }
-    let approver = approver(domains, now)?;
+    let approvers = approvers(domains, now);
     let policy = crate::embed_domains::EmbedPolicy {
         restricted: true,
-        domains: vec![approver.clone()],
+        domains: approvers.iter().map(|row| (*row).clone()).collect(),
     };
     let here = match frame {
         Frame::NotFramed => false,
@@ -193,7 +198,9 @@ pub fn chosen_page(
         Frame::OfAnotherSite {
             referrer: Some(origin),
         } => policy.allows_origin(origin, now),
-        Frame::OfAnotherSite { referrer: None } => domain_proof::is_onion(&approver.domain),
+        Frame::OfAnotherSite { referrer: None } => approvers
+            .iter()
+            .any(|row| domain_proof::is_onion(&row.domain)),
     };
     if !here {
         return None;
@@ -225,25 +232,84 @@ pub fn page_still_showing(
     Ok(standing(&page, &domains, now).shows().then_some(page))
 }
 
+/// What looking at one domain's proof found.
+pub struct DomainCheck {
+    pub domain: String,
+    pub outcome: CheckOutcome,
+    /// What's wrong, for a person; `None` when it's found.
+    pub reason: Option<String>,
+}
+
+/// Looks for `token`'s proof on each of `domains`.
+pub async fn check_every(proofs: &Proofs, domains: &[String], token: &str) -> Vec<DomainCheck> {
+    let mut checks = Vec::with_capacity(domains.len());
+    for domain in domains {
+        let outcome = domain_proof::check(proofs, &TEMPLATE, domain, token).await;
+        checks.push(DomainCheck {
+            domain: domain.clone(),
+            reason: outcome.error_message(&TEMPLATE, domain, token),
+            outcome,
+        });
+    }
+    checks
+}
+
+/// What a page's proofs came to, together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Approved {
+    /// On every domain.
+    Yes,
+    /// A domain answered without it, and says why. That counts whatever the others
+    /// said, as no answer from one says nothing about another.
+    Missing(String),
+    /// None is known to be missing, but one didn't answer.
+    NoAnswer(String),
+}
+
+/// What `checks` come to.
+pub fn approved(checks: &[DomainCheck]) -> Approved {
+    let reasons = |wanted: &dyn Fn(&CheckOutcome) -> bool| {
+        checks
+            .iter()
+            .filter(|check| wanted(&check.outcome))
+            .filter_map(|check| check.reason.as_deref())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let missing =
+        reasons(&|outcome| matches!(outcome, CheckOutcome::Missing | CheckOutcome::OtherValue));
+    if !missing.is_empty() {
+        return Approved::Missing(missing);
+    }
+    let no_answer = reasons(&|outcome| matches!(outcome, CheckOutcome::LookupFailed(_)));
+    if !no_answer.is_empty() {
+        return Approved::NoAnswer(no_answer);
+    }
+    Approved::Yes
+}
+
 /// What a lookup found, recorded on a page as on a verified domain: an answer
-/// without the proof starts the grace period, and no answer changes nothing but
-/// says so.
+/// without a proof starts the grace period, and no answer changes nothing but says
+/// so.
 pub async fn check_and_record(
     db: &Database,
     proofs: &Proofs,
     id: &ConnectionId,
-    domain: &str,
+    domains: &[String],
     token: &str,
     now: i64,
-) -> Result<CheckOutcome, crate::db::DbError> {
-    let outcome = domain_proof::check(proofs, &TEMPLATE, domain, token).await;
-    let error = outcome.error_message(&TEMPLATE, domain, token);
-    let answered = !matches!(outcome, CheckOutcome::LookupFailed(_));
+) -> Result<Approved, crate::db::DbError> {
+    let approved = approved(&check_every(proofs, domains, token).await);
+    let (answered, error) = match &approved {
+        Approved::Yes => (true, None),
+        Approved::Missing(reason) => (true, Some(reason.clone())),
+        Approved::NoAnswer(reason) => (false, Some(reason.clone())),
+    };
     let id = id.clone();
     let token = token.to_string();
     db.write(move |db| db.record_checkout_page_check(&id, &token, now, answered, error.as_deref()))
         .await?;
-    Ok(outcome)
+    Ok(approved)
 }
 
 /// Whether a page is due a look at its proof: daily, or hourly while something's
@@ -270,15 +336,16 @@ pub fn recheck_if_due(
     if page.turned_off_at.is_some() || !check_due(page, now) {
         return;
     }
-    let Some(domain) = approver(domains, now).map(|row| row.domain.clone()) else {
+    let domains = approver_names(domains, now);
+    if domains.is_empty() {
         return;
-    };
+    }
     let (id, token) = (page.connection_id.clone(), page.token.clone());
     if !CHECKING.lock().insert(id.clone()) {
         return;
     }
     tokio::spawn(async move {
-        let checked = check_and_record(&db, &proofs, &id, &domain, &token, now).await;
+        let checked = check_and_record(&db, &proofs, &id, &domains, &token, now).await;
         if let Err(e) = checked {
             tracing::warn!(store.id = %id, error = %e, "could not record a custom page's check");
         }
@@ -332,28 +399,55 @@ mod tests {
     }
 
     #[test]
-    fn the_web_domain_approves_if_there_is_one_otherwise_the_onion_address() {
+    fn every_domain_that_counts_must_approve() {
         let web = domain("shop.example", Some(1), None);
         let onion = domain(ONION, Some(1), None);
-        let name = |rows: &[StoreDomainRow]| approver(rows, NOW).map(|row| row.domain.clone());
-        assert_eq!(
-            name(&[onion.clone(), web.clone()]).as_deref(),
-            Some("shop.example")
-        );
-        assert_eq!(name(std::slice::from_ref(&onion)).as_deref(), Some(ONION));
-        assert_eq!(name(&[domain("pending.example", None, None)]), None);
-        // A lapsed web domain hands over to the onion address that still counts.
+        let pending = domain("pending.example", None, None);
         let lapsed = domain(
-            "shop.example",
+            "lapsed.example",
             Some(1),
             Some(NOW - domain_proof::GRACE_SECS),
         );
-        assert_eq!(name(&[lapsed.clone(), onion]).as_deref(), Some(ONION));
-        assert_eq!(name(&[lapsed]), None);
+        assert_eq!(
+            approver_names(&[onion.clone(), web.clone()], NOW),
+            [ONION, "shop.example"]
+        );
+        assert_eq!(approver_names(std::slice::from_ref(&onion), NOW), [ONION]);
+        assert_eq!(
+            approver_names(&[pending, lapsed], NOW),
+            Vec::<String>::new()
+        );
     }
 
-    /// Every way a request can come decides the same way: only a frame that
-    /// says it's another site's.
+    /// Together, one domain missing its proof outweighs another not answering.
+    #[test]
+    fn a_missing_proof_counts_whatever_the_other_domain_says() {
+        let check = |domain: &str, outcome: CheckOutcome| DomainCheck {
+            domain: domain.to_string(),
+            reason: outcome.error_message(&TEMPLATE, domain, "t"),
+            outcome,
+        };
+        let found = || check("shop.example", CheckOutcome::Found);
+        let missing = || check("shop.example", CheckOutcome::Missing);
+        let silent = || check(ONION, CheckOutcome::LookupFailed("timed out".to_string()));
+        assert_eq!(
+            approved(&[found(), check(ONION, CheckOutcome::Found)]),
+            Approved::Yes
+        );
+        assert!(matches!(
+            approved(&[found(), silent()]),
+            Approved::NoAnswer(_)
+        ));
+        let Approved::Missing(reason) = approved(&[missing(), silent()]) else {
+            panic!("a missing proof is missing");
+        };
+        assert!(
+            reason.contains("_monokulo-template.shop.example"),
+            "{reason}"
+        );
+        assert!(!reason.contains("Tor"), "{reason}");
+    }
+
     #[test]
     fn only_a_frame_of_another_site_counts() {
         let headers = |dest: Option<&str>, site: Option<&str>| {
@@ -462,34 +556,30 @@ mod tests {
         );
     }
 
-    /// A stolen dashboard can add a domain of its own and approve a page on it. That
-    /// mustn't reach the shop's onion address, whose owner never saw the page: its
-    /// customers get the layout, and the policy doesn't list it.
+    /// A page shows on all of a store's sites, and its policy lists them. An onion shop
+    /// sends no `Referer`, so with one among them, none is taken to be that shop.
     #[test]
-    fn a_page_shows_only_on_the_site_that_approved_it() {
-        let domains = [
+    fn a_page_shows_on_every_site_the_store_has() {
+        let both = [
+            domain("shop.example", Some(1), None),
             domain(ONION, Some(1), None),
-            domain("added-by-thief.example", Some(1), None),
         ];
-        let onion_frame = |referrer: Option<&str>| Frame::OfAnotherSite {
+        let frame = |referrer: Option<&str>| Frame::OfAnotherSite {
             referrer: referrer.map(str::to_string),
         };
-        let on = |frame: &Frame| chosen_page(Some(&page()), &domains, frame, false, NOW);
-        assert!(
-            on(&onion_frame(None)).is_none(),
-            "the onion shop, no referrer"
-        );
-        assert!(
-            on(&onion_frame(Some(&format!("http://{ONION}")))).is_none(),
-            "the onion shop, naming itself"
-        );
-        let chosen = on(&onion_frame(Some("https://added-by-thief.example"))).unwrap();
-        assert!(!chosen.frame_ancestors.unwrap().contains(ONION));
+        let on = |domains: &[StoreDomainRow], frame: &Frame| {
+            chosen_page(Some(&page()), domains, frame, false, NOW)
+        };
+        let chosen = on(&both, &frame(Some("https://shop.example"))).unwrap();
+        let policy = chosen.frame_ancestors.unwrap();
+        assert!(policy.contains("https://shop.example"), "{policy}");
+        assert!(policy.contains(&format!("http://{ONION}")), "{policy}");
+        assert!(on(&both, &frame(Some(&format!("http://{ONION}")))).is_some());
+        assert!(on(&both, &frame(None)).is_some(), "an onion shop, as sent");
+        assert!(on(&both, &frame(Some("https://elsewhere.example"))).is_none());
 
-        let onion_only = [domain(ONION, Some(1), None)];
-        let chosen =
-            chosen_page(Some(&page()), &onion_only, &onion_frame(None), false, NOW).unwrap();
-        assert!(chosen.frame_ancestors.unwrap().contains(ONION));
+        let web_only = [domain("shop.example", Some(1), None)];
+        assert!(on(&web_only, &frame(None)).is_none(), "no onion to be");
     }
 
     /// A site the store hasn't verified can still take a payment there, so it gets

@@ -92,9 +92,10 @@ pub enum Problem {
     /// to do about it.
     #[problem(status = 422, title = "Custom page refused")]
     CheckoutPageRefused,
-    /// The proof that approves this version of the store's custom page isn't on its
-    /// domain yet. `detail` says what was found. Each version has its own, so add
-    /// the one the draft names, and try again once it's there.
+    /// A proof that approves this version of the store's custom page isn't on its
+    /// domain yet. `detail` says what was found. Every domain the store has needs
+    /// one, and each version its own, so add those the draft names, and try again
+    /// once they're there.
     #[problem(status = 409, title = "Custom page not approved")]
     CheckoutPageNotApproved,
     /// The lookup for a custom page's proof got no answer, which says nothing about

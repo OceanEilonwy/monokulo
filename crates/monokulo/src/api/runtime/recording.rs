@@ -747,7 +747,7 @@ async fn record_custom_page(
     let body = json!({"template": CUSTOM_PAGE, "css": ".thanks { color: #2f6b4f; }"});
     let saved = call_api(router, "POST", draft, Some(sk), Some(body)).await;
     assert_eq!(saved.status(), StatusCode::OK);
-    let approval = body_json(saved).await["approval"].clone();
+    let approval = body_json(saved).await["approvals"][0].clone();
     dns.publish(
         approval["name"].as_str().unwrap(),
         approval["value"].as_str().unwrap(),
@@ -819,7 +819,7 @@ async fn record_custom_page_problems(
     let body = json!({"template": CUSTOM_PAGE});
     let saved = call_api(router, "POST", draft, Some(sk), Some(body)).await;
     assert_eq!(saved.status(), StatusCode::OK);
-    let approval = body_json(saved).await["approval"].clone();
+    let approval = body_json(saved).await["approvals"][0].clone();
     let (name, value) = (
         approval["name"].as_str().unwrap(),
         approval["value"].as_str().unwrap(),
@@ -856,7 +856,7 @@ async fn record_custom_page_problems(
     // Its operator turns it off, which neither publishing nor stopping gets past.
     let body = json!({"template": format!("{CUSTOM_PAGE}<p>Next</p>")});
     let saved = call_api(router, "POST", draft, Some(sk), Some(body)).await;
-    let approval = body_json(saved).await["approval"].clone();
+    let approval = body_json(saved).await["approvals"][0].clone();
     dns.publish(
         approval["name"].as_str().unwrap(),
         approval["value"].as_str().unwrap(),

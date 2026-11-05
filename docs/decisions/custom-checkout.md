@@ -174,7 +174,7 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     deleting it would be a way back.
 39. **An open page on an old version reloads.** Its stream checks the version on
     every change, and says `reload` if the page was replaced or turned off.
-40. **A page shows only on the site that approved it.** A security review found
+40. **Replaced by decision 49.** A page shows only on the site that approved it. A security review found
     that a stolen dashboard could add its own web domain to a store with an onion
     address, approve a page there, and have it show on the shop's onion address,
     whose owner never saw it. So the frame policy lists only the approver, and a
@@ -221,3 +221,13 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     version whose record is still on the domain. Both only show words the domain
     approved or the store's layout, so the guide says to remove old records rather
     than the design tracking versions.
+49. **A version is approved on every domain a store has.** The owner's call, over
+    decision 40 and over tracking each domain apart, which was too complicated. A
+    store with a web domain and an onion address needs the record and the file. The
+    page has one status, and shows on both or neither. So a stolen dashboard adding a
+    domain can't approve a version alone, which is what decision 40 was for, and the
+    page shows on Tor. Its costs, accepted: either proof missing fails the page on
+    both sites; a domain added under a live page starts it failing at its next check,
+    and that domain can frame the page already approved until its 3 days end; and with
+    Tor off, a store with an onion address can't publish, though a live page keeps
+    showing, as no answer never counts as missing.

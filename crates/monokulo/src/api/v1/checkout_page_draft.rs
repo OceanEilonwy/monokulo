@@ -18,7 +18,7 @@ pub(crate) struct Body {
     template: String,
     /// The CSS, as it was written.
     css: String,
-    /// Which version this is. `approval.value` has what approves it.
+    /// Which version this is. `approvals` has what approves it.
     version: String,
     /// A page showing this draft in each order state. Anyone with the link can
     /// see it until the draft is replaced, published, discarded or expires.
@@ -27,20 +27,19 @@ pub(crate) struct Body {
     created_at: i64,
     /// When it's discarded unless saved again, in Unix seconds.
     expires_at: i64,
-    /// What approves it; left out for a store with no verified domain, which
-    /// can't publish one until it has.
-    approval: Option<Approval>,
+    /// What approves it: one for each of the store's verified domains, and all are
+    /// needed. Empty if none counts any more.
+    approvals: Vec<Approval>,
     page: Link<checkout_page::Path>,
     check_approval: Form<checkout_page_check::check>,
     publish: Form<checkout_page_publish::publish>,
     discard: Form<delete>,
 }
 
-/// The proof a draft needs. Each version has its own.
+/// A proof a draft needs. Each version has its own.
 #[api::object]
 struct Approval {
-    /// The domain or onion address that approves it, and the only site its page
-    /// will show on.
+    /// The domain or onion address this approves it on.
     domain: String,
     /// `dns`: a TXT record at `name`. `file`: a file at `name`, on an onion
     /// address, as it has no DNS.
@@ -71,19 +70,22 @@ pub(crate) async fn current(
         return Ok(None);
     };
     let version = checkout_template::version_token(id.as_str(), &draft.template, &draft.css);
-    let approval = crate::checkout_pages::approver(&domains, now).map(|row| {
-        let onion = domain_proof::is_onion(&row.domain);
-        Approval {
-            domain: row.domain.clone(),
-            kind: if onion { "file" } else { "dns" }.to_string(),
-            name: if onion {
-                TEMPLATE.well_known_url(&row.domain)
-            } else {
-                TEMPLATE.record_name(&row.domain)
-            },
-            value: TEMPLATE.value(&version),
-        }
-    });
+    let approvals = crate::checkout_pages::approvers(&domains, now)
+        .into_iter()
+        .map(|row| {
+            let onion = domain_proof::is_onion(&row.domain);
+            Approval {
+                domain: row.domain.clone(),
+                kind: if onion { "file" } else { "dns" }.to_string(),
+                name: if onion {
+                    TEMPLATE.well_known_url(&row.domain)
+                } else {
+                    TEMPLATE.record_name(&row.domain)
+                },
+                value: TEMPLATE.value(&version),
+            }
+        })
+        .collect();
     Ok(Some(Body {
         template: draft.template,
         css: draft.css,
@@ -94,7 +96,7 @@ pub(crate) async fn current(
         ),
         created_at: draft.created_at,
         expires_at: draft.created_at + crate::db::DRAFT_SECS,
-        approval,
+        approvals,
         page: Link::new(checkout_page::Path {}),
         check_approval: Form::new(),
         publish: Form::new(),
@@ -151,7 +153,7 @@ async fn save(store: Store, instance: Instance, input: Input) -> api::Result<Bod
         .read(move |db| db.list_store_domains(&id))
         .await
         .map_err(|_| internal())?;
-    if crate::checkout_pages::approver(&domains, now).is_none() {
+    if crate::checkout_pages::approvers(&domains, now).is_empty() {
         return Err(Problem::CheckoutPageNeedsDomain
             .detail("Verify a web domain or onion address for this store first."));
     }

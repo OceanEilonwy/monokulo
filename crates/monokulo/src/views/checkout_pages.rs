@@ -380,7 +380,7 @@ fn proof_details(domain: &str, token: &str) -> Markup {
     }
 }
 
-/// What the last check of a page's proof found, when it was asked for.
+/// What the last check of a domain's proof found, when it was asked for.
 pub enum ApproveResult {
     NotChecked,
     Found,
@@ -388,39 +388,52 @@ pub enum ApproveResult {
     CantCheck(String),
 }
 
-/// Step 3: the record or file that approves this version, and whether it's there.
+/// Step 3: the record or file each domain approves this version with, and whether
+/// it's there.
 pub fn approve_step(
     chrome: &PageChrome,
     store: &WizardStore,
-    domain: &str,
     token: &str,
-    result: &ApproveResult,
+    results: &[(String, ApproveResult)],
 ) -> Markup {
-    let onion = domain_proof::is_onion(domain);
     let check = format!("{}/approve", store.page());
+    let all_found = results
+        .iter()
+        .all(|(_, result)| matches!(result, ApproveResult::Found));
+    let check_label = match results {
+        [(domain, _)] if domain_proof::is_onion(domain) => "Check for the file",
+        [_] => "Check for the record",
+        _ => "Check both",
+    };
     let body = html! {
-        (super::settings::plain_card("template-approve", "Approve this version", html! {
-            @if onion {
-                p { "This store has no web domain, so its onion address approves instead. An onion address has no DNS, so your shop serves a small file. We fetch it over Tor, never over the web. Each version has its own." }
-                (ui::Hint::new("This is weaker than DNS: whoever can change your shop's files can approve a page."))
-            } @else {
-                p { "Add this record to " strong { (domain) } ". It proves this version is yours, so a stolen key can't change what customers see. Each version has its own." }
-            }
-            (proof_details(domain, token))
-            @match result {
-                ApproveResult::NotChecked => {}
-                ApproveResult::Found => {
-                    (ui::Alert::new(if onion { "Found the file." } else { "Found the record." }, ui::Tone::Success))
+        @if results.len() > 1 {
+            p { "This store has a web domain and an onion address, so both must approve this version before you can use it. Each version has its own." }
+        }
+        @for (index, (domain, result)) in results.iter().enumerate() {
+            @let onion = domain_proof::is_onion(domain);
+            (super::settings::plain_card(&format!("template-approve-{index}"), if results.len() > 1 { domain.as_str() } else { "Approve this version" }, html! {
+                @if onion {
+                    p { "An onion address has no DNS, so your shop serves a small file. We fetch it over Tor, never over the web." @if results.len() == 1 { " Each version has its own." } }
+                    (ui::Hint::new("This is weaker than DNS: whoever can change your shop's files can pass this check."))
+                } @else {
+                    p { "Add this record to " strong { (domain) } ". It proves this version is yours, so a stolen key can't put new words in front of your customers." @if results.len() == 1 { " Each version has its own." } }
                 }
-                ApproveResult::NotFound(reason) => {
-                    (ui::Alert::new(format!("Not found. {reason}"), ui::Tone::Warning))
+                (proof_details(domain, token))
+                @match result {
+                    ApproveResult::NotChecked => {}
+                    ApproveResult::Found => {
+                        (ui::Alert::new(if onion { "Found the file." } else { "Found the record." }, ui::Tone::Success))
+                    }
+                    ApproveResult::NotFound(reason) => {
+                        (ui::Alert::new(format!("Not found. {reason}"), ui::Tone::Warning))
+                    }
+                    ApproveResult::CantCheck(reason) => {
+                        (ui::Alert::new(format!("Can't check right now. {reason}"), ui::Tone::Warning))
+                    }
                 }
-                ApproveResult::CantCheck(reason) => {
-                    (ui::Alert::new(format!("Can't check right now. {reason}"), ui::Tone::Warning))
-                }
-            }
-        }))
-        @if matches!(result, ApproveResult::Found) {
+            }))
+        }
+        @if all_found {
             form method="post" action=(format!("{}/publish", store.page())) {
                 (ui::FormActions::new(ui::Slot::many([
                     ui::Slot::from(ui::Button::new("Use this template").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
@@ -430,7 +443,7 @@ pub fn approve_step(
         } @else {
             form method="post" action=(check) {
                 (ui::FormActions::new(ui::Slot::many([
-                    ui::Slot::from(ui::Button::new(if onion { "Check for the file" } else { "Check for the record" }).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
+                    ui::Slot::from(ui::Button::new(check_label).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
                     ui::Slot::from(ui::LinkButton::new("Back to the preview", format!("{}/preview", store.page()))),
                 ])))
             }
@@ -447,28 +460,30 @@ pub enum PageCard {
     NeedsDomain,
     /// Nothing written yet.
     None,
-    /// Waiting for its record or file.
-    Draft { domain: String, days_left: i64 },
+    /// Waiting for its records or files.
+    Draft {
+        domains: Vec<String>,
+        days_left: i64,
+    },
     /// In use.
     Working {
-        domain: String,
+        domains: Vec<String>,
         checked: String,
         /// Why the last look got no answer: it keeps showing, which is worth saying.
         trouble: Option<String>,
-        /// It approves on the web, so an onion address the store also has shows the
-        /// layout instead.
-        onion_gets_layout: bool,
         draft: bool,
     },
-    /// In use, with its proof missing: still showing.
+    /// In use, with a proof missing: still showing.
     Failing {
-        domain: String,
+        domains: Vec<String>,
+        /// Which one, in the words of the last look.
+        reason: Option<String>,
         token: String,
         days_left: i64,
         draft: bool,
     },
     /// Published, but customers don't see it.
-    NotShowing { draft: bool },
+    NotShowing { reason: Option<String>, draft: bool },
     /// This Monokulo's operator took it down.
     TurnedOff { reason: Option<String> },
 }
@@ -507,17 +522,17 @@ pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
         PageCard::None => (
             "Not set up",
             html! {
-                p { "Write your own checkout with a template and optional CSS. Every version you publish is approved with a DNS record, so a leaked key can't change what customers see." }
+                p { "Write your own checkout with a template and optional CSS. Your domains approve every version you publish, so a leaked key can't put new words in front of customers." }
                 (ui::FormActions::new(ui::Slot::many([
                     ui::Slot::from(ui::LinkButton::new("Create a custom page", page.clone()).variant(ui::ButtonVariant::Primary)),
                     ui::Slot::from(html! { a href=(super::docs_url("custom-pages")) { "Custom page guide" } }),
                 ])))
             },
         ),
-        PageCard::Draft { domain, days_left } => (
+        PageCard::Draft { domains, days_left } => (
             "Waiting for approval",
             html! {
-                p { "Customers don't see this draft until it's approved on " strong { (domain) } ". It's kept for " (days_left) " more days." }
+                p { "Customers don't see this draft until it's approved on " strong { (domains.join(" and ")) } ". It's kept for " (days_left) " more days." }
                 (ui::FormActions::new(ui::Slot::many([
                     ui::Slot::from(ui::LinkButton::new("Continue", format!("{page}/approve")).variant(ui::ButtonVariant::Primary)),
                     ui::Slot::from(edit()),
@@ -530,22 +545,18 @@ pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
             },
         ),
         PageCard::Working {
-            domain,
+            domains,
             checked,
             trouble,
-            onion_gets_layout,
             draft,
         } => (
             "Working",
             html! {
-                p { "Showing to customers where your site frames it. Checked " (checked) " on " strong { (domain) } "." }
+                p { "Showing to customers where your site frames it. Checked " (checked) " on " strong { (domains.join(" and ")) } "." }
                 @if let Some(trouble) = trouble {
                     (ui::Hint::new(trouble.as_str()))
                 }
                 (ui::Hint::new(format!("Direct visits to a payment link show {}.", fallback.label())))
-                @if *onion_gets_layout {
-                    (ui::Hint::new(format!("Your onion address shows {} too: only the domain that approved a page shows it.", fallback.label())))
-                }
                 (ui::FormActions::new(ui::Slot::many([
                     ui::Slot::from(continue_draft(*draft)),
                     ui::Slot::from(edit()),
@@ -554,7 +565,8 @@ pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
             },
         ),
         PageCard::Failing {
-            domain,
+            domains,
+            reason,
             token,
             days_left,
             draft,
@@ -562,10 +574,16 @@ pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
             "Failing",
             html! {
                 p {
-                    "We can't find this version's proof on " strong { (domain) } ". Customers still see your page for "
-                    (days_left) " more days, then " (fallback.label()) ". Put it back, then check again:"
+                    "We can't find every proof of this version. Customers still see your page for "
+                    (days_left) " more days, then " (fallback.label()) " on all your domains. Put it back, then check again."
                 }
-                (proof_details(domain, token))
+                @if let Some(reason) = reason {
+                    (ui::Hint::new(reason.as_str()))
+                }
+                @for domain in domains {
+                    p { strong { (domain) } }
+                    (proof_details(domain, token))
+                }
                 (ui::FormActions::new(ui::Slot::many([
                     ui::Slot::from(recheck()),
                     ui::Slot::from(continue_draft(*draft)),
@@ -574,10 +592,13 @@ pub fn page_card(store_id: &str, fallback: Layout, card: &PageCard) -> Markup {
                 ])))
             },
         ),
-        PageCard::NotShowing { draft } => (
+        PageCard::NotShowing { reason, draft } => (
             "Not showing",
             html! {
-                p { "Customers now see " strong { (fallback.label()) } " instead of your page. Open orders keep working. Your page comes back by itself once a check finds its record or file." }
+                p { "Customers now see " strong { (fallback.label()) } " instead of your page. Open orders keep working. Your page comes back by itself once a check finds every record and file." }
+                @if let Some(reason) = reason {
+                    (ui::Hint::new(reason.as_str()))
+                }
                 (ui::FormActions::new(ui::Slot::many([
                     ui::Slot::from(recheck()),
                     ui::Slot::from(continue_draft(*draft)),
