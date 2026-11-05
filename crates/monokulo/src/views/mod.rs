@@ -91,6 +91,7 @@ pub mod auth;
 pub mod challenge;
 pub mod checkout;
 pub mod checkout_layouts;
+pub mod checkout_pages;
 pub mod checkout_style;
 pub mod connect;
 pub mod connected_apps;

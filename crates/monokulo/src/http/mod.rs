@@ -41,6 +41,7 @@ mod admin_setup;
 pub(crate) mod apps;
 mod auth;
 mod checkout;
+pub mod checkout_pages;
 pub(crate) mod connect;
 mod connections;
 pub mod csrf;
@@ -527,6 +528,26 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/stores/{id}/settings",
             axum::routing::get(orders::store_settings).post(store_settings::save),
+        )
+        .route(
+            "/stores/{id}/settings/checkout-page",
+            axum::routing::get(checkout_pages::edit).post(checkout_pages::save),
+        )
+        .route(
+            "/stores/{id}/settings/checkout-page/preview",
+            axum::routing::get(checkout_pages::preview_step),
+        )
+        .route(
+            "/stores/{id}/settings/checkout-page/discard",
+            post(checkout_pages::discard),
+        )
+        .route(
+            "/checkout-preview/{token}",
+            axum::routing::get(checkout_pages::shared_preview),
+        )
+        .route(
+            "/checkout-preview/{token}/frame",
+            axum::routing::get(checkout_pages::preview_frame),
         )
         .route(
             "/stores/{id}/settings/domains",

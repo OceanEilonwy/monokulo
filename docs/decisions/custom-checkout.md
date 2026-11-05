@@ -149,4 +149,13 @@ Newest last. Each says what was chosen and why, so it can be reversed.
 31. **Stylesheets are written again at every start.** A page's link comes from its
     colours, so a release changing what they're written as would otherwise break
     every styled store until its merchant saved something.
+32. **A preview's frame refuses to open on its own.** It needs `Sec-Fetch-Dest:
+    iframe` and `Sec-Fetch-Site: same-origin`, so a draft is never a merchant's
+    unapproved words at this Monokulo's address, and a missing header counts as
+    no. Its CSP also sandboxes it, runs nothing and blocks forms.
+33. **A preview's sandbox costs it the page's typeface.** A sandboxed page has no
+    origin, so fonts need CORS, and they aren't worth loosening for this. It shows
+    in the device font, which is also what a custom page can choose.
+34. **The wizard's first two steps merge with no way in from the settings page.**
+    Step 3 and the Custom page card come in the next PR, so it's never a dead end.
 
