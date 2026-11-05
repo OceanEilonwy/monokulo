@@ -1,6 +1,10 @@
 //! Version 1 of the API, at `/api/v1`: one file per resource.
 
 pub(crate) mod app;
+pub(crate) mod checkout_page;
+pub(crate) mod checkout_page_check;
+pub(crate) mod checkout_page_draft;
+pub(crate) mod checkout_page_publish;
 pub(crate) mod events;
 pub(crate) mod logs;
 pub(crate) mod openapi;

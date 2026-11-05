@@ -244,7 +244,12 @@ async fn the_entry_offers_each_key_its_own_forms() {
         (Some(fixture.pk.as_str()), vec!["create-order"]),
         (
             Some(fixture.sk.as_str()),
-            vec!["create-order", "send-logs", "send-test-webhook"],
+            vec![
+                "create-order",
+                "save-checkout-page-draft",
+                "send-logs",
+                "send-test-webhook",
+            ],
         ),
         (
             Some(fixture.ak.as_str()),
@@ -601,5 +606,6 @@ async fn the_entry_can_be_cached() {
     assert!(store.headers().get(header::ETAG).is_none());
 }
 
+mod custom_page;
 mod orders;
 mod push_targets;

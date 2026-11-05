@@ -918,6 +918,16 @@ fn what_a_second_review_found_stays_fixed() {
     );
 }
 
+/// A budget can tighten without taking down what's live, which a missing address can't.
+#[test]
+fn a_published_page_needs_what_customers_need_but_not_the_budget() {
+    let required = "{{status}}{{qr}}{{amount}}{{fiat}}{{address}}";
+    let over_budget = format!("{required}{}", "{{merchant}}".repeat(800));
+    assert!(check(&over_budget).is_err());
+    assert!(check_published(&over_budget).is_ok());
+    assert!(check_published("{{status}}{{qr}}{{amount}}{{fiat}}").is_err());
+}
+
 /// A short selector grows once scoped: what's stored is bounded, not just what's
 /// sent.
 #[test]

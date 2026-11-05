@@ -24,8 +24,8 @@ use crate::views::checkout_style::stylesheet_hash;
 
 /// How many times a minute one store can save a draft. Each save reads, checks
 /// and writes up to two 32 KiB texts.
-const SAVES_PER_MINUTE: u32 = 30;
-static SAVES: LazyLock<rate_limit::RateLimiter<ConnectionId>> =
+pub(crate) const SAVES_PER_MINUTE: u32 = 30;
+pub(crate) static SAVES: LazyLock<rate_limit::RateLimiter<ConnectionId>> =
     LazyLock::new(|| rate_limit::RateLimiter::new(SAVES_PER_MINUTE));
 
 /// A template and CSS, checked: the CSS as it would be served.
@@ -230,9 +230,32 @@ pub async fn save(
                 .into_response();
         }
     };
-    let store_id = row.id.clone();
+    let saved = save_checked(&state, &row.id, checked, now).await;
+    match saved {
+        Ok(()) => crate::base::see_other(format!("/stores/{id}/settings/checkout-page/preview")),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// A link to send someone: whole, where this Monokulo knows its address.
+pub fn preview_link(public_uri: Option<String>, preview_token: &str) -> String {
+    let path = format!("/checkout-preview/{preview_token}");
+    public_uri.map_or_else(
+        || crate::base::url(&path),
+        |base| format!("{}{path}", base.trim_end_matches('/')),
+    )
+}
+
+/// Saves a checked draft as the store's, with a new preview link.
+pub async fn save_checked(
+    state: &AppState,
+    id: &ConnectionId,
+    checked: CheckedDraft,
+    now: i64,
+) -> Result<(), crate::db::DbError> {
+    let store_id = id.clone();
     let token = uuid::Uuid::new_v4().simple().to_string();
-    let saved = state
+    state
         .db
         .write(move |db| {
             db.save_checkout_page_draft(
@@ -244,11 +267,7 @@ pub async fn save(
                 now,
             )
         })
-        .await;
-    match saved {
-        Ok(()) => crate::base::see_other(format!("/stores/{id}/settings/checkout-page/preview")),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+        .await
 }
 
 /// `GET /stores/{id}/settings/checkout-page/preview`: step 2.
@@ -274,14 +293,10 @@ pub async fn preview_step(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let size = checkout_template::Template::load(&draft.template).map_or(0, |parsed| parsed.size());
-    // A link to send someone: whole, where this Monokulo knows its address.
-    let path = format!("/checkout-preview/{}", draft.preview_token);
-    let link = {
-        state.network(&extensions).public_uri().map_or_else(
-            || crate::base::url(&path),
-            |base| format!("{}{path}", base.trim_end_matches('/')),
-        )
-    };
+    let link = preview_link(
+        state.network(&extensions).public_uri(),
+        &draft.preview_token,
+    );
     let chrome = super::page_chrome(&state, Some(&user), format!("/stores/{id}/settings")).await;
     checkout_pages::preview_step(
         &chrome,
@@ -324,8 +339,8 @@ pub async fn discard(
 
 /// How many times a minute one store can ask for its proof to be looked up. Each
 /// can take DNS or Tor up to twenty seconds, so it's kept low.
-const CHECKS_PER_MINUTE: u32 = 12;
-static CHECKS: LazyLock<rate_limit::RateLimiter<ConnectionId>> =
+pub(crate) const CHECKS_PER_MINUTE: u32 = 12;
+pub(crate) static CHECKS: LazyLock<rate_limit::RateLimiter<ConnectionId>> =
     LazyLock::new(|| rate_limit::RateLimiter::new(CHECKS_PER_MINUTE));
 
 /// What's needed to approve a store's draft.
@@ -372,6 +387,8 @@ pub enum PublishRefused {
     CantCheck(String),
     /// This Monokulo's operator has turned the store's page off.
     TurnedOff,
+    /// Saved by an earlier release, it no longer passes today's checks.
+    NoLongerPasses(Vec<Problem>),
     Failed,
 }
 
@@ -384,6 +401,23 @@ pub async fn publish_draft(state: &AppState, id: &ConnectionId) -> Result<(), Pu
         Ok(None) => return Err(PublishRefused::NothingToPublish),
         Err(_) => return Err(PublishRefused::Failed),
     };
+    // What a lookup can't change comes first, so nobody is told to add a proof for
+    // nothing.
+    let store_id = id.clone();
+    let turned_off = state
+        .db
+        .read(move |db| db.published_checkout_page(&store_id))
+        .await
+        .map_err(|_| PublishRefused::Failed)?
+        .is_some_and(|page| page.turned_off_at.is_some());
+    if turned_off {
+        return Err(PublishRefused::TurnedOff);
+    }
+    // Saved by an earlier release, perhaps: what goes live is what today's checks
+    // write. The approval still stands, as it's for what the merchant wrote.
+    let written_css = check_draft(&approval.draft.template, &approval.draft.css)
+        .map_err(PublishRefused::NoLongerPasses)?
+        .written_css;
     let outcome = domain_proof::check(
         &state.proofs,
         &crate::checkout_pages::TEMPLATE,
@@ -409,17 +443,7 @@ pub async fn publish_draft(state: &AppState, id: &ConnectionId) -> Result<(), Pu
     let Approval {
         mut draft, token, ..
     } = approval;
-    // Saved by an earlier release, perhaps: what goes live is what today's checks
-    // write. The approval still stands, as it's for what the merchant wrote.
-    draft.written_css = match check_draft(&draft.template, &draft.css) {
-        Ok(checked) => checked.written_css,
-        Err(_) => {
-            return Err(PublishRefused::NotFound(
-                "This version no longer passes our checks. Edit it, then save it again."
-                    .to_string(),
-            ))
-        }
-    };
+    draft.written_css = written_css;
     let store_id = id.clone();
     let published = state
         .db
@@ -523,6 +547,10 @@ pub async fn publish(
             crate::base::see_other(format!(
                 "/stores/{id}/settings?tab=checkout#card-custom-page"
             ))
+        }
+        // The form says what's wrong, when it's checked again.
+        Err(PublishRefused::NoLongerPasses(_)) => {
+            crate::base::see_other(format!("/stores/{id}/settings/checkout-page"))
         }
         Err(PublishRefused::Failed) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }

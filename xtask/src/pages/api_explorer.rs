@@ -34,7 +34,7 @@ use ui::assets::icons;
 /// how a client meets them, the entry first and the handshakes and pages
 /// for people last. A tag the document has and this doesn't name follows
 /// them, under its own name.
-const TAGS: [(&str, &str); 12] = [
+const TAGS: [(&str, &str); 16] = [
     ("root", "Entry"),
     ("orders", "Orders"),
     ("order", "One order"),
@@ -42,6 +42,10 @@ const TAGS: [(&str, &str); 12] = [
     ("events", "Sale events"),
     ("store", "Store"),
     ("webhook-tests", "Webhook tests"),
+    ("checkout-page", "Custom page"),
+    ("checkout-page-draft", "Custom page draft"),
+    ("checkout-page-check", "Custom page approval"),
+    ("checkout-page-publish", "Custom page publishing"),
     ("app", "Connected app"),
     ("logs", "Plugin logs"),
     ("openapi", "OpenAPI document"),

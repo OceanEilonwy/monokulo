@@ -26,12 +26,24 @@ pub const DOCS: &str = "https://docs.monokulo.com";
 /// The largest request body the API reads: a plugin's 20 log entries fit.
 pub const MAX_BODY_BYTES: usize = 32 * 1024;
 
+/// The largest body saving a custom page reads: its template and CSS at their own
+/// limits (`checkout_template`), which are what's checked, with room for JSON's
+/// escapes. What the dashboard can save, the API can save again.
+pub const MAX_CUSTOM_PAGE_BODY_BYTES: usize = 128 * 1024;
+
 /// Every handler's route, from the catalog.
 pub fn router() -> axum::Router<AppState> {
     catalog::handlers()
         .into_iter()
         .fold(axum::Router::new(), |router, handler| {
-            (handler.route)(router)
+            let limit = if handler.template == super::v1::checkout_page_draft::Path::TEMPLATE {
+                MAX_CUSTOM_PAGE_BODY_BYTES
+            } else {
+                MAX_BODY_BYTES
+            };
+            router.merge(
+                (handler.route)(axum::Router::new())
+                    .layer(axum::extract::DefaultBodyLimit::max(limit)),
+            )
         })
-        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
