@@ -150,3 +150,14 @@ test('without JavaScript the save bar is always there and saves, refused or not'
   await context.close();
 });
 
+test('a store chooses its checkout layout on the Checkout tab', async ({ page, context }) => {
+  await login(context);
+  await page.goto(tab('checkout'));
+  await expect(page.locator('.mk-tabs[aria-label="Store settings"] a[aria-current="page"]')).toHaveText('Checkout');
+  const compact = page.getByRole('radio', { name: /Compact/ });
+  await compact.check();
+  await page.locator('#save-bar').getByRole('button', { name: /^Save/ }).click();
+  await expect(page).toHaveURL(/saved=checkout-layout/);
+  await expect(page.getByRole('radio', { name: /Compact/ })).toBeChecked();
+});
+

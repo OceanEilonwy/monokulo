@@ -387,6 +387,54 @@ async function customerSends(request, orderId, fraction, confirmations) {
   expect(sent.status()).toBe(204);
 }
 
+test('tiny shows a code that opens the wallet, then words in its place, live', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  await page.goto(`${url}?view=tiny`);
+  await expect(page.locator('.checkout-tiny')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open in your wallet' })).toHaveAttribute('href', /^monero:/);
+  await expect(page.locator('[data-part="address"]')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy the full address' })).toBeVisible();
+  await customerSends(request, orderId, 1);
+  // A region flips by itself: the code goes, and words take its place.
+  await expect(page.locator('#live-message')).toContainText("Don't send it again");
+  await expect(page.locator('[data-part="qr"]')).toHaveCount(0);
+  await expect(page.locator('[data-part="address"]')).toHaveCount(0);
+  await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/confirm`);
+  await expect(page.locator('#live-message')).toHaveText('Paid. Nothing more to do.');
+  await expect(page.locator('#checkout-announce')).toHaveText('Paid');
+  await captureCoverageStage(page, 'checkout-tiny-paid', test.info());
+});
+
+test('tiny keeps paying the rest after a partial payment, and says a reversal does not count', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  await page.goto(`${url}?view=tiny`);
+  await customerSends(request, orderId, 0.5);
+  await expect(page.locator('#amount-label')).toHaveText('Still to pay');
+  await expect(page.locator('.qr-note')).toBeVisible();
+  const reversed = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/double-spend`);
+  expect(reversed.ok()).toBe(true);
+  await expect(page.locator('#live-message')).toHaveText("A payment was reversed. It doesn't count.");
+  await expect(page.getByRole('link', { name: 'Open in your wallet' })).toBeVisible();
+});
+
+test('the client asks for a layout and sizes its frame to suit', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  await page.goto(`${fixture.base_url}/__coverage/ready`);
+  await page.setContent('<div id="mount"></div>');
+  await page.addScriptTag({ url: `${fixture.base_url}/static/monokulo-client.js` });
+  await page.evaluate(({ base_url, public_key, order_id }) => {
+    window.Monokulo.mount('#mount', { orderId: order_id, monokulo: base_url, publicKey: public_key }, { view: 'tiny' });
+  }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: url.split('/').pop() });
+  const frame = page.locator('#mount iframe');
+  await expect(frame).toHaveAttribute('src', `${url}?view=tiny`);
+  await expect(page.frameLocator('#mount iframe').locator('.checkout-tiny')).toBeVisible();
+  // What the frame's asked to be, rather than what it computes to.
+  await expect(frame).toHaveAttribute('style', /width: 280px/);
+  await expect(frame).toHaveAttribute('style', /height: 380px/);
+});
+
 test('real checkout follows the customer payment from the mempool to confirmed and lists it', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   const orderId = url.split('/').pop();

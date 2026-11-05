@@ -329,6 +329,9 @@
     var query = [];
     if (options.refund === false) query.push("refund=false");
     if (options.theme === "light" || options.theme === "dark") query.push("theme=" + options.theme);
+    // `view: "detailed" | "compact" | "tiny"` asks for a layout; left out, the
+    // store's own choice.
+    if (options.view === "detailed" || options.view === "compact" || options.view === "tiny") query.push("view=" + options.view);
     // The order's own links when this page made it; for an order from an
     // earlier visit, the same paths built from its id, on the Monokulo address
     // this page calls (the onion one, from a page on Tor).
@@ -337,7 +340,10 @@
     var iframe = document.createElement("iframe");
     iframe.title = "Monero Payment";
     iframe.style.border = "none";
-    iframe.style.width = options.width || "420px";
+    // The size each layout needs, when one was asked for. A store's own choice
+    // isn't known here: an embed using a small one passes its `height`.
+    var size = { tiny: ["280px", "380px"], compact: ["420px", "680px"] }[options.view] || ["420px", "900px"];
+    iframe.style.width = options.width || size[0];
     // 900px: the checkout page's amount, QR, address card, progress bar and
     // refund-address form need about that at this default 420px width.
     // Auto-sizing to the framed page's content isn't available here: the
@@ -345,7 +351,7 @@
     // can't be read. A caller who wants a
     // specifically sized/no-scroll embed should still pass an explicit
     // `height` in `options`.
-    iframe.style.height = options.height || "900px";
+    iframe.style.height = options.height || size[1];
     // The checkout script and refund form need these sandbox capabilities;
     // this mount() still follows status independently for merchant callbacks.
     iframe.setAttribute("sandbox", "allow-same-origin allow-scripts allow-forms allow-popups");

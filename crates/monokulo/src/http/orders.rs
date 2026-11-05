@@ -1002,6 +1002,7 @@ pub(super) async fn render_store_settings_page_with(
             clock: chrome.clock.clone(),
             connection_id: row.id,
             display_name: row.name.clone(),
+            checkout_layout: row.checkout_layout,
             site: crate::stores::stored_site(row.site.as_ref()).to_owned(),
             payment_description: row.payment_description.clone(),
             sites,

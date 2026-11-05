@@ -35,6 +35,7 @@ const SENT_AT: i64 = 1_760_020_380;
 
 fn store() -> StoreConnectionRow {
     StoreConnectionRow {
+        checkout_layout: crate::views::checkout_layouts::Layout::Detailed,
         id: ConnectionId::new("917701c2-15c7-4bcb-bbc8-72d9ab28e785"),
         user_id: engine_protocol::ids::UserId::new("u_1"),
         name: "Bakery".into(),

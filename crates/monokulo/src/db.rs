@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::fx_provider_settings::FxProviderSettings;
 use crate::plugins::{Plugin, PluginName, PluginSlug};
 use crate::stores::Site;
+use crate::views::checkout_layouts::Layout;
 
 mod apps;
 mod order_changes;
@@ -206,6 +207,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         55,
         include_str!("../migrations/0055_one_domain_of_each.sql"),
     ),
+    (56, include_str!("../migrations/0056_checkout_layout.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -810,7 +812,7 @@ fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomai
 }
 
 /// What a query reading whole stores selects, for [`store_from_row`].
-const STORE_COLUMNS: &str = "id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description";
+const STORE_COLUMNS: &str = "id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description, checkout_layout";
 
 /// A `store_connections` row, from a query selecting [`STORE_COLUMNS`].
 /// Each is read by its name, so a list that leaves one out fails rather
@@ -831,6 +833,9 @@ fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRo
         wallet_id: row.get("wallet_id")?,
         name: row.get("name")?,
         payment_description: row.get("payment_description")?,
+        // An unknown name can't be saved; if a downgrade left one, today's page.
+        checkout_layout: Layout::from_name(&row.get::<_, String>("checkout_layout")?)
+            .unwrap_or(Layout::Detailed),
     })
 }
 
@@ -882,6 +887,8 @@ pub struct NewStoreIntegration<'a> {
 /// whatever string it's given; see `http/connections.rs` for where the real
 /// encrypt/decrypt calls happen.
 pub struct StoreConnectionRow {
+    /// The layout its checkout shows unless an embed asks for another.
+    pub checkout_layout: Layout,
     pub id: ConnectionId,
     pub user_id: UserId,
     /// What the merchant calls the store, shown wherever it's named
@@ -2741,6 +2748,15 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(changed == 1)
+    }
+
+    /// Saves the layout a store's checkout shows.
+    pub fn set_store_checkout_layout(&self, id: &ConnectionId, layout: Layout) -> Result<()> {
+        self.conn.execute(
+            "UPDATE store_connections SET checkout_layout = ?2 WHERE id = ?1",
+            params![id, layout.name()],
+        )?;
+        Ok(())
     }
 
     /// Records one check of a domain. `error: None` means the record was

@@ -138,6 +138,7 @@ fn env_with_key(key: &str) -> live_settings::Env {
 /// A store pricing with CoinMarketCap alone.
 fn cmc_store() -> crate::db::StoreConnectionRow {
     crate::db::StoreConnectionRow {
+        checkout_layout: crate::views::checkout_layouts::Layout::Detailed,
         id: engine_protocol::ids::ConnectionId::new("conn-1".to_string()),
         user_id: engine_protocol::ids::UserId::new("user-1".to_string()),
         name: "Shop".to_string(),

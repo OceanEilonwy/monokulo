@@ -78,7 +78,7 @@ test('the site, the POS and the hosted payment page share one theme, light and d
 
       // The hosted payment page frames the checkout in the merchant's theme.
       await page.goto(`${checkout}/share`);
-      await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/checkout/${orderId}?theme=${theme}`);
+      await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/checkout/${orderId}?view=detailed&theme=${theme}`);
       const frame = page.frameLocator('#checkout-frame');
       await expect(frame.locator('#checkout-root')).toBeVisible();
       await expect(frame.locator('html')).toHaveAttribute('data-theme', theme);
@@ -90,7 +90,7 @@ test('the site, the POS and the hosted payment page share one theme, light and d
   }
   // Following the device, the hosted payment page names no theme.
   await page.goto(`${checkout}/share`);
-  await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/checkout/${orderId}`);
+  await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/checkout/${orderId}?view=detailed`);
 
   // A checkout on its own takes `?theme=`, and its form and live stream
   // keep it; anything but light or dark follows the device.
