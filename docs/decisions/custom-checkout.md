@@ -74,3 +74,13 @@ Newest last. Each says what was chosen and why, so it can be reversed.
    does occupy the store's web place: Remove or Change makes room.
 8. **An onion shop may connect to a site-less store with a web domain.** It has
    its own place beside that domain.
+9. **The strict policy lets in one outside image: the merchant's own icon.**
+   Detailed shows a verified site's favicon, never on Tor. Dropping that trust
+   signal wasn't what the policy was for, so `img-src` names that one verified
+   origin for that page. Merchant CSS still can't use it, as `url()` is refused
+   when it's saved.
+10. **The typeface rules stay inline, allowed by hash, rather than a stylesheet.**
+    They carry the request's base path, which a baked stylesheet can't, and a
+    hash allows exactly that text and nothing a template could add.
+11. **Pages with no order on them get no strict policy.** Not-found and
+    open-from-shop show no merchant content, and must never be given any.

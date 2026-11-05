@@ -91,8 +91,10 @@ subtle = "2.6.1"
 # Who a request is from, its limits, challenges and the onion listener;
 # `http::abuse` is their HTTP side.
 abuse = { path = "../abuse" }
-# The machine API's cached responses' ETags (`api::runtime::hal`).
+# The machine API's cached responses' ETags (`api::runtime::hal`), and the
+# hash of the checkout's one inline style in its Content-Security-Policy.
 sha2 = "0.11.0"
+base64 = "0.23.1"
 # Tor for visitors: Tor inside monokulo (with the `tor` feature), the
 # server both onion paths share, and onion address checks.
 tor-service = { path = "../tor-service" }
@@ -162,7 +164,6 @@ sqlite = { path = "../sqlite", features = ["test-support"] }
 # `test-support` decryption, and the ciphertext APNs and FCM carry as
 # base64url (`push::pipeline_tests::relay_tests`).
 push = { path = "../push", features = ["test-support"] }
-base64 = "0.23.1"
 engine-test-support = { path = "../engine-test-support" }
 # Paused time (`test-util`): a test watching the engine page for a minute
 # runs in an instant.

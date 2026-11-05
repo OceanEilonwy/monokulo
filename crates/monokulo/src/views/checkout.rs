@@ -65,10 +65,9 @@ pub struct CheckoutViewModel {
     pub confirmations: u64,
     pub confirmations_required: u64,
     /// `min(100, round(confirmations / confirmations_required * 100))`,
-    /// pre-computed server-side - the progress bar's fill width is a plain
-    /// `style="width: {progress_percent}%"`, not something a `<script>`
-    /// sets after load (this page has none - see this module's own doc
-    /// comment).
+    /// pre-computed server-side - the progress bar is a plain `<progress>`,
+    /// so it needs no script, and no style attribute the page's
+    /// Content-Security-Policy would refuse.
     pub progress_percent: u8,
     /// Whether the order can't change any more
     /// (`engine_client::OrderView::is_final`): an expired or cancelled one
@@ -136,110 +135,33 @@ fn refund_url(order_id: &crate::db::OrderId) -> String {
     )
 }
 
-/// The checkout's own styling, on top of the shared theme.
-const CHECKOUT_STYLE: &str = r#"
-html { background: var(--paper-raised); }
-body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(--paper-raised); }
-.pay-wrap { max-width: 720px; margin: 0 auto; }
-/* One column, the stage above the code, whenever it fits the screen. */
-.pay-grid { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "stage" "primary" "secondary"; align-items: start; gap: 0; max-width: 460px; margin-inline: auto; text-align: center; }
-.pay-grid > * { min-width: 0; }
-.stage-slot { grid-area: stage; margin-bottom: .9em; }
-/* Who is asking, over everything, as wide as the column(s) under it. */
-.merchant { display: flex; align-items: center; gap: var(--space-md); max-width: 460px; margin: 0 auto .9em; padding: var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); text-align: left; }
-.merchant:has(.merchant-for) { align-items: flex-start; }
-.merchant-about { display: grid; gap: 2px; min-width: 0; }
-.merchant h2 { margin: 0; padding: 0; border: 0; font-size: var(--text-base); font-weight: 800; overflow-wrap: anywhere; }
-.merchant .hint { margin: 0; font-size: var(--text-xs); overflow-wrap: anywhere; }
-.merchant .hint svg { width: 1em; height: 1em; color: var(--success); vertical-align: -.1em; }
-.merchant-for { margin: 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
-/* The amount sizes itself to this column (`cqi`). */
-.pay-col-primary { grid-area: primary; container-type: inline-size; }
-.pay-col-secondary { grid-area: secondary; }
-/* Two columns only where one can't fit: a short landscape screen. The stage
-   then heads the second column, beside the code. */
-@media (orientation: landscape) and (max-height: 760px) and (min-width: 560px) {
-  .pay-grid { max-width: 760px; grid-template-columns: minmax(0, 290px) minmax(0, 1fr); grid-template-areas: "primary stage" "primary secondary"; column-gap: 2rem; text-align: left; }
-  .merchant { max-width: 760px; }
-  .pay-col-primary { text-align: center; }
-  .qr-wrap svg { width: min(208px, 46vh); height: auto; }
+/// The checkout's own stylesheet, on top of the shared theme: a file, as the
+/// page's Content-Security-Policy ([`content_security_policy`]) allows no
+/// inline style of its own.
+pub(crate) const CHECKOUT_CSS: static_assets::Baked =
+    static_assets::bake!("src/views/checkout.css");
+
+/// The Content-Security-Policy every checkout page is sent with. The page
+/// loads only from this Monokulo, so nothing a store adds to it can reach
+/// another site, and a customer on Tor is never sent to the clearnet. The
+/// one inline style allowed, by its hash, is the typeface rules each page
+/// starts with, which carry the request's base path (`crate::base`).
+/// `blob:` images are the refund form reading a photo of a QR code where
+/// `createImageBitmap` is missing. The one thing from elsewhere is the page's
+/// merchant icon, from the verified site it names and never on Tor
+/// ([`CheckoutViewModel::merchant_icon`]).
+pub fn content_security_policy(data: &CheckoutViewModel) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let fonts = base64::engine::general_purpose::STANDARD
+        .encode(sha2::Sha256::digest(super::font_faces().as_bytes()));
+    let icon = merchant_icon_site(data)
+        .map(|site| format!(" {}", site.link()))
+        .unwrap_or_default();
+    format!(
+        "default-src 'none'; script-src 'self'; style-src 'self' 'sha256-{fonts}'; font-src 'self'; img-src 'self' blob:{icon}; connect-src 'self'; form-action 'self'; base-uri 'none'"
+    )
 }
-/* One line, number and unit together: the size follows the column's width
-   (cqi), between a floor that still fits a 280px frame and the full size. */
-.amount { font-size: clamp(1.15rem, 9cqi, 2.2rem); font-weight: 700; margin: 0.2em 0 0.1em; letter-spacing: -0.01em; white-space: nowrap; }
-.amount-unit { font-size: 0.7em; font-weight: 700; color: var(--muted); }
-.amount-label { display: block; color: var(--muted); font-size: 0.8em; }
-.fiat-amount { color: var(--muted); margin-bottom: 1.2em; }
-/* The time left belongs to the amount: under it, before the code. */
-.countdown-slot { margin: -.6em 0 1.2em; text-align: left; }
-.qr-wrap { margin: 0 auto 1.2em; display: flex; justify-content: center; }
-.qr-wrap svg { width: 208px; height: 208px; }
-.address-block { text-align: left; margin: 0 0 1.4em; }
-.address-label { display: block; color: var(--muted); font-size: 0.8em; margin: 0 0 0.35em; }
-.section {
-  text-align: left;
-  margin-top: 1.6em;
-  padding-top: 1.4em;
-  border-top: 1px solid var(--line);
-}
-.pay-grid > .pay-col-primary > .section:first-child,
-.pay-grid > .pay-col-secondary > .section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
-.progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.4em; }
-.progress-bar { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; height: 1em; background: var(--paper); }
-.progress-fill { height: 100%; background: var(--accent); }
-/* Paid: the progress bar takes the paid colour. Follows the live status. */
-#checkout-root[data-status="paid"] .progress-fill { background: var(--state-paid-border); }
-#checkout-root[data-status="overpaid"] .progress-fill { background: var(--state-overpaid-border); }
-.qr-wrap svg { background: var(--qr-bg); }
-/* A code that shouldn't be paid (the payment is in, or the order is over):
-   still plainly the same order, too faint for a wallet's camera. The address
-   is struck through with it (GroupedValue's `void`). */
-.qr-wrap.is-spent svg { opacity: .14; filter: grayscale(1); }
-/* Partial: a new code for the rest. */
-.qr-new svg { outline: 2px solid var(--state-partial-border); outline-offset: 6px; border-radius: 2px; animation: qr-new 1.4s ease-out 2; }
-@keyframes qr-new { from { box-shadow: 0 0 0 6px color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 22px transparent; } }
-@media (prefers-reduced-motion: reduce) { .qr-new svg { animation: none; } }
-.qr-note { margin: -.6em 0 1.2em; font-size: .75em; color: var(--muted); }
-[data-table="payments"] { font-size: 0.8em; margin-top: 1.2em; }
-.meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
-.refresh-toggle { margin: 0 0 .5em; text-align: right; font-size: .85em; }
-/* The scan and image buttons wait, hidden, for the script that works them;
-   the saved tick sits beside them, so the text stops short of all three. */
-.refund-field { margin: .5em 0; }
-#refund_address { padding-right: 7.8em; }
-.refund-field button[hidden] { display: none; }
-.refund-save-state svg { width: 1.25em; height: 1.25em; }
-.refund-save-state { display: none; align-items: center; justify-content: center; width: 2em; color: var(--success); }
-.refund-field.is-saving .refund-save-state, .refund-field.is-saved .refund-save-state { display: inline-flex; }
-.refund-field.is-saving .refund-save-state svg { display: none; }
-.refund-field.is-saving .refund-save-state::after { content: ''; width: 1em; height: 1em; border: 2px solid var(--line); border-top-color: var(--success); border-radius: 50%; animation: refund-spin .7s linear infinite; }
-.refund-field.is-saved input { border-color: var(--success); background: var(--tint-success); }
-.refund-field.is-invalid input { border-color: var(--error); background: var(--tint-error); }
-.refund-field.is-invalid .refund-save-state { display: inline-flex; color: var(--error); }
-.refund-field.is-invalid .refund-save-state svg { display: none; }
-.refund-field.is-invalid .refund-save-state::after { content: '!'; font-weight: 800; border: 2px solid currentColor; border-radius: 50%; width: 1.1em; height: 1.1em; line-height: 1em; text-align: center; }
-@keyframes refund-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .refund-field.is-saving .refund-save-state::after { animation-duration: 1.5s; } }
-.refund-camera { width: 100%; max-height: 16em; background: var(--media-bg); }
-.scan-error { color: var(--error); }
-.checkout-compact { max-width: 100%; }
-.checkout-compact .pay-grid { grid-template-columns: 1fr; grid-template-areas: "stage" "primary" "secondary"; gap: 0; max-width: none; text-align: center; }
-.checkout-compact .stage-slot { margin-bottom: .5em; }
-.checkout-compact .merchant { max-width: none; margin-bottom: .5em; padding: var(--space-sm) var(--space-md); }
-.checkout-compact .merchant .hint { font-size: var(--text-sm); }
-.checkout-compact .pay-col-secondary { font-size: .9em; }
-.checkout-compact .qr-wrap { margin-bottom: .5em; }
-.checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
-.checkout-compact .section { margin-top: .7em; padding-top: .7em; }
-.checkout-compact .meta, .checkout-compact [data-table="payments"] { display: none; }
-.checkout-compact .amount { font-size: clamp(1.1rem, 8cqi, 1.8rem); font-weight: 800; margin: .1em 0; }
-.checkout-compact .fiat-amount { font-size: .8em; margin-bottom: .4em; }
-.checkout-compact .qr-wrap { margin-bottom: .3em; }
-.checkout-compact .qr-wrap svg { width: min(29vh, 158px); height: auto; }
-.checkout-compact .address-block { margin-bottom: .5em; }
-.checkout-compact .countdown-slot { margin-bottom: .5em; }
-.checkout-compact .field-help { font-size: .7em; }
-"#;
 
 /// Who is asking to be paid, and for what: the store's name, its site once
 /// a verified domain covers it, what the order is for and the merchant's
@@ -258,7 +180,7 @@ fn merchant_header(data: &CheckoutViewModel) -> Markup {
                 // The site's own icon once a verified domain covers it, its
                 // name's letter until then (or if it has none, or the
                 // visitor is on Tor).
-                (ui::Avatar::of(&data.store_name).maybe_src(data.merchant_site.as_ref().filter(|_| data.merchant_icon).map(|site| {
+                (ui::Avatar::of(&data.store_name).maybe_src(merchant_icon_site(data).map(|site| {
                     format!("{}/favicon.ico", site.link())
                 })))
                 div class="merchant-about" {
@@ -301,6 +223,11 @@ fn events_url(data: &CheckoutViewModel) -> String {
     )
 }
 
+/// The verified site whose icon this page shows, if any.
+fn merchant_icon_site(data: &CheckoutViewModel) -> Option<&crate::stores::Site> {
+    data.merchant_site.as_ref().filter(|_| data.merchant_icon)
+}
+
 pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
     let extra_head = html! {
         // Without JavaScript this is the only update path; with it,
@@ -309,8 +236,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
         @if !data.is_terminal && data.auto_refresh {
             noscript { meta http-equiv="refresh" content="60" id="checkout-refresh"; }
         }
-        style { (PreEscaped(CHECKOUT_STYLE)) }
-        @if data.is_compact { style { (PreEscaped("body{padding:.4rem}")) } }
+        (super::stylesheet("checkout.css"))
         // Live updates and the refund address save (structured_logging.md
         // part 8), in this order: the glue sets fixi's defaults.
         (script("fx-glue.js", Load::Defer))
@@ -731,10 +657,10 @@ fn live_progress(data: &CheckoutViewModel) -> Markup {
                 span id="confirmations-label" { (data.confirmations) " / " (data.confirmations_required) " confirmations" }
                 span id="received-label" { (super::trim_xmr(&data.amount_received_xmr)) " XMR received" }
             }
-            div class="progress-bar" id="progress-bar" role="progressbar" aria-labelledby="confirmations-label"
-                aria-valuemin="0" aria-valuemax=(data.confirmations_required) aria-valuenow=(data.confirmations)
+            progress class="progress-bar" id="progress-bar" aria-labelledby="confirmations-label"
+                max="100" value=(data.progress_percent)
                 aria-valuetext=(format!("{} of {} confirmations", data.confirmations, data.confirmations_required)) {
-                div class="progress-fill" id="progress-fill" style=(format!("width: {}%", data.progress_percent)) {}
+                (data.progress_percent) "%"
             }
         }
     }
@@ -1289,5 +1215,29 @@ mod tests {
                 "{status}: {html}"
             );
         }
+    }
+
+    /// Images load from this Monokulo, and from the verified site whose icon
+    /// the page shows: not a site that isn't verified, and not on Tor.
+    #[test]
+    fn the_policy_lets_in_only_the_verified_sites_icon() {
+        let images = |data: &CheckoutViewModel| {
+            content_security_policy(data)
+                .split("; ")
+                .find(|directive| directive.starts_with("img-src"))
+                .unwrap()
+                .to_string()
+        };
+        let mut data = test_checkout_view_model(false);
+        data.merchant_site = None;
+        assert_eq!(images(&data), "img-src 'self' blob:");
+        data.merchant_site = crate::stores::Site::parse("shop.example:8443").ok();
+        data.merchant_icon = true;
+        assert_eq!(
+            images(&data),
+            "img-src 'self' blob: https://shop.example:8443"
+        );
+        data.merchant_icon = false;
+        assert_eq!(images(&data), "img-src 'self' blob:");
     }
 }

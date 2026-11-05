@@ -432,7 +432,14 @@ async fn render_checkout_page(
         .read(move |db| db.client_logging(&id))
         .await
         .unwrap_or(false);
-    views::checkout::checkout_page(&chrome, &view).into_response()
+    (
+        [(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            views::checkout::content_security_policy(&view),
+        )],
+        views::checkout::checkout_page(&chrome, &view),
+    )
+        .into_response()
 }
 
 /// Everything the checkout page shows, the QR code included: it asks for

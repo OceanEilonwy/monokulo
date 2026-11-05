@@ -93,10 +93,7 @@ pub async fn embed_policy_middleware(
         }
         Err(_) => {
             let mut response = next.run(request).await;
-            response.headers_mut().insert(
-                header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static("frame-ancestors 'self'"),
-            );
+            add_policy(response.headers_mut(), "frame-ancestors 'self'");
             return response;
         }
     };
@@ -119,15 +116,26 @@ pub async fn embed_policy_middleware(
     }
 
     let mut response = next.run(request).await;
-    if let Some(value) = policy
-        .frame_ancestors(now)
-        .and_then(|value| HeaderValue::from_str(&value).ok())
-    {
-        response
-            .headers_mut()
-            .insert(header::CONTENT_SECURITY_POLICY, value);
+    if let Some(value) = policy.frame_ancestors(now) {
+        add_policy(response.headers_mut(), &value);
     }
     response
+}
+
+/// Adds a Content-Security-Policy beside any the response already has: in the
+/// one header, comma-separated, which a browser enforces as separate policies,
+/// so neither can loosen the other.
+fn add_policy(headers: &mut axum::http::HeaderMap, policy: &str) {
+    let value = match headers
+        .get(header::CONTENT_SECURITY_POLICY)
+        .and_then(|existing| existing.to_str().ok())
+    {
+        Some(existing) => format!("{existing}, {policy}"),
+        None => policy.to_string(),
+    };
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, value);
+    }
 }
 
 /// One of a store's domains as its card and its pages show it; `wait` is
@@ -758,6 +766,19 @@ mod tests {
     use domain_proof::{GRACE_SECS, RECHECK_EVERY_SECS};
 
     use super::super::{build_router, AppState};
+
+    /// Which sites `response` lets frame it, of its Content-Security-Policy
+    /// headers.
+    fn frame_policy(response: &axum::response::Response) -> Option<String> {
+        response
+            .headers()
+            .get("content-security-policy")?
+            .to_str()
+            .unwrap()
+            .split(", ")
+            .find(|policy| policy.starts_with("frame-ancestors"))
+            .map(str::to_string)
+    }
 
     async fn test_state(dns: Arc<FakeDns>) -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::TestEngineConfig::new()
@@ -1435,7 +1456,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(!page.headers().contains_key("content-security-policy"));
+        assert_eq!(frame_policy(&page), None);
 
         // Can't turn on before a domain is verified.
         let (_, html) = send(
@@ -1498,9 +1519,15 @@ mod tests {
             .unwrap();
         assert_eq!(page.status(), StatusCode::OK);
         assert_eq!(
-            page.headers()["content-security-policy"],
-            "frame-ancestors 'self' https://store-home.example https://*.store-home.example"
+            frame_policy(&page).as_deref(),
+            Some("frame-ancestors 'self' https://store-home.example https://*.store-home.example")
         );
+        // Beside the page's own policy, not in place of it: a browser
+        // enforces both.
+        assert!(page.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .starts_with("default-src 'none'"));
 
         // Order creation: a subdomain of the verified domain is fine; no
         // page at all with the public key (see

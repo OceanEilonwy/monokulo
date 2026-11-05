@@ -51,9 +51,24 @@ async function collectCoverageContext(context, testInfo) {
 // the test that produced it.
 const SOLID_DIAGNOSTIC = /^\[[A-Z][A-Z_]+\] /;
 
+// Every page the suite opens reports what its Content-Security-Policy refused,
+// so anything a checkout needs and the policy forbids fails the test that hit
+// it, with no test of its own to keep up to date. `frame-ancestors` is left
+// out: refusing a frame is what some tests are there to see.
+async function installCspReports(context, violations) {
+  await context.exposeFunction('__cspViolation', (violation) => { violations.push(violation); });
+  await context.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (event) => {
+      if (event.effectiveDirective === 'frame-ancestors') return;
+      window.__cspViolation(`${event.effectiveDirective} refused ${event.blockedURI} on ${event.documentURI}`);
+    });
+  });
+}
+
 const test = base.test.extend({
   context: async ({ context }, use, testInfo) => {
     const diagnostics = [];
+    await installCspReports(context, diagnostics);
     context.on('console', message => {
       if (['warning', 'error'].includes(message.type()) && SOLID_DIAGNOSTIC.test(message.text())) diagnostics.push(message.text());
     });
