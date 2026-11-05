@@ -423,7 +423,9 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/confirm`);
   // The live stream carries the new state in; no reload.
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
-  await expect(page.locator('#live-status .mk-stage')).toContainText('Paid.');
+  await expect(page.locator('#status-badge')).toHaveText('Paid');
+  // A screen reader hears each change, from an element that stays.
+  await expect(page.locator('#checkout-announce')).toHaveText('Paid');
   await expect(page.locator('#progress-bar')).toHaveAttribute('value', '100');
   await captureCoverageStage(page, 'checkout-paid-live', test.info());
   // A final order closes its stream for good rather than reconnecting:
@@ -440,7 +442,7 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   // stream at all.
   await page.reload();
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
-  await expect(page.locator('#live-status .mk-stage')).toContainText('Paid.');
+  await expect(page.locator('#status-badge')).toHaveText('Paid');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   await captureCoverageStage(page, 'checkout-paid', test.info());
   await page.evaluate(() => fetch('/__coverage/ready').then(response => response.status));
@@ -456,8 +458,8 @@ test('real checkout guides a customer who underpays and then sends too much', as
   await customerSends(request, orderId, 0.25, 20);
   await expect(page.locator('#status-badge')).toHaveText('Partial payment received');
   // The stage: what arrived, then the rest, with a new code that asks for it.
-  await expect(page.locator('#live-status .mk-stage.state-partial')).toContainText('Send the remaining 0.00075 XMR.');
-  await expect(page.locator('#live-status .mk-stage')).toContainText('0.00025 of 0.001 XMR received.');
+  await expect(page.locator('#live-status .mk-stage.state-partial')).toBeVisible();
+  await expect(page.locator('#amount-label')).toHaveText('Still to pay');
   await expect(page.locator('#xmr-amount')).toHaveText('0.00075 XMR');
   await expect(page.locator('.qr-wrap.qr-new svg')).toBeVisible();
   expect(await code()).not.toBe(first);

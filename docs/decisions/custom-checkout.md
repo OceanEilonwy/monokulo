@@ -109,4 +109,26 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     (`input`, `svg`) or stock keyframe name is theirs to reach. That's the owner's
     "if a merchant abuses it, that's on them", and each version is approved in
     DNS. The protected layer (PR 7) limits accidents, not intent.
+18. **The problem line keeps today's fuller wording, not the mockups' shorter
+    one.** It carries safety advice worked out over time ("If you already sent
+    it, keep this page open"), and shortening it wasn't what the design was
+    after. No line for pending, partial, unconfirmed or confirming, where the
+    track, amounts and code say it.
+19. **`{{merchant}}` joins the feature table.** Stock layouts open with who's
+    asking, and a template should be able to too.
+20. **A page says which regions it showed in its stream's URL (`r=1001`).** A
+    region only replaces itself when its condition flips, so a refund address
+    being typed in one survives. A stream can't otherwise tell whether a page
+    it reconnects to is out of date.
+21. **`live-pay` still answers for pages open across the upgrade.** Requests
+    without `parts=2` get today's parts, as `fragments` already does. Both can
+    go a release later.
+22. **While a payment confirms, the address's label says "Payment seen. Don't
+    send it again".** The plain track removed that sentence, and Compact has no
+    "XMR received" to say it otherwise. A review raised a customer paying twice.
+23. **`{{refund}}` can't go inside `{{if}}`.** A region's swap would lose what's
+    typed and the script that drives the form.
+24. **Status changes are announced from a permanent element.** `#checkout-announce`
+    keeps its place with only its text replaced, which is what a screen reader
+    needs; the plain track otherwise left no live region in normal states.
 

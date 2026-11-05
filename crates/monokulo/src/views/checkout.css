@@ -65,7 +65,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .qr-wrap svg { background: var(--qr-bg); }
 /* A code that shouldn't be paid (the payment is in, or the order is over):
    still plainly the same order, too faint for a wallet's camera. The address
-   is struck through with it (GroupedValue's `void`). */
+   mutes with it (GroupedValue's `void`). */
 .qr-wrap.is-spent svg { opacity: .14; filter: grayscale(1); }
 /* Partial: a new code for the rest. */
 .qr-new svg { outline: 2px solid var(--state-partial-border); outline-offset: 6px; border-radius: 2px; animation: qr-new 1.4s ease-out 2; }
@@ -103,7 +103,6 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .qr-wrap { margin-bottom: .5em; }
 .checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
 .checkout-compact .section { margin-top: .7em; padding-top: .7em; }
-.checkout-compact .meta, .checkout-compact [data-table="payments"] { display: none; }
 .checkout-compact .amount { font-size: clamp(var(--text-lg), 8cqi, var(--text-xl)); font-weight: 800; margin: .1em 0; }
 .checkout-compact .fiat-amount { font-size: var(--text-xs); margin-bottom: .4em; }
 .checkout-compact .qr-wrap { margin-bottom: .3em; }
@@ -113,3 +112,6 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .field-help { font-size: var(--text-2xs); }
 /* A small frame's tighter margin. */
 body:has(.checkout-compact) { padding: .4rem; }
+/* A template's regions take no room of their own. */
+mk-if { display: contents; }
+.amount, .fiat-amount { display: block; }

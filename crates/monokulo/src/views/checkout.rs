@@ -16,6 +16,9 @@
 //! Server-Sent Events, auto-saves the refund address, and locally decodes
 //! refund QR images without sending those images to the server.
 
+use checkout_template::{Feature, Part, State, Status, Template};
+
+use super::checkout_layouts::Layout;
 use maud::{html, Markup, PreEscaped};
 
 use super::OrderStatus;
@@ -100,10 +103,9 @@ pub struct CheckoutViewModel {
     /// Set only when the refund-address form below was just rejected (empty
     /// submission, or a real engine failure) - `None` on a plain page load.
     pub refund_address_error: Option<String>,
-    /// `?view=compact`: a single-column layout with a full-screen paid
-    /// state, for small frames. A generic presentation option - the page
+    /// Which layout this page is in. A generic presentation option - the page
     /// knows nothing about who embeds it (the POS terminal is one user).
-    pub is_compact: bool,
+    pub layout: Layout,
     pub refund_enabled: bool,
     pub query_suffix: String,
     /// Whether the no-JavaScript meta refresh is on (`?refresh=false` turns
@@ -171,7 +173,7 @@ pub fn content_security_policy(data: &CheckoutViewModel) -> String {
 fn merchant_header(data: &CheckoutViewModel) -> Markup {
     html! {
         header class="merchant" {
-            @if data.is_compact {
+            @if data.layout == Layout::Compact {
                 (ui::Hint::new(html! {
                     strong { (data.store_name) }
                     @if let Some(reference) = &data.merchant_reference { " · " (reference) }
@@ -212,75 +214,28 @@ fn events_url(data: &CheckoutViewModel) -> String {
         '&'
     };
     format!(
-        "{}{}{join}routed=true",
+        "{}{}{join}routed=true&parts=2&r={}",
         crate::base::url(
             crate::http::paths::CheckoutEventsPath {
                 order_id: data.order_id.clone()
             }
             .to_string()
         ),
-        data.query_suffix
+        data.query_suffix,
+        showing_bits(
+            &data
+                .layout
+                .template()
+                .regions_showing(&template_state(data))
+        ),
     )
 }
 
-/// The verified site whose icon this page shows, if any.
-fn merchant_icon_site(data: &CheckoutViewModel) -> Option<&crate::stores::Site> {
-    data.merchant_site.as_ref().filter(|_| data.merchant_icon)
-}
-
-pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
-    let extra_head = html! {
-        // Without JavaScript this is the only update path; with it,
-        // `checkout.js` streams changes in place instead (`noscript` content
-        // is never parsed as markup when scripting is on).
-        @if !data.is_terminal && data.auto_refresh {
-            noscript { meta http-equiv="refresh" content="60" id="checkout-refresh"; }
-        }
-        (super::stylesheet("checkout.css"))
-        // Live updates and the refund address save (structured_logging.md
-        // part 8), in this order: the glue sets fixi's defaults.
-        (script("fx-glue.js", Load::Defer))
-        (script("fixi.js", Load::Defer))
-        (script("ssexi.js", Load::Defer))
-        // The shared components' islands: the address's Copy button.
-        (script("ui-islands.js", Load::Module))
-        // Problem reports, only from a store that opted in to client logs
-        // (off by default: a payment page, D8).
-        @if chrome.browser_reports {
-            (script("telemetry.js", Load::Defer))
-        }
-    };
-    let body = html! {
-        div class=(if data.is_compact { "pay-wrap checkout-compact" } else { "pay-wrap" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
-            h1 class="sr-only" { "Monero payment of " (data.xmr_amount) " XMR" }
-            @if !data.is_terminal {
-                noscript {
-                    p class="refresh-toggle" {
-                        a href=(format!("{}{}", checkout_url(&data.order_id), data.toggled_refresh_suffix)) {
-                            "Auto Refresh: " (if data.auto_refresh { "ON" } else { "OFF" })
-                        }
-                    }
-                }
-            }
-
-            // With JavaScript, fixi opens the order's event stream as soon
-            // as it sees this, and ssexi routes each changed part of the
-            // page into place. Not for a final order: nothing will change.
-            @if !data.is_terminal {
-                span id="checkout-stream" hidden fx-action=(events_url(data)) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect fx-own-errors {}
-            }
-
-            (merchant_header(data))
-            div class="pay-grid" {
-                (live_status(data))
-                div class="pay-col-primary" {
-                    (live_pay(data))
-
-                    (live_address(data))
-                }
-                div class="pay-col-secondary" {
-                    (live_progress(data))
-
+/// The refund address: the form, or once a payment has arrived, what's recorded.
+/// Not live: a customer may be typing in it.
+fn refund_part(data: &CheckoutViewModel) -> Markup {
+    html! {
+        div data-part="refund" {
                     @if data.refund_enabled && data.refund_address_locked { div class="section" {
                         // Not the form's ids: `checkout.js` leaves this alone.
                         label for="refund-address-fixed" { "Refund address" }
@@ -320,14 +275,179 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                                 noscript { (ui::FormActions::new(ui::Button::new("Save").kind(ui::ButtonType::Submit))) }
                         }
                     } }
+        }
+    }
+}
 
-                    (live_payments(data))
+/// One feature of a template, for this order.
+fn render_part(data: &CheckoutViewModel, part: &Part) -> Markup {
+    match part.feature {
+        Feature::Store => html! { span data-part="store" { (data.store_name) } },
+        Feature::OrderId => html! { span data-part="order-id" { (data.order_id) } },
+        Feature::Merchant => merchant_header(data),
+        Feature::Status => live_status(data),
+        Feature::Amount => live_amount(data, part.option == Some("bare")),
+        Feature::Fiat => live_fiat(data),
+        Feature::Countdown => live_countdown(data),
+        Feature::Qr => live_qr(data, part.option),
+        Feature::Address => live_address(data),
+        Feature::Progress => live_progress(data),
+        Feature::Refund => refund_part(data),
+        Feature::Payments => live_payments(data),
+    }
+}
 
-                    div class="meta" {
-                        "Order ID: " (data.order_id)
+/// The element a live update replaces for a feature, if it has one.
+fn live_id(feature: Feature) -> Option<&'static str> {
+    match feature {
+        Feature::Status => Some("live-status"),
+        Feature::Amount => Some("live-amount"),
+        Feature::Fiat => Some("live-fiat"),
+        Feature::Countdown => Some("live-countdown"),
+        Feature::Qr => Some("live-qr"),
+        Feature::Address => Some("live-address"),
+        Feature::Progress => Some("live-progress"),
+        Feature::Payments => Some("live-payments"),
+        Feature::Store | Feature::OrderId | Feature::Merchant | Feature::Refund => None,
+    }
+}
+
+/// What a template's conditions can ask about this order.
+pub fn template_state(data: &CheckoutViewModel) -> State {
+    State {
+        status: match data.status {
+            OrderStatus::Pending => Status::Pending,
+            OrderStatus::Partial => Status::Partial,
+            OrderStatus::Unconfirmed => Status::Unconfirmed,
+            OrderStatus::Confirming => Status::Confirming,
+            OrderStatus::Paid => Status::Paid,
+            OrderStatus::Overpaid => Status::Overpaid,
+            OrderStatus::Expired => Status::Expired,
+            OrderStatus::Cancelled => Status::Cancelled,
+        },
+        double_spend: data.double_spend_detected_at.is_some(),
+        fiat: priced_in_fiat(data),
+        refund_locked: data.refund_address_locked,
+    }
+}
+
+/// The template's part of the page.
+fn page_body(template: &Template, data: &CheckoutViewModel) -> String {
+    template.render(&template_state(data), &mut |part| {
+        render_part(data, part).into_string()
+    })
+}
+
+/// Which of a template's regions show, as the page's event stream says it:
+/// `r=1001`.
+pub fn showing_bits(showing: &[bool]) -> String {
+    showing
+        .iter()
+        .map(|&on| if on { '1' } else { '0' })
+        .collect()
+}
+
+/// What a page's stream starts from: the bits the page sent as this stream's
+/// last event, if it's reconnecting, otherwise those in its URL, which are only
+/// true of when it loaded.
+pub fn page_showing(
+    last_event_id: Option<&str>,
+    in_url: Option<&str>,
+    regions: usize,
+) -> Option<Vec<bool>> {
+    last_event_id
+        .and_then(|bits| parse_showing(bits, regions))
+        .or_else(|| in_url.and_then(|bits| parse_showing(bits, regions)))
+}
+
+/// Reads [`showing_bits`], for a template with `regions` regions.
+pub fn parse_showing(bits: &str, regions: usize) -> Option<Vec<bool>> {
+    (bits.len() == regions && bits.bytes().all(|b| b == b'0' || b == b'1'))
+        .then(|| bits.bytes().map(|b| b == b'1').collect())
+}
+
+/// What the page's live stream sends now, by the id each replaces: a region
+/// only when its condition has flipped (it may hold a form being typed in),
+/// then each part showing. `showing` is what the page last had.
+pub fn live_updates(
+    template: &Template,
+    data: &CheckoutViewModel,
+    showing: &mut Vec<bool>,
+) -> Vec<(String, String)> {
+    let state = template_state(data);
+    let now = template.regions_showing(&state);
+    let mut updates = Vec::new();
+    for (id, on) in now.iter().enumerate() {
+        if showing.get(id) != Some(on) {
+            let region = template.render_region(id, &state, &mut |part| {
+                render_part(data, part).into_string()
+            });
+            if let Some(region) = region {
+                updates.push((format!("mk-if-{id}"), region));
+            }
+        }
+    }
+    *showing = now;
+    for part in template.parts_showing(&state) {
+        if let Some(id) = live_id(part.feature) {
+            updates.push((id.to_string(), render_part(data, &part).into_string()));
+        }
+    }
+    updates
+}
+
+/// The verified site whose icon this page shows, if any.
+fn merchant_icon_site(data: &CheckoutViewModel) -> Option<&crate::stores::Site> {
+    data.merchant_site.as_ref().filter(|_| data.merchant_icon)
+}
+
+pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
+    let template = data.layout.template();
+    let extra_head = html! {
+        // Without JavaScript this is the only update path; with it,
+        // `checkout.js` streams changes in place instead (`noscript` content
+        // is never parsed as markup when scripting is on).
+        @if !data.is_terminal && data.auto_refresh {
+            noscript { meta http-equiv="refresh" content="60" id="checkout-refresh"; }
+        }
+        (super::stylesheet("checkout.css"))
+        // Live updates and the refund address save (structured_logging.md
+        // part 8), in this order: the glue sets fixi's defaults.
+        (script("fx-glue.js", Load::Defer))
+        (script("fixi.js", Load::Defer))
+        (script("ssexi.js", Load::Defer))
+        // The shared components' islands: the address's Copy button.
+        (script("ui-islands.js", Load::Module))
+        // Problem reports, only from a store that opted in to client logs
+        // (off by default: a payment page, D8).
+        @if chrome.browser_reports {
+            (script("telemetry.js", Load::Defer))
+        }
+    };
+    let body = html! {
+        div class=(if data.layout == Layout::Compact { "pay-wrap checkout-compact" } else { "pay-wrap" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
+            h1 class="sr-only" { "Monero payment of " (data.xmr_amount) " XMR" }
+            // Always here, and only its text replaced, so a screen reader
+            // announces each change of status.
+            p id="checkout-announce" class="sr-only" role="status" { (data.status_label) }
+            @if !data.is_terminal {
+                noscript {
+                    p class="refresh-toggle" {
+                        a href=(format!("{}{}", checkout_url(&data.order_id), data.toggled_refresh_suffix)) {
+                            "Auto Refresh: " (if data.auto_refresh { "ON" } else { "OFF" })
+                        }
                     }
                 }
             }
+
+            // With JavaScript, fixi opens the order's event stream as soon
+            // as it sees this, and ssexi routes each changed part of the
+            // page into place. Not for a final order: nothing will change.
+            @if !data.is_terminal {
+                span id="checkout-stream" hidden fx-action=(events_url(data)) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect fx-own-errors {}
+            }
+
+            (PreEscaped(page_body(template, data)))
         }
         (script("checkout.js", Load::Now))
     };
@@ -424,15 +544,15 @@ fn stage_steps(data: &CheckoutViewModel) -> Vec<ui::ProgressStep> {
         .collect()
 }
 
-/// The stage's words: a short title, then what to do now.
-fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
+/// The line under the track, only when something is wrong: a short title, then
+/// what to do now. The track, amounts and code say the rest.
+fn stage_message(data: &CheckoutViewModel) -> Option<(String, Markup)> {
     let received = super::trim_xmr(&data.amount_received_xmr);
     let due = super::trim_xmr(&data.amount_due_xmr);
-    let total = super::trim_xmr(&data.xmr_amount);
     let when = |at: i64| html! { span id="double-spend-time" { @if data.local_times { (data.clock.time_local(at)) } @else { (data.clock.time(at)) } } };
     if let Some(at) = reversed_at(data.status, data.double_spend_detected_at) {
         let when = when(at);
-        return if awaiting_payment(data) {
+        return Some(if awaiting_payment(data) {
             (
                 "A payment was reversed".to_string(),
                 html! { "A double spend was detected at " (when) ", so it doesn't count. Send " (due) " XMR to pay this order." },
@@ -442,33 +562,19 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
                 "Payment reversed".to_string(),
                 html! { "A double spend was detected at " (when) ", so that payment doesn't count. Contact the merchant before sending anything." },
             )
-        };
+        });
     }
     // Covered anyway: the paid stage, with a note of the reversed payment.
     let reversed_note = data.double_spend_detected_at.map(|at| {
         html! { " A double spend was detected at " (when(at)) ", so that payment doesn't count; another one covers this order." }
     });
-    match data.status {
-        OrderStatus::Pending => (
-            "Send the exact amount below".to_string(),
-            html! { "Scan the code with your wallet, or copy the address." },
-        ),
-        OrderStatus::Partial => (
-            format!("Send the remaining {due} XMR"),
-            html! { (received) " of " (total) " XMR received. This new code asks for the rest." },
-        ),
-        OrderStatus::Unconfirmed => (
-            "Waiting for confirmation".to_string(),
-            html! { (received) " XMR seen on the network. Don't send it again; this page updates by itself." },
-        ),
-        OrderStatus::Confirming => (
-            "Confirming".to_string(),
-            html! { (data.confirmations) " of " (data.confirmations_required) " confirmations. Don't send it again; this page updates by itself." },
-        ),
-        OrderStatus::Paid => (
-            "Paid".to_string(),
-            html! { (received) " XMR received" @if data.confirmations_required > 0 { " and confirmed" } ". Nothing more to send." @if let Some(note) = &reversed_note { (note) } },
-        ),
+    Some(match data.status {
+        OrderStatus::Pending
+        | OrderStatus::Partial
+        | OrderStatus::Unconfirmed
+        | OrderStatus::Confirming => return None,
+        // Covered, but a payment was reversed on the way: worth a line.
+        OrderStatus::Paid => ("Paid".to_string(), html! { (reversed_note?) }),
         OrderStatus::Overpaid => (
             "Paid, with extra".to_string(),
             html! {
@@ -494,14 +600,18 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
                 @else { (received) " XMR arrived after it was cancelled. Don't send more; contact the merchant about a refund." }
             },
         ),
-    }
+    })
 }
 
-/// The stage above the code, in every state: the same place and shape, so
-/// nothing moves as the order changes (the badge is for screen readers).
+/// The track above the code, in every state, so nothing moves as the order
+/// changes (the badge is for screen readers).
 fn live_status(data: &CheckoutViewModel) -> Markup {
     let steps = stage_steps(data);
-    let (title, message) = stage_message(data);
+    let steps = ui::ProgressSteps::new("Payment progress", steps);
+    let steps = match stage_message(data) {
+        Some((title, message)) => steps.title(title).message(message),
+        None => steps,
+    };
     let shown = super::order_state(data.status).1;
     let state = if reversed_at(data.status, data.double_spend_detected_at).is_some() {
         ui::OrderState::DoubleSpend
@@ -509,9 +619,9 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
         shown
     };
     html! {
-        div id="live-status" class="stage-slot" data-live {
+        div id="live-status" class="stage-slot" data-live data-part="status" {
             span id="status-badge" class=(format!("sr-only state-{shown}")) { (data.status_label) }
-            (ui::ProgressSteps::new("Payment progress", steps).title(title).message(message).state(state))
+            (steps.state(state).plain(true))
         }
     }
 }
@@ -543,16 +653,12 @@ fn refund_actions(data: &CheckoutViewModel) -> ui::Slot {
     ])
 }
 
-/// The part of the payment column that follows the order: the amount and
-/// its QR code, always in the same place. After a partial payment the
-/// amount is what's left and the code is redrawn for it; once the code
-/// shouldn't be paid (the payment is in, or the order is over) it fades
-/// (`.is-spent`), so nothing invites a second payment.
-fn live_pay(data: &CheckoutViewModel) -> Markup {
+/// The amount, always in the same place: what's left after a partial payment,
+/// the order's total once nothing more is owed. `bare` is the number alone.
+fn live_amount(data: &CheckoutViewModel, bare: bool) -> Markup {
     let due = super::trim_xmr(&data.amount_due_xmr);
     let total = super::trim_xmr(&data.xmr_amount);
-    let partial = data.status == OrderStatus::Partial;
-    let (label, amount) = if partial {
+    let (label, amount) = if data.status == OrderStatus::Partial {
         ("Still to pay", due)
     } else if awaiting_payment(data) {
         ("Amount due", total)
@@ -560,28 +666,71 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
         ("Order total", total)
     };
     html! {
-        div id="live-pay" data-live {
-            span class="amount-label" id="amount-label" { (label) }
+        span id="live-amount" data-live data-part="amount" {
+            @if !bare { span class="amount-label" id="amount-label" { (label) } }
             // The number and its unit never split; the font shrinks with
             // the frame instead (see `.amount`).
-            div class="amount" id="xmr-amount" aria-labelledby="amount-label" {
+            span class="amount" id="xmr-amount" aria-labelledby=[(!bare).then_some("amount-label")] {
                 span class="amount-value" { (amount) } " " span class="amount-unit" { "XMR" }
             }
-            // A fiat equivalent only for an order priced in fiat.
-            @if !partial && priced_in_fiat(data) {
-                div class="fiat-amount" { "≈ " (super::display_amount(&data.amount, &data.currency)) }
+        }
+    }
+}
+
+/// A fiat equivalent, only for an order priced in fiat.
+fn live_fiat(data: &CheckoutViewModel) -> Markup {
+    html! {
+        span id="live-fiat" data-live data-part="fiat" {
+            @if data.status != OrderStatus::Partial && priced_in_fiat(data) {
+                span class="fiat-amount" { "≈ " (super::display_amount(&data.amount, &data.currency)) }
             }
+        }
+    }
+}
+
+/// The time left to pay, while money is owed.
+fn live_countdown(data: &CheckoutViewModel) -> Markup {
+    html! {
+        div id="live-countdown" data-live data-part="countdown" {
             @if awaiting_payment(data) {
                 div class="countdown-slot" { (countdown(data)) }
             }
+        }
+    }
+}
+
+/// The code, always in the same place. After a partial payment it's redrawn
+/// for what's left; once it shouldn't be paid (the payment is in, or the order
+/// is over) it fades (`.is-spent`), so nothing invites a second payment.
+fn live_qr(data: &CheckoutViewModel, size: Option<&str>) -> Markup {
+    let partial = data.status == OrderStatus::Partial;
+    let state = if partial {
+        " qr-new"
+    } else if awaiting_payment(data) {
+        ""
+    } else {
+        " is-spent"
+    };
+    let size = size.map_or(String::new(), |size| format!(" qr-{size}"));
+    html! {
+        div id="live-qr" data-live data-part="qr" {
+            div class=(format!("qr-wrap{state}{size}")) { (data.qr_code_svg) }
             @if partial {
-                div class="qr-wrap qr-new" { (data.qr_code_svg) }
-                p class="qr-note" { "Wallets that read payment codes fill in " (due) " XMR for you." }
-            } @else if awaiting_payment(data) {
-                div class="qr-wrap" { (data.qr_code_svg) }
-            } @else {
-                div class="qr-wrap is-spent" { (data.qr_code_svg) }
+                p class="qr-note" { "Wallets that read payment codes fill in " (super::trim_xmr(&data.amount_due_xmr)) " XMR for you." }
             }
+        }
+    }
+}
+
+/// What a page opened before a release's split of `live-pay` still asks for by
+/// that id, until those pages are gone.
+fn live_pay(data: &CheckoutViewModel) -> Markup {
+    html! {
+        div id="live-pay" data-live {
+            (live_amount(data, false))
+            (live_fiat(data))
+            (live_countdown(data))
+            (live_qr(data, None))
         }
     }
 }
@@ -618,8 +767,8 @@ fn countdown(data: &CheckoutViewModel) -> ui::Countdown {
 }
 
 /// The address, whole, in groups to check by eye, under what to send to
-/// it. Struck through, with nothing to copy it with, once it shouldn't be
-/// paid: a live part, so that follows the order.
+/// it. Muted, with nothing to copy it with, once it shouldn't be paid: a live
+/// part, so that follows the order.
 fn live_address(data: &CheckoutViewModel) -> Markup {
     const GROUP: usize = 6;
     let open = awaiting_payment(data);
@@ -639,10 +788,11 @@ fn live_address(data: &CheckoutViewModel) -> Markup {
         });
     }
     html! {
-        div class="address-block" id="live-address" data-live {
+        div class="address-block" id="live-address" data-live data-part="address" {
             span class="address-label" id="address-label" {
                 @if data.status == OrderStatus::Partial { "Send the remaining amount to" }
                 @else if data.status == OrderStatus::Pending { "Send exactly this amount to" }
+                @else if matches!(data.status, OrderStatus::Unconfirmed | OrderStatus::Confirming) { "Payment seen. Don't send it again" }
                 @else { "Payment address" }
             }
             (address)
@@ -652,7 +802,7 @@ fn live_address(data: &CheckoutViewModel) -> Markup {
 
 fn live_progress(data: &CheckoutViewModel) -> Markup {
     html! {
-        div class="section" id="live-progress" data-live {
+        div class="section" id="live-progress" data-live data-part="progress" {
             div class="progress-row" {
                 span id="confirmations-label" { (data.confirmations) " / " (data.confirmations_required) " confirmations" }
                 span id="received-label" { (super::trim_xmr(&data.amount_received_xmr)) " XMR received" }
@@ -682,7 +832,7 @@ fn live_payments(data: &CheckoutViewModel) -> Markup {
         ])))
     });
     html! {
-        div id="live-payments" data-live {
+        div id="live-payments" data-live data-part="payments" {
             @if !data.payments.is_empty() {
                 div class="section" {
                     (ui::Table::new(ui::Slot::many(rows))
@@ -882,7 +1032,7 @@ mod tests {
             refund_address: None,
             refund_address_locked: false,
             refund_address_error: None,
-            is_compact: false,
+            layout: Layout::Detailed,
             refund_enabled: true,
             query_suffix: String::new(),
             auto_refresh: true,
@@ -931,7 +1081,7 @@ mod tests {
         data.currency = "USD".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
-            html.contains(r#"<div class="fiat-amount">≈ 12.50 USD</div>"#),
+            html.contains(r#"<span class="fiat-amount">≈ 12.50 USD</span>"#),
             "{html}"
         );
     }
@@ -998,7 +1148,9 @@ mod tests {
                 "missing {id} in {fragment}"
             );
         }
-        assert_eq!(fragment.matches("data-live").count(), 5);
+        // The parts `live-pay` holds for a page from before they were split,
+        // and the other four.
+        assert_eq!(fragment.matches("data-live").count(), 9);
         assert!(fragment.contains("mempool"));
         assert!(
             !fragment.contains("refund_address"),
@@ -1073,11 +1225,7 @@ mod tests {
         data.amount_received_xmr = "0.200000000000".to_string();
         data.amount_due_xmr = "0.300000000000".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(
-            html.contains("<strong>Send the remaining 0.3 XMR.</strong>"),
-            "{html}"
-        );
-        assert!(html.contains("0.2 of 0.5 XMR received. This new code asks for the rest."));
+        assert!(html.contains("Still to pay"), "{html}");
         assert!(
             html.contains(r#"<span class="amount-value">0.3</span>"#),
             "{html}"
@@ -1090,7 +1238,7 @@ mod tests {
         data.status = engine_protocol::order_status::OrderStatus::Confirming;
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(!html.contains(" left to pay</span>"), "{html}");
-        assert!(html.contains("Payment address"), "{html}");
+        assert!(html.contains("Payment seen"), "{html}");
 
         // Overpaid: the extra explained, over the order total.
         data.status = engine_protocol::order_status::OrderStatus::Overpaid;
@@ -1146,13 +1294,6 @@ mod tests {
         assert!(!html.contains("Confirm<span"), "{html}");
         // Seen is the last step before Paid, so Paid is where the order is.
         assert!(html.contains(r#"<li class="step-now"><span class="mk-track-dot" aria-hidden="true"></span><span class="mk-track-name">Paid<span class="visually-hidden">, now</span>"#), "{html}");
-
-        data.status = engine_protocol::order_status::OrderStatus::Paid;
-        let html = checkout_page(&chrome(), &data).into_string();
-        assert!(
-            html.contains("XMR received. Nothing more to send."),
-            "{html}"
-        );
     }
 
     #[test]
@@ -1239,5 +1380,144 @@ mod tests {
         );
         data.merchant_icon = false;
         assert_eq!(images(&data), "img-src 'self' blob:");
+    }
+
+    /// A plain track, and a line only when something is wrong.
+    #[test]
+    fn the_status_says_something_only_when_something_is_wrong() {
+        use engine_protocol::order_status::OrderStatus::*;
+        let line = |status, reversed: Option<i64>| {
+            let mut data = test_checkout_view_model(false);
+            data.status = status;
+            data.double_spend_detected_at = reversed;
+            stage_message(&data).map(|(title, _)| title)
+        };
+        for status in [Pending, Partial, Unconfirmed, Confirming, Paid] {
+            assert_eq!(line(status, None), None, "{status:?}");
+        }
+        assert_eq!(line(Overpaid, None).as_deref(), Some("Paid, with extra"));
+        assert_eq!(line(Expired, None).as_deref(), Some("This payment expired"));
+        assert_eq!(
+            line(Cancelled, None).as_deref(),
+            Some("This order was cancelled")
+        );
+        assert_eq!(
+            line(Pending, Some(1)).as_deref(),
+            Some("A payment was reversed")
+        );
+        assert_eq!(
+            line(Unconfirmed, Some(1)).as_deref(),
+            Some("Payment reversed")
+        );
+        assert_eq!(line(Paid, Some(1)).as_deref(), Some("Paid"));
+    }
+
+    /// Every status a stock layout can be in renders each part it asks for,
+    /// once, and the stream sends those by their ids.
+    #[test]
+    fn a_stock_layout_sends_each_of_its_live_parts_by_id() {
+        let mut data = test_checkout_view_model(false);
+        data.layout = Layout::Compact;
+        let template = data.layout.template();
+        let mut showing = Vec::new();
+        let ids: Vec<String> = live_updates(template, &data, &mut showing)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "live-status",
+                "live-amount",
+                "live-fiat",
+                "live-countdown",
+                "live-qr",
+                "live-address"
+            ]
+        );
+        data.layout = Layout::Detailed;
+        let ids: Vec<String> = live_updates(data.layout.template(), &data, &mut showing)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(ids.contains(&"live-payments".to_string()), "{ids:?}");
+        assert!(ids.contains(&"live-progress".to_string()), "{ids:?}");
+    }
+
+    /// A region is sent when its condition flips, never because something in
+    /// it changed.
+    #[test]
+    fn a_region_is_sent_only_when_it_flips() {
+        let template = Template::load(
+            "{{status}}{{if awaiting}}<p>Pay</p>{{end}}{{if final}}<p>Done</p>{{end}}",
+        )
+        .unwrap();
+        let mut data = test_checkout_view_model(false);
+        let mut showing = vec![true, false];
+        let regions = |updates: Vec<(String, String)>| {
+            updates
+                .into_iter()
+                .filter(|(id, _)| id.starts_with("mk-if"))
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        };
+        assert!(regions(live_updates(&template, &data, &mut showing)).is_empty());
+        data.confirmations = 3;
+        assert!(regions(live_updates(&template, &data, &mut showing)).is_empty());
+        data.status = OrderStatus::Paid;
+        assert_eq!(
+            regions(live_updates(&template, &data, &mut showing)),
+            ["mk-if-0", "mk-if-1"]
+        );
+        assert_eq!(showing, [false, true]);
+    }
+
+    /// A stream reconnecting starts from what it last sent, not what the page
+    /// loaded with: otherwise each reconnect would replace a region that had
+    /// flipped since, losing whatever was typed in it.
+    #[test]
+    fn a_reconnecting_stream_starts_from_what_it_last_sent() {
+        assert_eq!(
+            page_showing(Some("01"), Some("10"), 2),
+            Some(vec![false, true])
+        );
+        assert_eq!(page_showing(None, Some("10"), 2), Some(vec![true, false]));
+        assert_eq!(
+            page_showing(Some("x"), Some("10"), 2),
+            Some(vec![true, false])
+        );
+        assert_eq!(page_showing(None, None, 2), None);
+    }
+
+    /// Once seen, the address says not to pay it again: a compact page has
+    /// nothing else that does.
+    #[test]
+    fn the_address_says_a_payment_was_seen_while_it_confirms() {
+        let label = |status| {
+            let mut data = test_checkout_view_model(false);
+            data.status = status;
+            let html = live_address(&data).into_string();
+            let start = html.find("id=\"address-label\">").unwrap() + 19;
+            html[start..start + html[start..].find('<').unwrap()].to_string()
+        };
+        assert_eq!(label(OrderStatus::Pending), "Send exactly this amount to");
+        assert_eq!(
+            label(OrderStatus::Unconfirmed),
+            "Payment seen. Don't send it again"
+        );
+        assert_eq!(
+            label(OrderStatus::Confirming),
+            "Payment seen. Don't send it again"
+        );
+        assert_eq!(label(OrderStatus::Paid), "Payment address");
+    }
+
+    #[test]
+    fn the_page_says_which_regions_it_showed() {
+        assert_eq!(showing_bits(&[true, false, true]), "101");
+        assert_eq!(parse_showing("101", 3), Some(vec![true, false, true]));
+        assert_eq!(parse_showing("101", 2), None);
+        assert_eq!(parse_showing("1x1", 3), None);
+        assert_eq!(parse_showing("", 0), Some(vec![]));
     }
 }

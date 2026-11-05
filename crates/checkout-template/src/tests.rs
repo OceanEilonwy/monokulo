@@ -135,6 +135,10 @@ fn conditions_ask_about_the_state() {
     );
     assert_eq!(load_problem("{{if fiat}}"), "This {{if}} has no {{end}}.");
     assert_eq!(load_problem("{{end}}"), "This {{end}} has no {{if}}.");
+    assert_eq!(
+        load_problem("{{if fiat}}{{refund}}{{end}}"),
+        "{{refund}} can't go inside an {{if}}."
+    );
 }
 
 /// A region's `{{if}}` and `{{end}}` share a parent, so what's written back
@@ -521,7 +525,7 @@ fn every_form_published_templates_can_use_still_loads() {
     let corpus = [
         "{{store}}{{amount}}{{amount bare}}{{fiat}}{{order-id}}",
         "{{qr}}{{qr small}}{{qr medium}}{{qr large}}",
-        "{{address}}{{address short}}{{status}}{{countdown}}{{progress}}{{refund}}{{payments}}",
+        "{{address}}{{address short}}{{status}}{{countdown}}{{progress}}{{refund}}{{payments}}{{merchant}}",
         "{{if awaiting}}{{end}}{{if final}}{{end}}{{if double_spend}}{{end}}{{if fiat}}{{end}}{{if refund_locked}}{{end}}",
         "{{if !awaiting, !final, !double_spend, !fiat, !refund_locked}}{{end}}",
         "{{if status=pending|partial|unconfirmed|confirming|paid|overpaid|expired|cancelled}}{{end}}",

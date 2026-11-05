@@ -119,7 +119,7 @@ test('a store is set up, an order made from its page with its checkout following
   expect(new URL(opened.url()).pathname.startsWith(`${PREFIX}/checkout/`)).toBe(true);
   // The share page frames the checkout, under the prefix too.
   await expect(checkout.locator('#checkout-frame')).toHaveAttribute('src', new RegExp(`^${PREFIX}/checkout/order_`));
-  await expect(checkout.frameLocator('#checkout-frame').locator('body')).toContainText('Send the exact amount below');
+  await expect(checkout.frameLocator('#checkout-frame').locator('body')).toContainText('Send exactly this amount to');
 
   // The POS charges an order and cancels it: its fetches, and the stream
   // it follows its orders on, under the prefix.

@@ -14,7 +14,7 @@ import type { OrderState, ProgressStep } from './types';
  * upright (`vertical`), each step can say more under its name and
  * carry its own state and symbol: an order's life, start to finish.
  */
-export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "compact" | "data-size" | "label" | "message" | "state" | "steps" | "style" | "title" | "vertical"> {
+export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "compact" | "data-plain" | "data-size" | "label" | "message" | "plain" | "state" | "steps" | "style" | "title" | "vertical"> {
   /**
    * What the steps are of ("Payment progress").
    */
@@ -44,6 +44,11 @@ export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "
    * @default false
    */
   vertical?: boolean;
+  /**
+   * Just the track and its line, with no box around them.
+   * @default false
+   */
+  plain?: boolean;
 }
 
 /**
@@ -55,9 +60,9 @@ export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "
  * carry its own state and symbol: an order's life, start to finish.
  */
 export function ProgressSteps(props: ProgressStepsProps): JSX.Element {
-  const rest = omit(props, "label", "steps", "title", "message", "state", "compact", "vertical");
+  const rest = omit(props, "label", "steps", "title", "message", "state", "compact", "vertical", "plain");
   return (
-    <div class={tokens(`mk-stage`, props.state != null && `state-${props.state}`)} data-size={(props.compact ?? false) ? `compact` : undefined} {...rest}>
+    <div class={tokens(`mk-stage`, props.state != null && `state-${props.state}`)} data-size={(props.compact ?? false) ? `compact` : undefined} data-plain={(props.plain ?? false) ? `` : undefined} {...rest}>
       <ol class="mk-track" data-orientation={(props.vertical ?? false) ? `vertical` : undefined} aria-label={props.label}>
         <For each={props.steps}>
           {(step) => (

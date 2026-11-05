@@ -90,6 +90,7 @@ pub mod app_page;
 pub mod auth;
 pub mod challenge;
 pub mod checkout;
+pub mod checkout_layouts;
 pub mod connect;
 pub mod connected_apps;
 pub mod controls;

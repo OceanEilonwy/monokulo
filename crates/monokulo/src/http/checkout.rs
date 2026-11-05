@@ -220,6 +220,13 @@ pub struct CheckoutOptions {
     /// order is final. What the checkout page itself uses now; `fragments`
     /// stays for pages already open with the earlier script.
     routed: Option<bool>,
+    /// `/events` only: `2` asks for the parts a page's template has, by their
+    /// own ids. Without it, the parts a page from before that split has
+    /// (`views::checkout::live_parts`).
+    parts: Option<u8>,
+    /// `/events` only: which of the template's regions the page shows
+    /// (`views::checkout::showing_bits`), so one that has flipped since is sent.
+    r: Option<String>,
     /// `refresh=false` turns off the no-JavaScript meta refresh, so a
     /// customer can type a refund address without the page reloading under
     /// them. Set by the page's own "Auto Refresh" toggle link.
@@ -253,8 +260,12 @@ impl CheckoutOptions {
     fn theme(&self) -> crate::db::Theme {
         crate::db::Theme::from_db_str(self.theme.as_deref().unwrap_or(""))
     }
-    fn is_compact(&self) -> bool {
-        self.view.as_deref() == Some("compact")
+    fn layout(&self) -> views::checkout_layouts::Layout {
+        use views::checkout_layouts::Layout;
+        self.view
+            .as_deref()
+            .and_then(Layout::from_name)
+            .unwrap_or(Layout::Detailed)
     }
     fn refund_enabled(&self) -> bool {
         self.refund != Some(false)
@@ -264,7 +275,7 @@ impl CheckoutOptions {
     }
     fn suffix(&self) -> String {
         let mut params = Vec::new();
-        if self.is_compact() {
+        if self.layout() == views::checkout_layouts::Layout::Compact {
             params.push("view=compact");
         }
         if !self.refund_enabled() {
@@ -548,7 +559,7 @@ async fn build_checkout_view(
         refund_address_locked: detail.order.refund_address.is_some()
             && detail.order.amount_received_piconero > pricing::xmr_amount::Piconero::ZERO,
         refund_address_error,
-        is_compact: options.is_compact(),
+        layout: options.layout(),
         refund_enabled: options.refund_enabled(),
         query_suffix: options.suffix(),
         auto_refresh: options.auto_refresh(),
@@ -789,6 +800,7 @@ pub async fn checkout_events(
     store: OrderStore,
     Query(mut options): Query<CheckoutOptions>,
     on: OnNetwork,
+    headers: HeaderMap,
     extensions: axum::http::Extensions,
 ) -> Response {
     options.onion = on.kind == NetworkKind::Onion;
@@ -829,14 +841,25 @@ pub async fn checkout_events(
     let routed = options.routed == Some(true);
     // What each routed part last looked like on this stream, so only
     // changed ones are sent.
-    let sent: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<&'static str, String>>> =
+    let sent: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
         Default::default();
+    let template = options.layout().template();
+    // What the page says it shows; if it says nothing readable, it's taken to
+    // show what it should, as a region it wrongly shows flips on the next change.
+    let showing = std::sync::Arc::new(parking_lot::Mutex::new(views::checkout::page_showing(
+        headers
+            .get("last-event-id")
+            .and_then(|value| value.to_str().ok()),
+        options.r.as_deref(),
+        template.regions(),
+    )));
     crate::live::live_events(
         &stopping,
         subscription,
         std::time::Duration::from_secs(30),
         move || {
             let sent = sent.clone();
+            let showing = showing.clone();
             // Held by the stream, so the slot frees when the stream ends.
             let _permit = &permit;
             let (state, keys, store_id, order_id, options, shared) = (
@@ -886,10 +909,37 @@ pub async fn checkout_events(
                 }
                 if routed {
                     let mut sent = sent.lock();
-                    for (id, part) in views::checkout::live_parts(&view) {
-                        let html = part.into_string();
+                    let parts: Vec<(String, String)> = if options.parts == Some(2) {
+                        let mut showing = showing.lock();
+                        let showing = showing.get_or_insert_with(|| {
+                            template.regions_showing(&views::checkout::template_state(&view))
+                        });
+                        views::checkout::live_updates(template, &view, showing)
+                    } else {
+                        views::checkout::live_parts(&view)
+                            .into_iter()
+                            .map(|(id, part)| (id.to_string(), part.into_string()))
+                            .collect()
+                    };
+                    // Only the announcement's text, so a screen reader hears it;
+                    // not the first time, which the page already has.
+                    if options.parts == Some(2) {
+                        let announce = view.status_label.clone();
+                        fingerprint.push_str(&announce);
+                        let was = sent.insert("checkout-announce".to_string(), announce.clone());
+                        if was.is_some() && was.as_deref() != Some(announce.as_str()) {
+                            events.push(
+                                axum::response::sse::Event::default()
+                                    .event(
+                                        r##"{"target":"#checkout-announce","swap":"innerHTML"}"##,
+                                    )
+                                    .data(announce),
+                            );
+                        }
+                    }
+                    for (id, html) in parts {
                         fingerprint.push_str(&html);
-                        if sent.get(id) != Some(&html) {
+                        if sent.get(&id) != Some(&html) {
                             let route = format!(r##"{{"target":"#{id}","swap":"outerHTML"}}"##);
                             events.push(
                                 axum::response::sse::Event::default()
@@ -900,11 +950,16 @@ pub async fn checkout_events(
                         }
                     }
                 }
-                events.push(
-                    axum::response::sse::Event::default()
-                        .event("status")
-                        .data(status_json),
-                );
+                // The regions it now shows, for the stream to start from if the
+                // connection drops.
+                let id = showing
+                    .lock()
+                    .as_deref()
+                    .map_or_else(String::new, views::checkout::showing_bits);
+                let status = axum::response::sse::Event::default()
+                    .event("status")
+                    .data(status_json);
+                events.push(if id.is_empty() { status } else { status.id(id) });
                 if routed && view.is_terminal {
                     events.push(
                         axum::response::sse::Event::default()
@@ -1723,10 +1778,11 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        let events_url = format!("/checkout/{order_id}/events?routed=true");
+        let events_url = format!("/checkout/{order_id}/events?routed=true&parts=2&r=");
         assert!(
             html.contains(&format!(
-                r#"id="checkout-stream" hidden fx-action="{events_url}" fx-trigger="fx:inited""#
+                r#"id="checkout-stream" hidden fx-action="{}" fx-trigger="fx:inited""#,
+                events_url.replace('&', "&amp;")
             )),
             "{html}"
         );
@@ -1765,6 +1821,44 @@ mod tests {
         let targets: Vec<&str> = first.iter().map(|(e, _)| e.as_str()).collect();
         assert_eq!(
             targets,
+            [
+                r##"{"target":"#live-status","swap":"outerHTML"}"##,
+                r##"{"target":"#live-amount","swap":"outerHTML"}"##,
+                r##"{"target":"#live-fiat","swap":"outerHTML"}"##,
+                r##"{"target":"#live-countdown","swap":"outerHTML"}"##,
+                r##"{"target":"#live-qr","swap":"outerHTML"}"##,
+                r##"{"target":"#live-address","swap":"outerHTML"}"##,
+                r##"{"target":"#live-progress","swap":"outerHTML"}"##,
+                r##"{"target":"#live-payments","swap":"outerHTML"}"##,
+            ]
+        );
+
+        // A page opened before the split still gets the parts it has.
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/checkout/{order_id}/events?routed=true"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut old_page = response.into_body();
+        let (mut old_pending, mut old_parser) = (Vec::new(), crate::live::SseTestParser::default());
+        let mut old_targets = Vec::new();
+        loop {
+            let (event, _) =
+                crate::live::next_sse_event(&mut old_page, &mut old_pending, &mut old_parser)
+                    .await
+                    .unwrap();
+            if event == "status" {
+                break;
+            }
+            old_targets.push(event);
+        }
+        assert_eq!(
+            old_targets,
             [
                 r##"{"target":"#live-status","swap":"outerHTML"}"##,
                 r##"{"target":"#live-pay","swap":"outerHTML"}"##,
