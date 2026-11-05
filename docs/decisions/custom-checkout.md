@@ -138,4 +138,15 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     thumbnails.** Thumbnails are decoration a real preview page (PR 8) does better.
 27. **A page's stream is told its layout (`layout=`).** A store can change its
     choice while a page is open, and the two mustn't disagree.
+28. **Stylesheets are served by hash alone.** The URL names no store, so a page's
+    source reveals nothing new, and looking one up is one indexed read. A replaced
+    one stays a week for pages still open.
+29. **Colours are typed as hex.** `<input type=color>` can't be empty, and empty
+    means the theme's own. It works without JavaScript, as everything here must.
+30. **Order status colours aren't a merchant's, and their words use the merchant's
+    text colour.** A review found the track's labels at 1.4:1 on a merchant's dark
+    background. The dots keep the status colours, which the merchant can't change.
+31. **Stylesheets are written again at every start.** A page's link comes from its
+    colours, so a release changing what they're written as would otherwise break
+    every styled store until its merchant saved something.
 

@@ -96,7 +96,7 @@ pub async fn server(request: Request, next: Next) -> Response {
 
 /// Requests too frequent and too dull to log at `info`: static files.
 fn is_quiet(method: &Method, path: &str) -> bool {
-    method == Method::GET && path.starts_with("/static/")
+    method == Method::GET && (path.starts_with("/static/") || path.starts_with("/static-style/"))
 }
 
 #[cfg(test)]

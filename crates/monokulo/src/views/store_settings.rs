@@ -69,6 +69,8 @@ pub struct StoreSettingsData {
     pub display_name: String,
     /// The layout its checkout shows unless an embed asks for another.
     pub checkout_layout: super::checkout_layouts::Layout,
+    /// Its checkout's colours and shape.
+    pub checkout_style: super::checkout_style::CheckoutStyle,
     /// Its site's host; empty when it has none.
     pub site: String,
     /// What its payments are for, shown on the checkout when an order has
@@ -174,6 +176,7 @@ pub struct WalletPeriodView {
 pub enum StoreSection {
     Store,
     Layout,
+    Style,
     Integrations,
     Wallet,
     BaseCurrency,
@@ -199,6 +202,7 @@ impl StoreSection {
             Self::Webhooks,
             Self::Diagnostics,
             Self::Layout,
+            Self::Style,
         ]
         .into_iter()
         .find(|section| section.id() == id)
@@ -210,6 +214,7 @@ impl StoreSection {
         match self {
             StoreSection::Store => "store",
             StoreSection::Layout => "checkout-layout",
+            StoreSection::Style => "checkout-style",
             StoreSection::Integrations => "integrations",
             StoreSection::Wallet => "wallet",
             StoreSection::BaseCurrency => "base-currency",
@@ -289,7 +294,7 @@ impl StoreTab {
                 StoreTab::General
             }
             StoreSection::Confirmations | StoreSection::FxProvider => StoreTab::Payments,
-            StoreSection::Layout => StoreTab::Checkout,
+            StoreSection::Layout | StoreSection::Style => StoreTab::Checkout,
             StoreSection::Wallet | StoreSection::KeyStorage => StoreTab::Wallet,
             StoreSection::Domains => StoreTab::Domains,
             StoreSection::Integrations => StoreTab::Integrations,
@@ -344,9 +349,10 @@ pub struct StoreSettingsViewModel {
 }
 
 /// The settings form's cards, in the order they're saved.
-pub const SETTINGS_CARDS: [StoreSection; 6] = [
+pub const SETTINGS_CARDS: [StoreSection; 7] = [
     StoreSection::Store,
     StoreSection::Layout,
+    StoreSection::Style,
     StoreSection::BaseCurrency,
     StoreSection::Confirmations,
     StoreSection::FxProvider,
@@ -751,6 +757,109 @@ fn layout_card(store: &StoreSettingsData) -> Markup {
                             }
                         })
                         .collect::<Vec<_>>()))
+                }))
+        },
+    )
+}
+
+/// "Colours and shape": for every layout, a custom page included.
+fn style_card(store: &StoreSettingsData) -> Markup {
+    use super::checkout_style::{Corners, Font, Roles};
+    let style = &store.checkout_style;
+    type Role = fn(&Roles) -> &Option<String>;
+    let roles: [(&str, &str, &str, Role); 5] = [
+        ("Accent", "accent", "Progress and links.", |roles| {
+            &roles.accent
+        }),
+        (
+            "Background",
+            "background",
+            "Behind the checkout.",
+            |roles| &roles.background,
+        ),
+        ("Text", "text", "Main text.", |roles| &roles.text),
+        ("Quiet text", "quiet", "Labels and notes.", |roles| {
+            &roles.quiet
+        }),
+        ("Lines", "lines", "Borders between parts.", |roles| {
+            &roles.lines
+        }),
+    ];
+    let colour = |scheme: &str, key: &str, name: &str, saved: &Option<String>| {
+        let field = format!("style_{scheme}_{key}");
+        let saved = saved.as_deref().unwrap_or("");
+        html! {
+            (ui::Input::new(field.as_str())
+                .id(field.as_str())
+                .value(store.shown(&field, saved).as_str())
+                .placeholder("Theme's own")
+                .autocomplete("off")
+                .attr("spellcheck", "false")
+                .attr("aria-label", format!("{name}, {scheme}"))
+                .attr("pattern", "\\s*(#[0-9a-fA-F]{6})?\\s*")
+                .attr("title", "A colour like #2f6b4f, or empty for the theme's own")
+                .maybe_attr("data-saved", store.saved_attr(saved)))
+        }
+    };
+    let corners = store.shown("style_corners", style.corners.name());
+    let font = store.shown("style_font", style.font.name());
+    let transparent = store.ticked("style_transparent", style.transparent);
+    settings_card(
+        store,
+        StoreSection::Style,
+        "Colours and shape",
+        html! {
+            (ui::Hint::new("Used by every layout. The code stays dark on white so wallets can scan it, and order status colours are always our own."))
+            @for (name, key, help, role) in roles {
+                (Field::group(name, &format!("style-{key}-label"))
+                    .help(None, html! { (help) })
+                    .render(html! {
+                        div class="style-pair" {
+                            label { (ui::Hint::new("Light")) (colour("light", key, name, role(&style.light))) }
+                            label { (ui::Hint::new("Dark")) (colour("dark", key, name, role(&style.dark))) }
+                        }
+                    }))
+            }
+            @for (name, scheme, ratio) in style.contrast_warnings() {
+                (ui::FieldNote::new(format!(
+                    "{name} on Background is {ratio:.1}:1 in {scheme}. It may be hard to read; aim for 4.5:1. You can still save this."
+                )).tone(ui::NoteTone::Pending))
+            }
+            (Field::new("Transparent background", "style-transparent")
+                .help(Some("style-transparent-help"), html! {
+                    "Show your page behind the checkout. Pin the embed with " code { "theme=light" } " or " code { "theme=dark" }
+                    ", or browsers paint the frame solid."
+                })
+                .render(super::controls::switch(
+                    "style_transparent",
+                    "style-transparent",
+                    transparent,
+                    Some("style-transparent-help"),
+                    store.saved_box(style.transparent).map(|s| s == "on"),
+                )))
+            (Field::new("Corners", "style-corners")
+                .help(None, html! { "How round cards and buttons are." })
+                .render(html! {
+                    (Select::new(
+                        "style_corners",
+                        Corners::ALL.into_iter()
+                            .map(|(_, name, label)| Choice::new(name, label).selected(name == corners))
+                            .collect::<Vec<_>>(),
+                    )
+                    .id("style-corners")
+                    .maybe_attr("data-saved", store.saved_attr(style.corners.name())))
+                }))
+            (Field::new("Font", "style-font")
+                .help(None, html! { "From the customer's device, so nothing loads from elsewhere." })
+                .render(html! {
+                    (Select::new(
+                        "style_font",
+                        Font::ALL.into_iter()
+                            .map(|(_, name, label)| Choice::new(name, label).selected(name == font))
+                            .collect::<Vec<_>>(),
+                    )
+                    .id("style-font")
+                    .maybe_attr("data-saved", store.saved_attr(style.font.name())))
                 }))
         },
     )
@@ -1193,6 +1302,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                 },
                 StoreTab::Checkout => (settings_form(store, html! {
                     (layout_card(store))
+                    (style_card(store))
                 })),
                 StoreTab::Payments => (settings_form(store, html! {
                     (confirmations_card(store))
@@ -1258,6 +1368,7 @@ mod tests {
     fn base_store() -> StoreSettingsData {
         StoreSettingsData {
             checkout_layout: crate::views::checkout_layouts::Layout::Detailed,
+            checkout_style: Default::default(),
             tab: StoreTab::General,
             clock: crate::views::time::Clock::utc(0),
             connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),

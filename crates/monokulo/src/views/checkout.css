@@ -1,3 +1,13 @@
+/* What a merchant's CSS can't take away by accident: it's unlayered, so it wins
+   over ordinary rules here, but an `!important` in a layer beats any outside
+   one, and a page can't declare layers of its own. */
+@layer protected {
+  [data-part="status"], [data-part="qr"], [data-part="amount"], [data-part="address"] {
+    visibility: visible !important;
+    opacity: 1 !important;
+  }
+  [data-part="qr"] svg { background: var(--qr-bg) !important; }
+}
 html { background: var(--paper-raised); }
 body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(--paper-raised); }
 .pay-wrap { max-width: 720px; margin: 0 auto; }

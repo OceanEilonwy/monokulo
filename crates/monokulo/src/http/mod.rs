@@ -761,6 +761,11 @@ pub fn build_router(state: AppState) -> Router {
     // Every other file baked into the binary (`crate::assets`): scripts and
     // styles at URLs carrying their digest, fonts, marks and modules by name.
     let router = router.route("/static/{*file}", axum::routing::get(crate::assets::serve));
+    // A checkout's own stylesheet, by the hash of its content.
+    let router = router.route(
+        "/static-style/{file}",
+        axum::routing::get(checkout::stylesheet),
+    );
     let router = router.route(
         "/key-custody/bundles/{id}",
         axum::routing::get(key_entry::bundle),
