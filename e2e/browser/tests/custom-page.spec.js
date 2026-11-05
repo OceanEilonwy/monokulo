@@ -4,6 +4,7 @@
 // store's domain verified itself; approving by DNS is covered in-process.
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixture');
+const { captureCoverageStage } = require('../coverage-screenshot');
 
 let fixture;
 test.describe.configure({ mode: 'default' });
@@ -80,7 +81,7 @@ test('a custom page can be written without JavaScript', async ({ browser, reques
 // serves plain http under an https page, where a browser would otherwise drop the
 // Referer it sends in production, so each frame asks to keep it.
 const site = 'https://coverage-shop.example';
-const template = `<h1>Fern and Wire</h1>{{status}}{{if awaiting}}{{qr}}{{amount}}{{fiat}}{{address}}{{end}}{{if !awaiting}}<p class="done">All done</p>{{end}}`;
+const template = `<h1>Fern and Wire</h1>{{status}}{{if awaiting}}<div class="mk-row">{{qr}}<div class="mk-stack mk-gap-sm">{{amount}}{{fiat}}{{address}}</div></div>{{end}}{{if !awaiting}}<p class="done">All done</p>{{end}}`;
 
 async function checkout(page, request, writtenCss = '') {
   expect((await request.post(`${fixture.base_url}/__coverage/domains/verified`)).status()).toBe(204);
@@ -109,7 +110,7 @@ test('a customer sees the page on the shop, it follows the order live, and a dir
   await expect(page.locator('h1', { hasText: 'Fern and Wire' })).toHaveCount(0);
 });
 
-test('nothing a page does in CSS hides how to pay, and an old version reloads', async ({ page, request }) => {
+test('rules can\'t turn off what shows how to pay, by accident, and an old version reloads', async ({ page, request }) => {
   const hostile = '#checkout-root [data-part="qr"],#checkout-root [data-part="address"],#checkout-root [data-part="amount"],#checkout-root [data-part="status"]{visibility:hidden!important;opacity:0!important;}';
   const { order_id, frame } = await checkout(page, request, hostile);
   for (const part of ['qr', 'address', 'amount', 'status']) {
@@ -143,3 +144,28 @@ test('another site can\'t frame it, and loading from elsewhere is refused by the
   await expect(page.frameLocator('#pay').locator('h1', { hasText: 'Fern and Wire' })).toHaveCount(0);
 });
 
+test('the way through, for the gallery @gallery', async ({ page, context, request }) => {
+  await login(context);
+  expect((await request.post(`${fixture.base_url}/__coverage/domains/verified`)).status()).toBe(204);
+  const stage = (name) => captureCoverageStage(page, `custom-page-${name}`, test.info(), { group: 'custom-page', shapes: ['mobile-portrait', 'desktop'] });
+  await page.goto(fixture.base_url + page_);
+  await expect(page.locator('#template')).toBeVisible();
+  await stage('write');
+  await page.locator('#template').fill('{{status}}\n<p>{{countdown}}</p>');
+  await page.getByRole('button', { name: 'Check and preview' }).click();
+  await expect(page.locator('.template-problems')).toBeVisible();
+  await stage('problems');
+  await page.locator('#template').fill(good);
+  await page.getByRole('button', { name: 'Check and preview' }).click();
+  await expect(page).toHaveURL(/checkout-page\/preview/);
+  await expect(page.frameLocator('.template-preview iframe').first().locator('[data-part="qr"]')).toBeVisible();
+  await stage('preview');
+  await page.goto(`${fixture.base_url}${page_}/approve`);
+  await expect(page.locator('.template-proof')).toBeVisible();
+  await stage('approve');
+
+  // On the shop, as a customer sees it.
+  const { frame } = await checkout(page, request);
+  await expect(frame.locator('h1', { hasText: 'Fern and Wire' })).toBeVisible();
+  await stage('on-the-shop');
+});

@@ -143,7 +143,7 @@ pub(super) enum Layout {
 /// The docs, in the map's order, which is also Previous and Next's: each
 /// group's pages together, the groups in `Group::ALL`'s order. The first is
 /// where the bar's Docs and Get started go.
-pub(super) const PAGES: [Page; 15] = [
+pub(super) const PAGES: [Page; 16] = [
     Page {
         source: Source::Markdown("introduction.md"),
         dir: "introduction",
@@ -249,6 +249,14 @@ pub(super) const PAGES: [Page; 15] = [
         group: Group::Integrations,
         old: None,
         layout: Layout::Reference,
+    },
+    Page {
+        source: Source::Markdown("custom-pages.md"),
+        dir: "custom-pages",
+        label: "Custom checkout pages",
+        group: Group::Integrations,
+        old: None,
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Rust {
@@ -1124,6 +1132,7 @@ mod tests {
             classes,
             [
                 "api-sec api-wide api-intro",
+                "api-sec",
                 "api-sec",
                 "api-sec",
                 "api-sec",
