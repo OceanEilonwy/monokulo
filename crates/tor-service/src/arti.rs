@@ -298,9 +298,9 @@ async fn hand_over(request: StreamRequest, peer: OnionPeer, connections: TorConn
 }
 
 /// `path` on `domain` (an onion shop's verification file, monokulo's
-/// `embed_domains::WELL_KNOWN_PATH`), fetched over Tor on a circuit of its
+/// `domain_proof::Scheme::well_known_path`), fetched over Tor on a circuit of its
 /// own: `Ok(None)` for any answer but a 200 (redirects aren't followed) or
-/// one bigger than `max_bytes` (`embed_domains::WELL_KNOWN_MAX_BYTES`).
+/// one bigger than `max_bytes` (`domain_proof::WELL_KNOWN_MAX_BYTES`).
 pub async fn fetch(
     client: Client,
     domain: &str,

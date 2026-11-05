@@ -43,10 +43,10 @@ pub enum Proof {
 impl Proof {
     /// The proof `domain` is checked by.
     pub fn of(domain: &str) -> Self {
-        if crate::embed_domains::is_onion(domain) {
-            Proof::WellKnownFile(crate::embed_domains::well_known_url(domain))
+        if domain_proof::is_onion(domain) {
+            Proof::WellKnownFile(domain_proof::VERIFY.well_known_url(domain))
         } else {
-            Proof::TxtRecord(crate::embed_domains::record_name(domain))
+            Proof::TxtRecord(domain_proof::VERIFY.record_name(domain))
         }
     }
 }

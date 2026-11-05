@@ -1625,6 +1625,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain-proof"
+version = "0.1.0"
+dependencies = [
+ "dns-client",
+ "domain-proof",
+ "outbound",
+ "tokio",
+ "tor-service",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1649,6 +1660,7 @@ dependencies = [
  "axum",
  "cli-wallet",
  "credentials",
+ "domain-proof",
  "engine",
  "engine-daemon",
  "hex",
@@ -3772,7 +3784,7 @@ dependencies = [
  "bytes",
  "clap",
  "credentials",
- "dns-client",
+ "domain-proof",
  "engine",
  "engine-pow",
  "engine-protocol",

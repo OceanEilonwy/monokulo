@@ -45,7 +45,7 @@ pub struct DomainView {
 impl DomainView {
     /// An onion shop: proved by a file it serves over Tor, not DNS.
     fn onion(&self) -> bool {
-        crate::embed_domains::is_onion(&self.domain)
+        domain_proof::is_onion(&self.domain)
     }
 }
 
@@ -107,7 +107,7 @@ fn tag(status: DomainStatus) -> ui::Tag {
 
 fn record(domain: &DomainView) -> Markup {
     if domain.onion() {
-        let address = crate::embed_domains::well_known_url(&domain.domain);
+        let address = domain_proof::VERIFY.well_known_url(&domain.domain);
         return html! {
             dl class="dns-record well-known-file" {
                 dt { "Address" }
@@ -127,7 +127,7 @@ fn record(domain: &DomainView) -> Markup {
 }
 
 /// "Checked moments ago": a check asked for before the last one is
-/// [`crate::embed_domains::MIN_CHECK_GAP_SECS`] old.
+/// [`domain_proof::MIN_CHECK_GAP_SECS`] old.
 fn wait_note(wait: Option<i64>) -> Markup {
     html! {
         @if let Some(wait) = wait {
@@ -309,7 +309,7 @@ fn banner(store: &StoreRef, restricted: bool, can_restrict: bool, oob: bool) -> 
 /// is, what the store's setting means right now, and the questions a shop
 /// owner asks, the first one open.
 pub fn guide(restricted: bool, can_restrict: bool) -> Markup {
-    let grace_days = crate::embed_domains::GRACE_SECS / (24 * 60 * 60);
+    let grace_days = domain_proof::GRACE_SECS / (24 * 60 * 60);
     let questions = [
         (
             "How do I add my website?",
@@ -419,7 +419,7 @@ pub fn domains_body(
 /// The steps of adding a domain, `at` the current one (0 to 2): an onion
 /// shop serves a file rather than publishing a record.
 fn steps(at: usize, domain: Option<&str>) -> Markup {
-    let onion = domain.is_some_and(crate::embed_domains::is_onion);
+    let onion = domain.is_some_and(domain_proof::is_onion);
     let step = |i: usize, label: &str, detail: &str| ui::WizardStep {
         label: label.into(),
         detail: detail.into(),
@@ -599,7 +599,7 @@ pub fn check_result(store: &StoreRef, domain: &DomainView, checked: bool) -> Mar
     let busy = if onion {
         format!(
             "Fetching {} over Tor… Finding an onion shop can take up to a minute.",
-            crate::embed_domains::WELL_KNOWN_PATH
+            domain_proof::VERIFY.well_known_path
         )
     } else {
         format!("Asking its name servers for the record at {full_name}…")
@@ -645,7 +645,7 @@ pub fn check_result(store: &StoreRef, domain: &DomainView, checked: bool) -> Mar
                     (ui::Disclosure::new("Still not found?", html! {
                         ul {
                             @if onion {
-                                li { "Open " code { (crate::embed_domains::well_known_url(&domain.domain)) } " in Tor Browser: it should show the line, and nothing asks to log in." }
+                                li { "Open " code { (domain_proof::VERIFY.well_known_url(&domain.domain)) } " in Tor Browser: it should show the line, and nothing asks to log in." }
                                 li { "Paste the contents exactly, without quotes." }
                                 li { "A redirect isn't followed: serve the file at that exact address." }
                             } @else {

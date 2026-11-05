@@ -26,9 +26,9 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use domain_proof::WellKnownFetch as _;
+use domain_proof::WellKnownOverTor;
 use live_settings::Reloadable as _;
-use monokulo::embed_domains::WellKnownFetch as _;
-use monokulo::embed_domains::WellKnownOverTor;
 use monokulo::http::{build_router, AppState};
 use monokulo::settings::TorReloadable;
 use monokulo::settings::{TorConfig, TorMode};
@@ -250,7 +250,11 @@ async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shop
     let text = until("fetching the shop's file over Tor", || {
         let (fetch, shop) = (&fetch, shop.clone());
         client.running();
-        async move { fetch.fetch(&shop).await }
+        async move {
+            fetch
+                .fetch(&shop, domain_proof::VERIFY.well_known_path)
+                .await
+        }
     })
     .await;
     assert!(

@@ -9,6 +9,7 @@ members = [
     "crates/sqlite",
     "crates/credentials",
     "crates/dns-client",
+    "crates/domain-proof",
     "crates/service-runtime",
     "crates/rate-limit",
     "crates/abuse",

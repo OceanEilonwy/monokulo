@@ -13,11 +13,12 @@ use axum::Form;
 use serde::Deserialize;
 
 use crate::db::StoreDomainRow;
-use crate::embed_domains::{self, DomainState};
+use crate::embed_domains;
 use crate::templates::{format_duration_since, format_duration_until};
 use crate::views::domains::{DomainStatus, DomainView, StoreRef};
 use crate::views::store_detail::{EmbedWarnings, FailingDomainWarning, Proof};
 use crate::views::time::Clock;
+use domain_proof::DomainState;
 
 use super::fx::FxRequest;
 use super::orders::{load_owned_connection, render_store_settings_page, saved};
@@ -136,19 +137,27 @@ pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> D
     let clock = Clock::utc(now);
     let checked = row.last_checked_at.map(|at| clock.relative(at));
     // An onion shop is proved by a file it serves over Tor, never by DNS.
-    let onion = embed_domains::is_onion(&row.domain);
+    let onion = domain_proof::is_onion(&row.domain);
     let (proof, publish) = if onion {
         ("File", "Serve it again")
     } else {
         ("Record", "Publish it again")
     };
-    let (status, meta, reason) = match DomainState::of(&row, now) {
+    let (status, meta, reason) = match row.state(now) {
         DomainState::Verified => (
             DomainStatus::Verified,
-            format!(
-                "Checked {} · checked again every day",
-                checked.as_deref().unwrap_or("never")
-            ),
+            // Only a check with no answer leaves an error on a verified
+            // domain that isn't failing.
+            match &row.last_error {
+                Some(error) => format!(
+                    "Checked {}, with no answer ({error}) · still verified, trying again soon",
+                    checked.as_deref().unwrap_or("never")
+                ),
+                None => format!(
+                    "Checked {} · checked again every day",
+                    checked.as_deref().unwrap_or("never")
+                ),
+            },
             None,
         ),
         DomainState::Pending => (
@@ -172,7 +181,7 @@ pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> D
         DomainState::Failing { since } => {
             let (missing, left) = (
                 format_duration_since(since, now),
-                format_duration_until(since + embed_domains::GRACE_SECS, now),
+                format_duration_until(since + domain_proof::GRACE_SECS, now),
             );
             (
                 DomainStatus::Failing,
@@ -196,8 +205,8 @@ pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> D
         }
     };
     DomainView {
-        record_host: embed_domains::RECORD_LABEL,
-        record_value: embed_domains::record_value(&row.token),
+        record_host: domain_proof::VERIFY.label,
+        record_value: domain_proof::VERIFY.value(&row.token),
         id: row.id,
         domain: row.domain,
         status,
@@ -232,11 +241,11 @@ pub(super) async fn store_page_warnings(
         })
         .await
         .unwrap_or_default();
-    let shown_nowhere = restricted && !rows.iter().any(|row| DomainState::of(row, now).counts());
+    let shown_nowhere = restricted && !rows.iter().any(|row| row.state(now).counts());
     let failing = rows
         .into_iter()
         .filter_map(|row| {
-            let (since, lapsed) = match DomainState::of(&row, now) {
+            let (since, lapsed) = match row.state(now) {
                 DomainState::Failing { since } => (since, false),
                 DomainState::Lapsed { since } => (since, true),
                 DomainState::Pending | DomainState::Verified => return None,
@@ -246,7 +255,7 @@ pub(super) async fn store_page_warnings(
                 domain: row.domain,
                 missing_for: format_duration_since(since, now),
                 lapsed,
-                counts_for: format_duration_until(since + embed_domains::GRACE_SECS, now),
+                counts_for: format_duration_until(since + domain_proof::GRACE_SECS, now),
             })
         })
         .collect();
@@ -286,7 +295,7 @@ pub async fn set_embed_restriction(
     let result = state
         .db
         .write(move |db| match db.list_store_domains(&store_id) {
-            Ok(domains) if restricted && !domains.iter().any(|domain| DomainState::of(domain, now).counts()) => {
+            Ok(domains) if restricted && !domains.iter().any(|domain| domain.state(now).counts()) => {
                 Ok(Some("Verify at least one domain before turning this on - otherwise no website could show your checkout."))
             }
             Ok(_) => db.set_embed_restricted(&store_id, restricted).map(|()| None),
@@ -387,7 +396,7 @@ pub async fn add_domain(
             (StatusCode::UNPROCESSABLE_ENTITY, page).into_response()
         }
     };
-    let domain = match embed_domains::normalize_domain(&form.domain) {
+    let domain = match domain_proof::normalize_domain(&form.domain) {
         Ok(domain) => domain,
         Err(message) => return refused(message.to_string()).await,
     };
@@ -496,7 +505,7 @@ pub struct CheckForm {
 
 /// `POST /stores/{id}/settings/domains/{domain_id}/check` - looks
 /// the domain's record up now, unless it was looked up moments ago
-/// ([`embed_domains::MIN_CHECK_GAP_SECS`]: then the answer says when it can
+/// ([`domain_proof::MIN_CHECK_GAP_SECS`]: then the answer says when it can
 /// be, in place). The result is never a "saved" toast: with JavaScript it's
 /// swapped in where it was asked for (the check page's result, or the
 /// domain's card, with the restriction banner, which a verified domain may
@@ -515,7 +524,7 @@ pub async fn check_domain(
     let now = crate::now_unix();
     let wait = domain
         .last_checked_at
-        .map(|last| embed_domains::MIN_CHECK_GAP_SECS - (now - last))
+        .map(|last| domain_proof::MIN_CHECK_GAP_SECS - (now - last))
         .filter(|wait| *wait > 0);
     if wait.is_none()
         && embed_domains::check_and_record(&state.db, &state.proofs, &domain, now)
@@ -532,7 +541,7 @@ pub async fn check_domain(
             Ok::<_, crate::db::DbError>((
                 domains.iter().find(|d| d.id == domain_id).cloned(),
                 db.embed_restricted(&store_id).unwrap_or(false),
-                domains.iter().any(|d| DomainState::of(d, now).counts()),
+                domains.iter().any(|d| d.state(now).counts()),
             ))
         })
         .await
@@ -656,9 +665,10 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::embed_domains::test_support::FakeDns;
-    use crate::embed_domains::{self, GRACE_SECS, RECHECK_EVERY_SECS};
+    use crate::embed_domains;
     use crate::engine_client::EngineClient;
+    use domain_proof::test_support::FakeDns;
+    use domain_proof::{GRACE_SECS, RECHECK_EVERY_SECS};
 
     use super::super::{build_router, AppState};
 
@@ -668,7 +678,7 @@ mod tests {
             .spawn()
             .await;
         let state = AppState {
-            proofs: crate::embed_domains::test_support::proofs(dns, Arc::default()),
+            proofs: domain_proof::test_support::proofs(dns, Arc::default()),
             engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
             ..AppState::for_tests()
         };
@@ -992,7 +1002,7 @@ mod tests {
             .unwrap();
         dns.publish(
             "_monokulo.store-home.example",
-            &embed_domains::record_value(&row.token),
+            &domain_proof::VERIFY.value(&row.token),
         );
         embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
             .await
@@ -1108,7 +1118,7 @@ mod tests {
             .unwrap();
         dns.publish(
             "_monokulo.store-home.example",
-            &embed_domains::record_value(&row.token),
+            &domain_proof::VERIFY.value(&row.token),
         );
         embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
             .await
@@ -1370,7 +1380,7 @@ mod tests {
         assert_eq!(row.domain, "store-home.example");
         dns.publish(
             "_monokulo.store-home.example",
-            &embed_domains::record_value(&row.token),
+            &domain_proof::VERIFY.value(&row.token),
         );
         embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
             .await
@@ -1506,7 +1516,7 @@ mod tests {
         .await;
         assert!(!warnings.shown_nowhere);
         dns.remove("_monokulo.store-home.example");
-        let later = crate::now_unix() + embed_domains::RECHECK_EVERY_SECS;
+        let later = crate::now_unix() + domain_proof::RECHECK_EVERY_SECS;
         embed_domains::recheck_due(&state.db, &state.proofs, later).await;
         let failing_since = state
             .db
@@ -1554,11 +1564,11 @@ mod tests {
         const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
         let (dns, onion) = (
             Arc::new(FakeDns::default()),
-            Arc::new(crate::embed_domains::test_support::FakeOnion::default()),
+            Arc::new(domain_proof::test_support::FakeOnion::default()),
         );
         let (state, _engine) = test_state(dns.clone()).await;
         let state = AppState {
-            proofs: crate::embed_domains::test_support::proofs(dns, onion.clone()),
+            proofs: domain_proof::test_support::proofs(dns, onion.clone()),
             ..state
         };
         let router = build_router(state.clone());
@@ -1610,7 +1620,7 @@ mod tests {
             ONION,
             &format!(
                 "monokulo-verify=someone-else\n{}\n",
-                embed_domains::record_value(&row.token)
+                domain_proof::VERIFY.value(&row.token)
             ),
         );
         state
@@ -1774,7 +1784,7 @@ mod tests {
         // Published: verified (checked directly, past the rate limit).
         dns.publish(
             "_monokulo.shop.example",
-            &embed_domains::record_value(&row.token),
+            &domain_proof::VERIFY.value(&row.token),
         );
         let now = crate::now_unix();
         embed_domains::check_and_record(&state.db, &state.proofs, &row, now)
@@ -1953,14 +1963,14 @@ mod tests {
         // its result says verified, with Done back to the card.
         dns.publish(
             "_monokulo.store-home.example",
-            &embed_domains::record_value(&row.token),
+            &domain_proof::VERIFY.value(&row.token),
         );
         state
             .db
             .lock()
             .record_store_domain_check(
                 &row.id,
-                crate::now_unix() - embed_domains::MIN_CHECK_GAP_SECS,
+                crate::now_unix() - domain_proof::MIN_CHECK_GAP_SECS,
                 Some("missing"),
             )
             .unwrap();
@@ -2069,7 +2079,7 @@ mod tests {
 
         // DNS is back and the record published: verified; the store is
         // restricted to it.
-        dns.publish(name, &embed_domains::record_value(&row.token));
+        dns.publish(name, &domain_proof::VERIFY.value(&row.token));
         let now = crate::now_unix();
         embed_domains::check_and_record(&state.db, &state.proofs, &row, now)
             .await
@@ -2083,9 +2093,54 @@ mod tests {
             )
             .unwrap();
 
-        // A day later the re-check lands in an outage.
+        // A day later the re-check lands in an outage, which lasts longer
+        // than the grace period: no answer says nothing about the record,
+        // so the domain stays verified throughout. Retried hourly, not daily.
+        let row_now = |state: &AppState| {
+            state
+                .db
+                .lock()
+                .get_store_domain(
+                    &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                    &row.id,
+                )
+                .unwrap()
+                .unwrap()
+        };
         dns.fail(name, "SERVFAIL");
-        embed_domains::recheck_due(&state.db, &state.proofs, now + RECHECK_EVERY_SECS).await;
+        let outage = now + RECHECK_EVERY_SECS;
+        embed_domains::recheck_due(&state.db, &state.proofs, outage).await;
+        let checked = row_now(&state);
+        assert_eq!(checked.failing_since, None);
+        assert_eq!(checked.last_checked_at, Some(outage));
+        let retried = outage + domain_proof::FAILING_RECHECK_EVERY_SECS;
+        embed_domains::recheck_due(&state.db, &state.proofs, retried).await;
+        assert_eq!(row_now(&state).last_checked_at, Some(retried));
+        let long_after = retried + GRACE_SECS + domain_proof::FAILING_RECHECK_EVERY_SECS;
+        embed_domains::recheck_due(&state.db, &state.proofs, long_after).await;
+        let checked = row_now(&state);
+        assert_eq!(
+            checked.state(long_after),
+            domain_proof::DomainState::Verified
+        );
+        let warnings = super::store_page_warnings(
+            &state,
+            &engine_protocol::ids::ConnectionId::new(id.to_string()),
+            long_after,
+        )
+        .await;
+        assert!(warnings.failing.is_empty(), "an outage warns of nothing");
+        assert!(!warnings.shown_nowhere);
+        let (_, html) = send(&router, "GET", &connections, &session, None).await;
+        assert!(
+            html.contains("with no answer (The DNS lookup failed: SERVFAIL)"),
+            "got: {html}"
+        );
+
+        // Then DNS answers, without the record: that is what starts the clock.
+        dns.remove(name);
+        let answered = long_after + domain_proof::FAILING_RECHECK_EVERY_SECS;
+        embed_domains::recheck_due(&state.db, &state.proofs, answered).await;
         let failing_since = state
             .db
             .lock()
@@ -2119,13 +2174,13 @@ mod tests {
 
         // An hour on, DNS answers again: the failing domain's more frequent
         // re-check clears it with no action from the merchant.
-        dns.publish(name, &embed_domains::record_value(&row.token));
+        dns.publish(name, &domain_proof::VERIFY.value(&row.token));
         // Measured from when the failing check was recorded (the re-check
         // records at the time it was run for, not the wall clock).
         embed_domains::recheck_due(
             &state.db,
             &state.proofs,
-            failing_since + embed_domains::FAILING_RECHECK_EVERY_SECS + 1,
+            failing_since + domain_proof::FAILING_RECHECK_EVERY_SECS + 1,
         )
         .await;
         let row = state

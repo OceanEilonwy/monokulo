@@ -234,7 +234,7 @@ impl Tor {
     /// runs. `Ok(None)` for any answer but a 200 (redirects aren't
     /// followed) or one bigger than `max_bytes`. What checking an onion
     /// shop's verification file does (monokulo's
-    /// `embed_domains::WellKnownOverTor`).
+    /// `domain_proof::WellKnownOverTor`).
     pub fn fetch_over_tor<'a>(
         &self,
         domain: &'a str,
