@@ -94,7 +94,8 @@ pub enum PageStanding {
     /// Its proof has been missing since `since`: still showing, until its grace
     /// period ends.
     Failing { since: i64 },
-    /// Its proof has been gone too long, or its domain no longer counts.
+    /// Its proof has been gone too long, its domain no longer counts, or it no
+    /// longer passes the checks.
     NotShowing,
     /// This Monokulo's operator has turned it off.
     TurnedOff,
@@ -115,7 +116,7 @@ pub fn standing(
     if page.turned_off_at.is_some() {
         return PageStanding::TurnedOff;
     }
-    if approver(domains, now).is_none() {
+    if approver(domains, now).is_none() || parsed(page).is_none() {
         return PageStanding::NotShowing;
     }
     match DomainState::of(Some(page.published_at), page.failing_since, now) {
@@ -142,15 +143,15 @@ pub struct ChosenPage {
 const PARSED_TEMPLATES: usize = 512;
 
 /// A page's template, parsed once per version. `None` if it or its CSS no longer
-/// passes today's checks, as a release that closes a hole must be able to cause:
-/// that costs a page, not a checkout.
+/// passes today's safety checks, as a release that closes a hole must be able to
+/// cause: that costs a page, not a checkout.
 pub fn parsed(page: &PublishedCheckoutPage) -> Option<Arc<Template>> {
     let token = page.token.as_str();
     static PARSED: LazyLock<Mutex<HashMap<String, Arc<Template>>>> = LazyLock::new(Mutex::default);
     if let Some(template) = PARSED.lock().get(token) {
         return Some(template.clone());
     }
-    let template = checkout_template::check(&page.template).ok()?;
+    let template = checkout_template::check_published(&page.template).ok()?;
     checkout_template::css::sanitize(&page.css, template.classes()).ok()?;
     let template = Arc::new(template);
     let mut parsed = PARSED.lock();

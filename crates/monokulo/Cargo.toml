@@ -12,7 +12,7 @@ edition = "2021"
 # `tor_service::Tor::running_at`, a Tor handle with nothing running.
 # Enabled only from [dev-dependencies] (resolver 2 keeps it out of every
 # normal build), never in production.
-test-support = ["abuse/test-support", "tor-service/test-support", "sqlite/test-support", "credentials/test-support", "service-runtime/test-support", "embedded-engine", "dep:jsonschema"]
+test-support = ["abuse/test-support", "domain-proof/test-support", "tor-service/test-support", "sqlite/test-support", "credentials/test-support", "service-runtime/test-support", "embedded-engine", "dep:jsonschema"]
 default = ["embedded-engine", "tor", "relay"]
 # The engine's own router as a transport for `EngineClient`: the engine
 # runs inside monokulo's process.

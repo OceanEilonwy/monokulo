@@ -199,7 +199,25 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     no answer. A page nobody views isn't rechecked until someone does: its first
     view starts any grace period. Accepted, as a page with no views harms nobody.
 44. **Live pages follow today's checks.** A page's template and CSS go through the
-    same checks as saving when first read, and don't show if they fail. Each start
+    same checks as saving when first read, but for the size budget, which is about
+    cost and may tighten, and don't show if they fail. Each start
     writes live pages' CSS again from what the domain approved, so a sanitiser fix
     reaches them, and publishing a draft does the same. The approval stands, since
     its hash covers what the merchant wrote and not what Monokulo writes from it.
+45. **The API saves a draft with `POST`, not the plan's `PUT`.** The API's macros
+    have no `PUT`, and adding one for this route isn't worth it. It's a form like
+    the rest. The plan's two approval routes became one, as a draft's body already
+    says what to add: `/checkout-page/draft/check`. It also gained the two things
+    the dashboard does that the plan left out, discarding a draft and stopping the
+    page. Only the secret key has any of it.
+46. **The API is held to the dashboard's rule: no verified domain, no draft.** A
+    review found its draft's preview would otherwise put anyone's words at this
+    Monokulo's address, with no proof of anything. It answers `409`.
+47. **Saving a custom page has a larger body limit than the rest of the API.** The
+    API's 32 KiB would refuse what the dashboard saves. Its route allows 128 KiB,
+    and its template and CSS limits are what actually bound the work.
+48. **"The key can't change what customers see" became "can't put new words in front
+    of them".** A secret key can still stop using a page, and can republish an older
+    version whose record is still on the domain. Both only show words the domain
+    approved or the store's layout, so the guide says to remove old records rather
+    than the design tracking versions.

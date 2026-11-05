@@ -725,6 +725,216 @@ async fn record_push_targets(router: &axum::Router, ak: &str) -> String {
     id
 }
 
+/// The custom page's whole way through on `router`: a draft saved and read, its proof
+/// put on the domain, looked up and published, read, replaced by another draft, then
+/// both gone.
+async fn record_custom_page(
+    router: &axum::Router,
+    sk: &str,
+    dns: &domain_proof::test_support::FakeDns,
+) {
+    use super::super::v1::{
+        checkout_page, checkout_page_check, checkout_page_draft, checkout_page_publish,
+    };
+    let (page, draft) = (
+        checkout_page::Path::TEMPLATE,
+        checkout_page_draft::Path::TEMPLATE,
+    );
+    let (check, publish) = (
+        checkout_page_check::Path::TEMPLATE,
+        checkout_page_publish::Path::TEMPLATE,
+    );
+    let body = json!({"template": CUSTOM_PAGE, "css": ".thanks { color: #2f6b4f; }"});
+    let saved = call_api(router, "POST", draft, Some(sk), Some(body)).await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let approval = body_json(saved).await["approval"].clone();
+    dns.publish(
+        approval["name"].as_str().unwrap(),
+        approval["value"].as_str().unwrap(),
+    );
+    let read = call_api(router, "GET", draft, Some(sk), None).await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let found = call_api(router, "POST", check, Some(sk), None).await;
+    assert_eq!(body_json(found).await["found"], true);
+    let published = call_api(router, "POST", publish, Some(sk), None).await;
+    assert_eq!(published.status(), StatusCode::OK);
+    assert_eq!(body_json(published).await["status"], "working");
+    let read = call_api(router, "GET", page, Some(sk), None).await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let body = json!({"template": format!("{CUSTOM_PAGE}<p>Next</p>")});
+    let saved = call_api(router, "POST", draft, Some(sk), Some(body)).await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    for uri in [draft, page] {
+        let gone = call_api(router, "DELETE", uri, Some(sk), None).await;
+        assert_eq!(gone.status(), StatusCode::NO_CONTENT, "{uri}");
+    }
+}
+
+/// What the custom page's routes refuse: nothing to read or publish yet, a template
+/// with something wrong, a proof that isn't there or can't be looked up, a page its
+/// operator turned off, this Monokulo's database failing, and too many tries.
+async fn record_custom_page_problems(
+    state: &AppState,
+    router: &axum::Router,
+    store_id: &str,
+    sk: &str,
+    dns: &domain_proof::test_support::FakeDns,
+) {
+    use super::super::v1::{
+        checkout_page, checkout_page_check, checkout_page_draft, checkout_page_publish,
+    };
+    let (page, draft) = (
+        checkout_page::Path::TEMPLATE,
+        checkout_page_draft::Path::TEMPLATE,
+    );
+    let (check, publish) = (
+        checkout_page_check::Path::TEMPLATE,
+        checkout_page_publish::Path::TEMPLATE,
+    );
+    let expect = |answer: Response, status: StatusCode, what: &str| {
+        assert_eq!(answer.status(), status, "{what}");
+    };
+    for (method, uri) in [
+        ("GET", page),
+        ("GET", draft),
+        ("POST", check),
+        ("POST", publish),
+    ] {
+        let answer = call_api(router, method, uri, Some(sk), None).await;
+        expect(answer, StatusCode::NOT_FOUND, uri);
+    }
+    let body = json!({"template": "{{nope}}", "css": "h1 { color: red }"});
+    let answer = call_api(router, "POST", draft, Some(sk), Some(body)).await;
+    expect(answer, StatusCode::UNPROCESSABLE_ENTITY, "a bad template");
+    let answer = call_api(
+        router,
+        "POST",
+        draft,
+        Some(sk),
+        Some(json!({"template": 7})),
+    )
+    .await;
+    expect(answer, StatusCode::BAD_REQUEST, "not a template");
+
+    let body = json!({"template": CUSTOM_PAGE});
+    let saved = call_api(router, "POST", draft, Some(sk), Some(body)).await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let approval = body_json(saved).await["approval"].clone();
+    let (name, value) = (
+        approval["name"].as_str().unwrap(),
+        approval["value"].as_str().unwrap(),
+    );
+    let answer = call_api(router, "POST", publish, Some(sk), None).await;
+    expect(answer, StatusCode::CONFLICT, "no proof");
+    dns.fail(name, "timed out");
+    let answer = call_api(router, "POST", publish, Some(sk), None).await;
+    expect(answer, StatusCode::SERVICE_UNAVAILABLE, "no answer");
+    dns.publish(name, value);
+    let store = crate::db::ConnectionId::new(store_id.to_owned());
+    // Publishing itself is `record_custom_page`'s: lookups here are limited.
+    let saved = state
+        .db
+        .lock()
+        .checkout_page_draft(&store, crate::now_unix())
+        .unwrap()
+        .unwrap();
+    assert!(state
+        .db
+        .lock()
+        .publish_checkout_page(&saved, "recorded", crate::now_unix())
+        .unwrap());
+
+    // Saved by an earlier release, and short of what today's checks ask.
+    state
+        .db
+        .lock()
+        .save_checkout_page_draft(&store, "{{status}}", "", "", "older", crate::now_unix())
+        .unwrap();
+    let answer = call_api(router, "POST", publish, Some(sk), None).await;
+    expect(answer, StatusCode::UNPROCESSABLE_ENTITY, "no longer passes");
+
+    // Its operator turns it off, which neither publishing nor stopping gets past.
+    let body = json!({"template": format!("{CUSTOM_PAGE}<p>Next</p>")});
+    let saved = call_api(router, "POST", draft, Some(sk), Some(body)).await;
+    let approval = body_json(saved).await["approval"].clone();
+    dns.publish(
+        approval["name"].as_str().unwrap(),
+        approval["value"].as_str().unwrap(),
+    );
+    let off = |at: Option<(i64, &str)>| {
+        assert!(state
+            .db
+            .lock()
+            .set_checkout_page_turned_off(&store, at)
+            .unwrap());
+    };
+    off(Some((RECORDED_AT, "Showed the wrong address.")));
+    let answer = call_api(router, "POST", publish, Some(sk), None).await;
+    expect(answer, StatusCode::FORBIDDEN, "publishing, turned off");
+    let answer = call_api(router, "DELETE", page, Some(sk), None).await;
+    expect(answer, StatusCode::FORBIDDEN, "stopping, turned off");
+    let answer = call_api(router, "GET", page, Some(sk), None).await;
+    assert_eq!(body_json(answer).await["status"], "turned-off");
+    off(None);
+
+    // This Monokulo's database failing.
+    sql(
+        state,
+        "ALTER TABLE checkout_page_drafts RENAME TO drafts_away",
+    );
+    let body = json!({"template": CUSTOM_PAGE});
+    for (method, uri, body) in [
+        ("GET", draft, None),
+        ("POST", draft, Some(body)),
+        ("DELETE", draft, None),
+        ("POST", check, None),
+        ("POST", publish, None),
+    ] {
+        let answer = call_api(router, method, uri, Some(sk), body).await;
+        expect(answer, StatusCode::INTERNAL_SERVER_ERROR, uri);
+    }
+    sql(
+        state,
+        "ALTER TABLE drafts_away RENAME TO checkout_page_drafts",
+    );
+    sql(state, "ALTER TABLE checkout_pages RENAME TO pages_away");
+    for (method, uri) in [("GET", page), ("DELETE", page)] {
+        let answer = call_api(router, method, uri, Some(sk), None).await;
+        expect(answer, StatusCode::INTERNAL_SERVER_ERROR, uri);
+    }
+    sql(state, "ALTER TABLE pages_away RENAME TO checkout_pages");
+    for uri in [draft, page] {
+        let gone = call_api(router, "DELETE", uri, Some(sk), None).await;
+        expect(gone, StatusCode::NO_CONTENT, uri);
+    }
+}
+
+/// Past each limit, which the routes above leave room under: what comes last, as
+/// nothing can follow it for a minute.
+async fn record_custom_page_limits(router: &axum::Router, sk: &str) {
+    use super::super::v1::{checkout_page_check, checkout_page_draft, checkout_page_publish};
+    let body = json!({"template": CUSTOM_PAGE});
+    let draft = checkout_page_draft::Path::TEMPLATE;
+    let mut last = StatusCode::OK;
+    while last != StatusCode::TOO_MANY_REQUESTS {
+        last = call_api(router, "POST", draft, Some(sk), Some(body.clone()))
+            .await
+            .status();
+        assert!(last == StatusCode::OK || last == StatusCode::TOO_MANY_REQUESTS);
+    }
+    let check = checkout_page_check::Path::TEMPLATE;
+    let mut last = StatusCode::OK;
+    while last != StatusCode::TOO_MANY_REQUESTS {
+        last = call_api(router, "POST", check, Some(sk), None)
+            .await
+            .status();
+        assert!(last == StatusCode::OK || last == StatusCode::TOO_MANY_REQUESTS);
+    }
+    let publish = checkout_page_publish::Path::TEMPLATE;
+    let answer = call_api(router, "POST", publish, Some(sk), None).await;
+    assert_eq!(answer.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
 /// The `send-test-webhook` form's answers: a test delivered to the
 /// plugin's webhook, one to a webhook the store doesn't have, then the
 /// store past its test limit (`rate-limited`; the limit's clock is the
@@ -820,6 +1030,9 @@ fn abuse(config: abuse::AbuseConfig) -> Arc<abuse::AbuseProtection> {
     Arc::new(abuse::AbuseProtection::new(config).with_clock(abuse::Clock::Fixed(RECORDED_AT)))
 }
 
+/// A custom page that passes its checks.
+const CUSTOM_PAGE: &str = "<h1 class=\"thanks\">Fern and Wire</h1>{{status}}{{if awaiting}}{{qr}}{{amount}}{{fiat}}{{address}}{{end}}{{if !awaiting}}<p>All done</p>{{end}}";
+
 /// Runs a statement on `state`'s database, to make it fail for a moment.
 fn sql(state: &AppState, statement: &str) {
     state
@@ -876,6 +1089,10 @@ async fn record_route_problems(
         (orders, keys.sk),
         (logs, keys.sk),
         (tests, keys.sk),
+        (
+            super::super::v1::checkout_page_draft::Path::TEMPLATE,
+            keys.sk,
+        ),
         (push_targets, keys.ak),
     ] {
         // An empty object is all a test webhook takes: it would send one
@@ -896,8 +1113,13 @@ async fn record_route_problems(
             .await
             .unwrap();
         assert_eq!(unlabelled.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let size = if uri == super::super::v1::checkout_page_draft::Path::TEMPLATE {
+            super::MAX_CUSTOM_PAGE_BODY_BYTES
+        } else {
+            super::MAX_BODY_BYTES
+        };
         let too_large =
-            json!({"amount": "1", "currency": "XMR", "description": "x".repeat(64 * 1024)});
+            json!({"amount": "1", "currency": "XMR", "description": "x".repeat(2 * size)});
         let answer = call_api(router, "POST", uri, Some(key), Some(too_large)).await;
         assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
     }
@@ -1045,11 +1267,15 @@ async fn record_route_problems(
         if !handler.problems().contains(&Problem::Internal) || handler.method == "DELETE" {
             continue;
         }
+        // (`record_custom_page_problems` has the custom page's: no key opened.)
         // Their secret key alone, which a wrong encryption key leaves
         // unknown (`401`), and an app's push targets, which need no key
         // opened: each fails here another way, below.
         if handler.template == super::super::v1::store::Path::TEMPLATE
             || handler.template == super::super::v1::webhook_tests::Path::TEMPLATE
+            || handler
+                .template
+                .starts_with(super::super::v1::checkout_page::Path::TEMPLATE)
             || handler.template.starts_with(push_targets)
         {
             continue;
@@ -1531,9 +1757,13 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         push_target_id: &onion_push_target_id,
     };
     for handler in catalog::handlers() {
-        // The app disconnects itself last; the document is the same.
+        // The app disconnects itself last; the document is the same; the custom
+        // page is an order of steps (`record_custom_page`).
         if handler.method == "DELETE"
             || handler.template == super::super::v1::openapi::Path::TEMPLATE
+            || handler
+                .template
+                .starts_with(super::super::v1::checkout_page::Path::TEMPLATE)
         {
             continue;
         }
@@ -1596,6 +1826,36 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     .await;
 
     record_test_webhooks(&router, sk).await;
+
+    // The custom page: refused with no verified domain, then with one, and DNS to put
+    // its proofs in.
+    let dns = Arc::new(domain_proof::test_support::FakeDns::default());
+    let proofs = domain_proof::test_support::proofs(dns.clone(), Arc::default());
+    let draft = super::super::v1::checkout_page_draft::Path::TEMPLATE;
+    let body = json!({"template": CUSTOM_PAGE});
+    let answer = call_api(&router, "POST", draft, Some(sk), Some(body)).await;
+    assert_eq!(answer.status(), StatusCode::CONFLICT);
+    sql(
+        &state,
+        &format!(
+            "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc, verified_at_utc)
+             VALUES ('recorded-domain', '{store_id}', 'bakery.example', 'recorded', {RECORDED_AT}, {RECORDED_AT})
+             ON CONFLICT (connection_id, domain) DO UPDATE SET verified_at_utc = {RECORDED_AT}"
+        ),
+    );
+    let page_state = AppState {
+        proofs: proofs.clone(),
+        ..state.clone()
+    };
+    let page_router = recorder.around(build_router(page_state.clone()));
+    record_custom_page(&page_router, sk, &dns).await;
+    record_custom_page_problems(&page_state, &page_router, &store_id, sk, &dns).await;
+    let onion_pages = onion.around(build_router(AppState {
+        proofs,
+        ..onion_state.clone()
+    }));
+    record_custom_page(&onion_pages, sk, &dns).await;
+    record_custom_page_limits(&page_router, sk).await;
 
     // The app unregisters its push target, then again.
     for expected in [StatusCode::NO_CONTENT, StatusCode::NOT_FOUND] {
@@ -1717,6 +1977,15 @@ pub fn stable(exchanges: Vec<Exchange>) -> Vec<Exchange> {
             {
                 Some("address".to_owned())
             }
+            // A custom page's preview link, and its version (`version_token`).
+            _ if value.len() >= 32 && is_hex(value) => Some("hex".to_owned()),
+            _ if value.len() == 32
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)) =>
+            {
+                Some("hex".to_owned())
+            }
             _ if value.len() == 36
                 && value.chars().filter(|c| *c == '-').count() == 4
                 && is_hex(&value.replace('-', "")) =>
@@ -1733,6 +2002,7 @@ pub fn stable(exchanges: Vec<Exchange>) -> Vec<Exchange> {
         let name = match kind.as_str() {
             "address" => format!("8{}{:04}", "A".repeat(90), n),
             "uuid" => format!("00000000-0000-4000-8000-{n:012}"),
+            "hex" => format!("{n:0width$}", width = value.len()),
             prefix => {
                 let width = value.len() - prefix.len() - 1;
                 format!("{prefix}_{n:0width$}")
@@ -1750,11 +2020,23 @@ pub fn stable(exchanges: Vec<Exchange>) -> Vec<Exchange> {
                 } else if let Some(name) = rename(s) {
                     *s = name;
                 } else {
-                    let parts: Vec<String> = s
-                        .split('/')
-                        .map(|part| rename(part).unwrap_or_else(|| part.to_owned()))
-                        .collect();
-                    *s = parts.join("/");
+                    // Inside a value or a sentence too: `monokulo-template=…`.
+                    let mut out = String::with_capacity(s.len());
+                    for part in s.split_inclusive(['/', '=', ' ']) {
+                        let (word, end) = match part.char_indices().last() {
+                            Some((at, '/' | '=' | ' ')) => part.split_at(at),
+                            _ => (part, ""),
+                        };
+                        // And at a sentence's end.
+                        let (word, stop) = match word.strip_suffix('.') {
+                            Some(word) => (word, "."),
+                            None => (word, ""),
+                        };
+                        out.push_str(&rename(word).unwrap_or_else(|| word.to_owned()));
+                        out.push_str(stop);
+                        out.push_str(end);
+                    }
+                    *s = out;
                 }
             }
             Value::Array(items) => items.iter_mut().for_each(|v| walk(v, rename)),

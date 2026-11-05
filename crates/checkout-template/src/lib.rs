@@ -12,8 +12,9 @@
 //! Saving runs the cheap checks first, so a large or hostile template costs
 //! little: [`MAX_SOURCE_BYTES`], [`MAX_TAGS`], parsing with [`MAX_DEPTH`],
 //! [`BUDGET`], then every order [`State`] ([`check`]). A published template
-//! only has to parse again ([`Template::load`]): budgets and rules may tighten
-//! in later releases, and that mustn't take down a page that was accepted.
+//! has to parse and show a customer what they need in every state, but not fit
+//! the budget ([`check_published`]): a budget may tighten in a later release, and
+//! that mustn't take down a page that was accepted, as a closed hole should.
 //!
 //! This crate knows nothing of what a feature renders: its caller passes that
 //! in ([`Template::render`]).
@@ -163,6 +164,18 @@ pub fn check(source: &str) -> Result<Template, Vec<Problem>> {
         });
     }
     problems.extend(template.every_state_problems());
+    if problems.is_empty() {
+        Ok(template)
+    } else {
+        Err(problems)
+    }
+}
+
+/// Parses `source` and checks what a page already published must still meet: all
+/// of [`check`] but its [`BUDGET`], which is about cost, not a customer's safety.
+pub fn check_published(source: &str) -> Result<Template, Vec<Problem>> {
+    let template = Template::load(source)?;
+    let problems = template.every_state_problems();
     if problems.is_empty() {
         Ok(template)
     } else {

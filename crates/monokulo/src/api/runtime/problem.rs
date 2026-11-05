@@ -81,6 +81,30 @@ pub enum Problem {
     /// which replaces that one.
     #[problem(status = 409, title = "Too many push targets")]
     TooManyPushTargets,
+    /// A store needs a verified web domain or onion address before it can save a
+    /// custom checkout page. Verify one in the store's settings first.
+    #[problem(status = 409, title = "No verified domain")]
+    CheckoutPageNeedsDomain,
+    /// Something in a custom checkout page's template or CSS can't be used, so
+    /// nothing was saved or published. `errors` lists each thing, as `{place, line, message,
+    /// hint}`: `place` is `template` or `css`, `line` counts from 1 and is left out
+    /// when it's about the whole template, and `hint`, when there is one, says what
+    /// to do about it.
+    #[problem(status = 422, title = "Custom page refused")]
+    CheckoutPageRefused,
+    /// The proof that approves this version of the store's custom page isn't on its
+    /// domain yet. `detail` says what was found. Each version has its own, so add
+    /// the one the draft names, and try again once it's there.
+    #[problem(status = 409, title = "Custom page not approved")]
+    CheckoutPageNotApproved,
+    /// The lookup for a custom page's proof got no answer, which says nothing about
+    /// the proof. Nothing was published. Try again in a moment.
+    #[problem(status = 503, title = "Custom page's proof couldn't be checked")]
+    CheckoutPageNotChecked,
+    /// This Monokulo's admin turned the store's custom page off, and only they can
+    /// turn it back on. The store's layout shows until they do.
+    #[problem(status = 403, title = "Custom page turned off")]
+    CheckoutPageTurnedOff,
     /// The request body is larger than the route takes.
     #[problem(status = 413, title = "Request too large")]
     TooLarge,
