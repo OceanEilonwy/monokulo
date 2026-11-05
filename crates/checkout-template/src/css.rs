@@ -53,7 +53,9 @@ pub fn sanitize(css: &str, classes: &BTreeSet<String>) -> Result<String, Vec<Pro
         )]);
     }
     let css = crate::normalize(css);
-    let mut parser = Parser::new(&css);
+    // A browser drops a stylesheet's byte order mark, where a parser reads it
+    // as part of the first selector.
+    let mut parser = Parser::new(css.strip_prefix('\u{feff}').unwrap_or(&css));
     let mut sanitizer = Sanitizer {
         classes,
         problems: Vec::new(),
@@ -123,6 +125,15 @@ impl Writer {
         self.last = Some(kind);
     }
 
+    /// Text that starts something new, which keeps the space before it: a
+    /// descendant selector means something else without one.
+    fn start(&mut self, text: &str) {
+        if std::mem::take(&mut self.space) {
+            self.text.push(' ');
+        }
+        self.raw(text);
+    }
+
     fn raw(&mut self, text: &str) {
         self.space = false;
         self.text.push_str(text);
@@ -140,17 +151,27 @@ struct Sanitizer<'a> {
 /// which could outrank what keeps a code scannable; `@namespace`; `@page`).
 const GROUP_AT_RULES: [&str; 3] = ["media", "supports", "container"];
 
-/// Functions that load something, or could.
-const FORBIDDEN_FUNCTIONS: [&str; 8] = [
-    "url",
-    "src",
-    "image",
-    "image-set",
-    "-webkit-image-set",
-    "cross-fade",
-    "element",
-    "paint",
-];
+/// Functions that load something, or could, or paint what's elsewhere on the
+/// page, with or without a vendor's prefix.
+fn forbidden_function(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let bare = ["-webkit-", "-moz-", "-ms-", "-o-"]
+        .into_iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
+        .unwrap_or(&name);
+    matches!(
+        bare,
+        "url"
+            | "src"
+            | "image"
+            | "image-set"
+            | "image-rect"
+            | "cross-fade"
+            | "element"
+            | "paint"
+            | "canvas"
+    )
+}
 
 /// Properties a page can't set.
 fn forbidden_property(name: &str) -> Option<&'static str> {
@@ -461,7 +482,7 @@ impl Sanitizer<'_> {
             }
             Token::SquareBracketBlock => self.attribute_selector(parser, out, line),
             Token::Function(name) => {
-                if FORBIDDEN_FUNCTIONS.contains(&name.to_ascii_lowercase().as_str()) {
+                if forbidden_function(name) {
                     self.add(line, format!("{name}() can't be used."), None);
                     return;
                 }
@@ -529,7 +550,7 @@ impl Sanitizer<'_> {
                     self.add(line, format!("\"{value}\" isn't a data-part."), None);
                     return;
                 }
-                out.raw("[data-part=\"");
+                out.start("[data-part=\"");
                 out.raw(&value);
                 out.raw("\"]");
             }
@@ -604,7 +625,7 @@ impl Sanitizer<'_> {
         let line = line_of(parser);
         let close = match token {
             Token::Function(name) => {
-                if FORBIDDEN_FUNCTIONS.contains(&name.to_ascii_lowercase().as_str()) {
+                if forbidden_function(name) {
                     self.add(
                         line,
                         format!("{name}() can't be used. Custom pages load nothing from other sites, so customers on Tor stay private."),
@@ -628,6 +649,14 @@ impl Sanitizer<'_> {
             }
             Token::Delim('\\') => {
                 self.add(line, "A stray \\ can't be used.".to_string(), None);
+                return;
+            }
+            Token::Delim('&') => {
+                self.add(
+                    line,
+                    "& can't be used: a rule can't go inside a rule.".to_string(),
+                    None,
+                );
                 return;
             }
             Token::AtKeyword(name) => {
@@ -784,7 +813,7 @@ fn style_rule_safe<'i>(parser: &mut Parser<'i>, first: Token<'i>, depth: usize) 
                 Token::Comma => break,
                 Token::Delim('~' | '+' | '>' | '|') if at_start => return false,
                 Token::Delim('&') | Token::Semicolon => return false,
-                Token::WhiteSpace(_) => {}
+                Token::WhiteSpace(_) => continue,
                 next => {
                     if !value_safe(parser, &next, depth) {
                         return false;
@@ -824,11 +853,7 @@ fn value_safe<'i>(parser: &mut Parser<'i>, token: &Token<'i>, depth: usize) -> b
         | Token::CloseParenthesis
         | Token::CloseSquareBracket
         | Token::CloseCurlyBracket => false,
-        Token::Function(name)
-            if FORBIDDEN_FUNCTIONS.contains(&name.to_ascii_lowercase().as_str()) =>
-        {
-            false
-        }
+        Token::Function(name) if forbidden_function(name) => false,
         Token::Function(_) | Token::ParenthesisBlock | Token::SquareBracketBlock => {
             nested(parser, |parser| {
                 while let Ok(inner) = parser.next_including_whitespace().cloned() {

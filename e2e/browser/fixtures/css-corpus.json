@@ -114,5 +114,21 @@
   {
     "css": "em+em,em~em,em>em{margin:0}",
     "written": "#checkout-root em+em,#checkout-root em~em,#checkout-root em>em{margin:0;}"
+  },
+  {
+    "css": ".pay [data-part=qr]{color:red}",
+    "written": "#checkout-root .pay [data-part=\"qr\"]{color:red;}"
+  },
+  {
+    "css": ".pay[data-part=qr]{color:red}",
+    "written": "#checkout-root .pay[data-part=\"qr\"]{color:red;}"
+  },
+  {
+    "css": ":is(.pay [data-part=qr]){color:red}",
+    "written": "#checkout-root :is(.pay [data-part=\"qr\"]){color:red;}"
+  },
+  {
+    "css": "[data-part=qr] [data-part=address]{color:red}",
+    "written": "#checkout-root [data-part=\"qr\"] [data-part=\"address\"]{color:red;}"
   }
 ]
