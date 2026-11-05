@@ -1,0 +1,1 @@
+<section class="a">}}{{if awaiting}}<p>{{amount}} {{fiat}}</p>{{qr small}}{d}{{end}}</section>

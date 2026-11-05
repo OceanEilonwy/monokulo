@@ -1,0 +1,1 @@
+.pay{margin:calc(1px + 2px)!important}@media(max-wdt:0p8)-ms-not(.pay)::before{content:"x"}}

@@ -1,0 +1,1 @@
+<sectio@a"a">{{status}}{{if&iwaiting}}<p>{{amount}} {{fiat}}</p>{{qr small}}{{address short}}{{end}}c}<p>{{amount}} {{fiat}}</p>{{qr ><hsmall}}tion>

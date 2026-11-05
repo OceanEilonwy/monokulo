@@ -1,0 +1,1 @@
+<section class="a">{{status}}{{if !awaiting}}<p>{{amount}} {{fiat}}</p>{{qr small}}laas sh onso{address short}}{{end}}</section>
