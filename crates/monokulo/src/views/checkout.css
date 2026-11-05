@@ -26,16 +26,16 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 }
 /* One line, number and unit together: the size follows the column's width
    (cqi), between a floor that still fits a 280px frame and the full size. */
-.amount { font-size: clamp(1.15rem, 9cqi, 2.2rem); font-weight: 700; margin: 0.2em 0 0.1em; letter-spacing: -0.01em; white-space: nowrap; }
-.amount-unit { font-size: 0.7em; font-weight: 700; color: var(--muted); }
-.amount-label { display: block; color: var(--muted); font-size: 0.8em; }
+.amount { font-size: clamp(var(--text-lg), 9cqi, var(--text-2xl)); font-weight: 700; margin: 0.2em 0 0.1em; letter-spacing: -0.01em; white-space: nowrap; }
+.amount-unit { font-size: var(--text-base); font-weight: 700; color: var(--muted); }
+.amount-label { display: block; color: var(--muted); font-size: var(--text-xs); }
 .fiat-amount { color: var(--muted); margin-bottom: 1.2em; }
 /* The time left belongs to the amount: under it, before the code. */
 .countdown-slot { margin: -.6em 0 1.2em; text-align: left; }
 .qr-wrap { margin: 0 auto 1.2em; display: flex; justify-content: center; }
 .qr-wrap svg { width: 208px; height: 208px; }
 .address-block { text-align: left; margin: 0 0 1.4em; }
-.address-label { display: block; color: var(--muted); font-size: 0.8em; margin: 0 0 0.35em; }
+.address-label { display: block; color: var(--muted); font-size: var(--text-xs); margin: 0 0 0.35em; }
 .section {
   text-align: left;
   margin-top: 1.6em;
@@ -44,7 +44,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 }
 .pay-grid > .pay-col-primary > .section:first-child,
 .pay-grid > .pay-col-secondary > .section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
-.progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.4em; }
+.progress-row { display: flex; justify-content: space-between; font-size: var(--text-sm); margin-bottom: 0.4em; }
 .progress-bar {
   --progress-fill: var(--accent);
   display: block;
@@ -71,10 +71,10 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .qr-new svg { outline: 2px solid var(--state-partial-border); outline-offset: 6px; border-radius: 2px; animation: qr-new 1.4s ease-out 2; }
 @keyframes qr-new { from { box-shadow: 0 0 0 6px color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 22px transparent; } }
 @media (prefers-reduced-motion: reduce) { .qr-new svg { animation: none; } }
-.qr-note { margin: -.6em 0 1.2em; font-size: .75em; color: var(--muted); }
-[data-table="payments"] { font-size: 0.8em; margin-top: 1.2em; }
-.meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
-.refresh-toggle { margin: 0 0 .5em; text-align: right; font-size: .85em; }
+.qr-note { margin: -.6em 0 1.2em; font-size: var(--text-xs); color: var(--muted); }
+[data-table="payments"] { font-size: var(--text-xs); margin-top: 1.2em; }
+.meta { margin-top: 1.4em; font-size: var(--text-xs); color: var(--muted); text-align: left; }
+.refresh-toggle { margin: 0 0 .5em; text-align: right; font-size: var(--text-sm); }
 /* The scan and image buttons wait, hidden, for the script that works them;
    the saved tick sits beside them, so the text stops short of all three. */
 .refund-field { margin: .5em 0; }
@@ -99,17 +99,17 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .stage-slot { margin-bottom: .5em; }
 .checkout-compact .merchant { max-width: none; margin-bottom: .5em; padding: var(--space-sm) var(--space-md); }
 .checkout-compact .merchant .hint { font-size: var(--text-sm); }
-.checkout-compact .pay-col-secondary { font-size: .9em; }
+.checkout-compact .pay-col-secondary { font-size: var(--text-sm); }
 .checkout-compact .qr-wrap { margin-bottom: .5em; }
 .checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
 .checkout-compact .section { margin-top: .7em; padding-top: .7em; }
 .checkout-compact .meta, .checkout-compact [data-table="payments"] { display: none; }
-.checkout-compact .amount { font-size: clamp(1.1rem, 8cqi, 1.8rem); font-weight: 800; margin: .1em 0; }
-.checkout-compact .fiat-amount { font-size: .8em; margin-bottom: .4em; }
+.checkout-compact .amount { font-size: clamp(var(--text-lg), 8cqi, var(--text-xl)); font-weight: 800; margin: .1em 0; }
+.checkout-compact .fiat-amount { font-size: var(--text-xs); margin-bottom: .4em; }
 .checkout-compact .qr-wrap { margin-bottom: .3em; }
 .checkout-compact .qr-wrap svg { width: min(29vh, 158px); height: auto; }
 .checkout-compact .address-block { margin-bottom: .5em; }
 .checkout-compact .countdown-slot { margin-bottom: .5em; }
-.checkout-compact .field-help { font-size: .7em; }
+.checkout-compact .field-help { font-size: var(--text-2xs); }
 /* A small frame's tighter margin. */
 body:has(.checkout-compact) { padding: .4rem; }
