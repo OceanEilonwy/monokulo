@@ -873,6 +873,47 @@ fn what_escaped_scoping_is_refused() {
     assert_eq!(written, "#checkout-root h1{color:a\\ ;background:red;}");
 }
 
+/// A second attack on the sanitiser found these. None got out of the page; the
+/// first changed what valid CSS meant, and the second painted another element.
+#[test]
+fn what_a_second_review_found_stays_fixed() {
+    for (css, written) in [
+        (
+            ".pay [data-part=qr]{color:red}",
+            "#checkout-root .pay [data-part=\"qr\"]{color:red;}",
+        ),
+        (
+            "[data-part=qr] [data-part=address]{color:red}",
+            "#checkout-root [data-part=\"qr\"] [data-part=\"address\"]{color:red;}",
+        ),
+        (
+            ":is(.pay [data-part=qr]){color:red}",
+            "#checkout-root :is(.pay [data-part=\"qr\"]){color:red;}",
+        ),
+        // Together stays together.
+        (
+            ".pay[data-part=qr]{color:red}",
+            "#checkout-root .pay[data-part=\"qr\"]{color:red;}",
+        ),
+        ("\u{feff}h1{color:red}", "#checkout-root h1{color:red;}"),
+    ] {
+        assert_eq!(sanitized(css), written, "{css}");
+    }
+    for css in [
+        "h1{background:-moz-element(#after)}",
+        "h1{background:-MOZ-ELEMENT(#before)}",
+        "h1{background:-webkit-cross-fade(\"a\",\"b\",50%)}",
+        "h1{background:-moz-image-rect(\"a\",0,0,0,0)}",
+        "h1{background:-webkit-canvas(a)}",
+    ] {
+        assert!(css_problem(css).contains("can't be used"), "{css}");
+    }
+    assert_eq!(
+        css_problem("h1{--x:&}"),
+        "& can't be used: a rule can't go inside a rule."
+    );
+}
+
 /// A long run of colons recursed for each one, past the stack a server thread
 /// has.
 #[test]
@@ -905,6 +946,12 @@ fn the_check_on_written_css_refuses_what_gets_out() {
         "@media ({}){#checkout-root h1{}}",
         "@media print{h1{}}",
         "#checkout-root h1\\{--x:{}html{color:red};}",
+        // A comment isn't a selector's start.
+        "#checkout-root /**/ ~ *{}",
+        "#checkout-root /**/ + *{}",
+        "#checkout-root\n/**/\n~ *{}",
+        "#checkout-root a,#checkout-root /**/ ~ *{}",
+        "@media all{#checkout-root /**/ ~ *{}}",
     ] {
         assert!(!css::written_is_safe(written), "{written}");
     }
