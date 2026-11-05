@@ -183,6 +183,13 @@ pub const COLUMNS: Classification = Classification {
         ("store_connections", "payment_description", Visible),
         ("store_connections", "checkout_layout", Visible),
         ("store_connections", "checkout_style", Visible),
+        ("checkout_page_drafts", "connection_id", Visible),
+        ("checkout_page_drafts", "template", Visible),
+        ("checkout_page_drafts", "css", Visible),
+        ("checkout_page_drafts", "written_css", Visible),
+        // Whoever holds it can see the draft.
+        ("checkout_page_drafts", "preview_token", Secret),
+        ("checkout_page_drafts", "created_at_utc", Visible),
         ("checkout_stylesheets", "hash", Visible),
         ("checkout_stylesheets", "connection_id", Visible),
         ("checkout_stylesheets", "css", Visible),

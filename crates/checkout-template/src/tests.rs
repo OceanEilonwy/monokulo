@@ -918,6 +918,18 @@ fn what_a_second_review_found_stays_fixed() {
     );
 }
 
+/// A short selector grows once scoped: what's stored is bounded, not just what's
+/// sent.
+#[test]
+fn what_is_written_is_limited_too() {
+    let many = format!("{}p{{}}", "p,".repeat(8000));
+    assert!(many.len() < css::MAX_CSS_BYTES);
+    assert_eq!(
+        css::sanitize(&many, &classes(&[])).unwrap_err()[0].message,
+        "This CSS comes to over 32 KiB once it's scoped to your page."
+    );
+}
+
 /// A long run of colons recursed for each one, past the stack a server thread
 /// has.
 #[test]

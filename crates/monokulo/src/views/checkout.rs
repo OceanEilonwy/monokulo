@@ -410,13 +410,46 @@ fn merchant_icon_site(data: &CheckoutViewModel) -> Option<&crate::stores::Site> 
     data.merchant_site.as_ref().filter(|_| data.merchant_icon)
 }
 
+/// The Content-Security-Policy of a preview of a draft: nothing runs, nothing can
+/// go anywhere, and it's framed only by this Monokulo's own pages. `sandbox` gives
+/// it no origin of its own, so its typeface can't load, and it shows in the
+/// customer's device font.
+pub fn preview_policy() -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let fonts = base64::engine::general_purpose::STANDARD
+        .encode(sha2::Sha256::digest(super::font_faces().as_bytes()));
+    format!(
+        "sandbox; default-src 'none'; style-src 'self' 'sha256-{fonts}'; font-src 'self'; img-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+    )
+}
+
+/// A made-up order on a draft's template, with its CSS. Runs nothing.
+pub fn preview_page(
+    chrome: &PageChrome,
+    data: &CheckoutViewModel,
+    template: &Template,
+    page_css: Option<&str>,
+) -> Markup {
+    page(chrome, data, template, page_css, false)
+}
+
 pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
-    let template = data.layout.template();
+    page(chrome, data, data.layout.template(), None, true)
+}
+
+fn page(
+    chrome: &PageChrome,
+    data: &CheckoutViewModel,
+    template: &Template,
+    page_css: Option<&str>,
+    scripts: bool,
+) -> Markup {
     let extra_head = html! {
         // Without JavaScript this is the only update path; with it,
         // `checkout.js` streams changes in place instead (`noscript` content
         // is never parsed as markup when scripting is on).
-        @if !data.is_terminal && data.auto_refresh {
+        @if scripts && !data.is_terminal && data.auto_refresh {
             noscript { meta http-equiv="refresh" content="60" id="checkout-refresh"; }
         }
         (super::stylesheet("checkout.css"))
@@ -424,6 +457,11 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
         @if let Some(hash) = &data.style_hash {
             link rel="stylesheet" href=(crate::base::url(format!("/static-style/{hash}.css")));
         }
+        // A custom page's own, last, so it has the last word on style.
+        @if let Some(hash) = page_css {
+            link rel="stylesheet" href=(crate::base::url(format!("/static-style/{hash}.css")));
+        }
+        @if scripts {
         // Live updates and the refund address save (structured_logging.md
         // part 8), in this order: the glue sets fixi's defaults.
         (script("fx-glue.js", Load::Defer))
@@ -436,6 +474,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
         @if chrome.browser_reports {
             (script("telemetry.js", Load::Defer))
         }
+        }
     };
     let body = html! {
         div class=(match data.layout { Layout::Detailed => "pay-wrap", Layout::Compact => "pay-wrap checkout-compact", Layout::Tiny => "pay-wrap checkout-tiny" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
@@ -443,7 +482,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
             // Always here, and only its text replaced, so a screen reader
             // announces each change of status.
             p id="checkout-announce" class="sr-only" role="status" { (data.status_label) }
-            @if !data.is_terminal {
+            @if scripts && !data.is_terminal {
                 noscript {
                     p class="refresh-toggle" {
                         a href=(format!("{}{}", checkout_url(&data.order_id), data.toggled_refresh_suffix)) {
@@ -456,13 +495,13 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
             // With JavaScript, fixi opens the order's event stream as soon
             // as it sees this, and ssexi routes each changed part of the
             // page into place. Not for a final order: nothing will change.
-            @if !data.is_terminal {
+            @if scripts && !data.is_terminal {
                 span id="checkout-stream" hidden fx-action=(events_url(data)) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect fx-own-errors {}
             }
 
             (PreEscaped(page_body(template, data)))
         }
-        (script("checkout.js", Load::Now))
+        @if scripts { (script("checkout.js", Load::Now)) }
     };
     layout_bare_with_head(
         chrome,

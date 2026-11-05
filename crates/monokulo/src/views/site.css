@@ -204,6 +204,14 @@ button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px
 /* Visually hidden but still readable by assistive tech: the theme toggle's
    labels, the checkout's heading, the Logs page's search label. */
 .style-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-sm); }
+.template-editor textarea { font-family: var(--font-mono); font-size: var(--text-sm); }
+.template-problems { margin: 0; padding-left: 1.2em; display: grid; gap: var(--space-xs); }
+.template-size { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); font-size: var(--text-sm); }
+.template-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--space-md); }
+.template-preview { margin: 0; }
+.template-preview figcaption { font-size: var(--text-sm); font-weight: 700; margin-bottom: var(--space-xs); }
+.template-preview iframe { display: block; width: 100%; height: 620px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.template-preview-states { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin: var(--space-md) 0; font-size: var(--text-sm); }
 .sr-only {
   position: absolute;
   width: 1px;

@@ -752,6 +752,29 @@ async fn challenge(State(control): State<Controls>) -> axum::response::Html<Stri
     )
 }
 
+/// `POST /__coverage/domains/verified`: the fixture store's web domain, verified.
+/// The fixture's DNS always fails, so nothing else can make one.
+async fn verified_domain(State(control): State<Controls>) -> StatusCode {
+    let store = engine_protocol::ids::ConnectionId::new("coverage-store");
+    let db = control.db.lock();
+    let id = "coverage-domain";
+    if db
+        .get_store_domain(&store, id)
+        .is_ok_and(|domain| domain.is_some())
+    {
+        return StatusCode::NO_CONTENT;
+    }
+    let now = monokulo::now_unix();
+    let made = db
+        .create_store_domain(id, &store, "coverage-shop.example", "token", now, None)
+        .is_ok_and(|made| made.is_ok());
+    if made && db.record_store_domain_check(id, now, None).is_ok() {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
+}
+
 async fn restrict_embed(State(control): State<Controls>) -> StatusCode {
     match control.db.lock().set_embed_restricted(
         &engine_protocol::ids::ConnectionId::new("coverage-store"),
@@ -1561,6 +1584,7 @@ async fn main() {
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))
         .route("/__coverage/challenge", get(challenge))
+        .route("/__coverage/domains/verified", post(verified_domain))
         .route("/__coverage/embed/restricted", post(restrict_embed))
         .route("/__coverage/embed/unrestricted", post(unrestrict_embed))
         .route("/__coverage/orders", post(create_order))

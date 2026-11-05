@@ -65,7 +65,16 @@ pub fn sanitize(css: &str, classes: &BTreeSet<String>) -> Result<String, Vec<Pro
     if sanitizer.problems.is_empty() {
         // Checked as a browser would read it, whatever the rules above let by:
         // this is what the page's scoping rests on.
-        if written_is_safe(&out.text) {
+        if out.text.len() > MAX_CSS_BYTES {
+            Err(vec![problem(
+                1,
+                format!(
+                    "This CSS comes to over {} KiB once it's scoped to your page.",
+                    MAX_CSS_BYTES / 1024
+                ),
+                Some("Use fewer selectors in each rule."),
+            )])
+        } else if written_is_safe(&out.text) {
             Ok(out.text)
         } else {
             Err(vec![problem(

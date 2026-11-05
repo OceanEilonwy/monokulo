@@ -20,6 +20,8 @@ use crate::stores::Site;
 use crate::views::checkout_layouts::Layout;
 
 mod apps;
+mod checkout_pages;
+pub use checkout_pages::{CheckoutPageDraft, DRAFT_SECS};
 mod order_changes;
 mod order_requests;
 mod push;
@@ -209,6 +211,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (56, include_str!("../migrations/0056_checkout_layout.sql")),
     (57, include_str!("../migrations/0057_checkout_style.sql")),
+    (
+        58,
+        include_str!("../migrations/0058_checkout_page_drafts.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -1650,6 +1656,7 @@ impl Db {
         let tx = self.conn.unchecked_transaction()?;
         for table in [
             "checkout_stylesheets",
+            "checkout_page_drafts",
             "order_currency_metadata",
             "connect_tokens",
             "confirmation_thresholds",
@@ -2758,8 +2765,7 @@ impl Db {
     }
 
     /// Saves a store's checkout colours and shape, with the stylesheet that
-    /// writes them. Stylesheets replaced over a week ago go: a page open that
-    /// long has refreshed by now.
+    /// writes them.
     pub fn set_store_checkout_style(
         &self,
         id: &ConnectionId,
@@ -2773,18 +2779,9 @@ impl Db {
             params![id, stored],
         )?;
         if let Some(css) = style.css() {
-            let hash = crate::views::checkout_style::stylesheet_hash(&css);
-            tx.execute(
-                "INSERT INTO checkout_stylesheets (hash, connection_id, css, created_at_utc)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT (hash, connection_id) DO UPDATE SET created_at_utc = excluded.created_at_utc",
-                params![hash, id, css, now],
-            )?;
+            self.put_stylesheet(id, &css, now)?;
         }
-        tx.execute(
-            "DELETE FROM checkout_stylesheets WHERE connection_id = ?1 AND created_at_utc < ?2",
-            params![id, now - 7 * 24 * 60 * 60],
-        )?;
+        self.prune_stylesheets(id, now)?;
         tx.commit()?;
         Ok(())
     }

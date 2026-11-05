@@ -87,6 +87,24 @@ impl Layout {
         Layout::ALL.into_iter().find(|layout| layout.name() == name)
     }
 
+    /// What a merchant knows it as.
+    pub fn label(self) -> &'static str {
+        match self {
+            Layout::Detailed => "Detailed",
+            Layout::Compact => "Compact",
+            Layout::Tiny => "Tiny",
+        }
+    }
+
+    /// Its template, as written: what "Start from" gives a custom page.
+    pub fn source(self) -> &'static str {
+        match self {
+            Layout::Detailed => DETAILED,
+            Layout::Compact => COMPACT,
+            Layout::Tiny => TINY,
+        }
+    }
+
     /// Its template, parsed once. A test holds every layout to the checks a
     /// merchant's must pass, so none of these can fail on a running server.
     pub fn template(self) -> &'static Template {
