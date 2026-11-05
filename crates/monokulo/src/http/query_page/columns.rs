@@ -182,6 +182,11 @@ pub const COLUMNS: Classification = Classification {
         ("store_connections", "name", Visible),
         ("store_connections", "payment_description", Visible),
         ("store_connections", "checkout_layout", Visible),
+        ("store_connections", "checkout_style", Visible),
+        ("checkout_stylesheets", "hash", Visible),
+        ("checkout_stylesheets", "connection_id", Visible),
+        ("checkout_stylesheets", "css", Visible),
+        ("checkout_stylesheets", "created_at_utc", Visible),
         // The secret key's hash, which finds the store from its key
         ("store_connections", "secret_key_hash", Secret),
         ("store_domains", "id", Visible),

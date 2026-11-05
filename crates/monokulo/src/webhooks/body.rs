@@ -239,6 +239,7 @@ mod tests {
     fn store() -> StoreConnectionRow {
         StoreConnectionRow {
             checkout_layout: crate::views::checkout_layouts::Layout::Detailed,
+            checkout_style: Default::default(),
             id: ConnectionId::new("917701c2"),
             user_id: engine_protocol::ids::UserId::new("u_1"),
             name: "Bakery".into(),

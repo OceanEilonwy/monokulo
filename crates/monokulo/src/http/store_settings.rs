@@ -63,6 +63,7 @@ struct Plan {
     fx: Option<(Vec<String>, crate::fx_provider_settings::FxProviderSettings)>,
     client_logging: Option<bool>,
     layout: Option<crate::views::checkout_layouts::Layout>,
+    style: Option<crate::views::checkout_style::CheckoutStyle>,
 }
 
 impl Plan {
@@ -75,6 +76,7 @@ impl Plan {
             && self.fx.is_none()
             && self.client_logging.is_none()
             && self.layout.is_none()
+            && self.style.is_none()
     }
 }
 
@@ -219,6 +221,45 @@ async fn plan(
         ))?;
         if layout != row.checkout_layout {
             plan.layout = Some(layout);
+        }
+    }
+
+    // The checkout's colours and shape.
+    {
+        use crate::views::checkout_style::{clean_colour, Corners, Font};
+        const STYLE: StoreSection = StoreSection::Style;
+        let mut style = row.checkout_style.clone();
+        for (scheme, roles) in [("light", &mut style.light), ("dark", &mut style.dark)] {
+            for (key, name, role) in [
+                ("accent", "Accent", &mut roles.accent),
+                ("background", "Background", &mut roles.background),
+                ("text", "Text", &mut roles.text),
+                ("quiet", "Quiet text", &mut roles.quiet),
+                ("lines", "Lines", &mut roles.lines),
+            ] {
+                if let Some(typed) = form.get(&format!("style_{scheme}_{key}")) {
+                    *role = clean_colour(typed).ok_or_else(|| {
+                        (
+                            STYLE,
+                            format!("{name} ({scheme}) must be a colour like #2f6b4f, or empty for the theme's own."),
+                        )
+                    })?;
+                }
+            }
+        }
+        if let Some(name) = form.get("style_corners") {
+            style.corners = Corners::from_name(name)
+                .ok_or((STYLE, "That isn't one of the corners.".to_string()))?;
+        }
+        if let Some(name) = form.get("style_font") {
+            style.font =
+                Font::from_name(name).ok_or((STYLE, "That isn't one of the fonts.".to_string()))?;
+        }
+        if let Some(on) = switch("style_transparent") {
+            style.transparent = on;
+        }
+        if style != row.checkout_style {
+            plan.style = Some(style);
         }
     }
 
@@ -460,6 +501,16 @@ async fn apply(
             .await
             .map_err(|_| (StoreSection::Layout, something_went_wrong()))?;
         saved.push(StoreSection::Layout);
+    }
+
+    if let Some(style) = plan.style {
+        let store_id = row.id.clone();
+        state
+            .db
+            .write(move |db| db.set_store_checkout_style(&store_id, &style, crate::now_unix()))
+            .await
+            .map_err(|_| (StoreSection::Style, something_went_wrong()))?;
+        saved.push(StoreSection::Style);
     }
 
     if let Some(code) = plan.base_currency {

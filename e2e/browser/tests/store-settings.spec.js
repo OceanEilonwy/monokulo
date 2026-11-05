@@ -161,3 +161,16 @@ test('a store chooses its checkout layout on the Checkout tab', async ({ page, c
   await expect(page.getByRole('radio', { name: /Compact/ })).toBeChecked();
 });
 
+test('a store themes its checkout, and clearing a role goes back to the theme', async ({ page, context }) => {
+  await login(context);
+  await page.goto(tab('checkout'));
+  const save = () => page.locator('#save-bar').getByRole('button', { name: /^Save/ }).click();
+  await page.locator('#style_light_accent').fill('#2f6b4f');
+  await save();
+  await expect(page).toHaveURL(/saved=checkout-style/);
+  await expect(page.locator('#style_light_accent')).toHaveValue('#2f6b4f');
+  await page.locator('#style_light_accent').fill('');
+  await save();
+  await expect(page).toHaveURL(/saved=checkout-style/);
+  await expect(page.locator('#style_light_accent')).toHaveValue('');
+});

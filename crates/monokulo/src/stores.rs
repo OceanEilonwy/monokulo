@@ -192,6 +192,9 @@ pub fn stored_site(site: Option<&Site>) -> &str {
 /// fails is logged, leaves nothing behind, and is tried again at the next
 /// start.
 pub fn backfill_at_start(db: &crate::db::Db, key: &crate::crypto::AtRestKey) {
+    if let Err(e) = db.refresh_checkout_stylesheets(crate::now_unix()) {
+        tracing::error!(error = %e, "could not write stores' checkout stylesheets");
+    }
     match crate::embed_domains::import_existing_domains(db) {
         Ok(true) => tracing::info!(
             step = crate::db::STORE_DOMAINS_STEP,

@@ -208,6 +208,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0055_one_domain_of_each.sql"),
     ),
     (56, include_str!("../migrations/0056_checkout_layout.sql")),
+    (57, include_str!("../migrations/0057_checkout_style.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -812,7 +813,7 @@ fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomai
 }
 
 /// What a query reading whole stores selects, for [`store_from_row`].
-const STORE_COLUMNS: &str = "id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description, checkout_layout";
+const STORE_COLUMNS: &str = "id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description, checkout_layout, checkout_style";
 
 /// A `store_connections` row, from a query selecting [`STORE_COLUMNS`].
 /// Each is read by its name, so a list that leaves one out fails rather
@@ -836,6 +837,9 @@ fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRo
         // An unknown name can't be saved; if a downgrade left one, today's page.
         checkout_layout: Layout::from_name(&row.get::<_, String>("checkout_layout")?)
             .unwrap_or(Layout::Detailed),
+        // Written only from a checked style; if it can't be read, the theme's.
+        checkout_style: serde_json::from_str(&row.get::<_, String>("checkout_style")?)
+            .unwrap_or_default(),
     })
 }
 
@@ -889,6 +893,8 @@ pub struct NewStoreIntegration<'a> {
 pub struct StoreConnectionRow {
     /// The layout its checkout shows unless an embed asks for another.
     pub checkout_layout: Layout,
+    /// Its checkout's colours and shape.
+    pub checkout_style: crate::views::checkout_style::CheckoutStyle,
     pub id: ConnectionId,
     pub user_id: UserId,
     /// What the merchant calls the store, shown wherever it's named
@@ -1643,6 +1649,7 @@ impl Db {
     pub fn delete_store(&self, id: &ConnectionId) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for table in [
+            "checkout_stylesheets",
             "order_currency_metadata",
             "connect_tokens",
             "confirmation_thresholds",
@@ -2748,6 +2755,79 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(changed == 1)
+    }
+
+    /// Saves a store's checkout colours and shape, with the stylesheet that
+    /// writes them. Stylesheets replaced over a week ago go: a page open that
+    /// long has refreshed by now.
+    pub fn set_store_checkout_style(
+        &self,
+        id: &ConnectionId,
+        style: &crate::views::checkout_style::CheckoutStyle,
+        now: i64,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let stored = serde_json::to_string(style).expect("a style is plain data");
+        tx.execute(
+            "UPDATE store_connections SET checkout_style = ?2 WHERE id = ?1",
+            params![id, stored],
+        )?;
+        if let Some(css) = style.css() {
+            let hash = crate::views::checkout_style::stylesheet_hash(&css);
+            tx.execute(
+                "INSERT INTO checkout_stylesheets (hash, connection_id, css, created_at_utc)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (hash, connection_id) DO UPDATE SET created_at_utc = excluded.created_at_utc",
+                params![hash, id, css, now],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM checkout_stylesheets WHERE connection_id = ?1 AND created_at_utc < ?2",
+            params![id, now - 7 * 24 * 60 * 60],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Writes each store's stylesheet again, from its colours: at each start, as a
+    /// release that changes what they're written as changes the hash its pages ask
+    /// for. Returns how many it wrote.
+    pub fn refresh_checkout_stylesheets(&self, now: i64) -> Result<usize> {
+        let rows: Vec<(ConnectionId, String)> = self
+            .conn
+            .prepare(
+                "SELECT id, checkout_style FROM store_connections WHERE checkout_style <> '{}'",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut written = 0;
+        for (id, style) in rows {
+            let css = serde_json::from_str::<crate::views::checkout_style::CheckoutStyle>(&style)
+                .ok()
+                .and_then(|style| style.css());
+            if let Some(css) = css {
+                self.conn.execute(
+                    "INSERT INTO checkout_stylesheets (hash, connection_id, css, created_at_utc)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT (hash, connection_id) DO UPDATE SET created_at_utc = excluded.created_at_utc",
+                    params![crate::views::checkout_style::stylesheet_hash(&css), id, css, now],
+                )?;
+                written += 1;
+            }
+        }
+        Ok(written)
+    }
+
+    /// A stylesheet, by the hash in its URL.
+    pub fn checkout_stylesheet(&self, hash: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT css FROM checkout_stylesheets WHERE hash = ?1 LIMIT 1",
+                params![hash],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(DbError::from)
     }
 
     /// Saves the layout a store's checkout shows.

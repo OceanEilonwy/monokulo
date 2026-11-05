@@ -108,6 +108,8 @@ pub struct CheckoutViewModel {
     /// Which layout this page is in. A generic presentation option - the page
     /// knows nothing about who embeds it (the POS terminal is one user).
     pub layout: Layout,
+    /// The store's stylesheet, by the hash of its content, if it has one.
+    pub style_hash: Option<String>,
     pub refund_enabled: bool,
     pub query_suffix: String,
     /// Whether the no-JavaScript meta refresh is on (`?refresh=false` turns
@@ -418,6 +420,10 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
             noscript { meta http-equiv="refresh" content="60" id="checkout-refresh"; }
         }
         (super::stylesheet("checkout.css"))
+        // The store's colours and shape, over the theme.
+        @if let Some(hash) = &data.style_hash {
+            link rel="stylesheet" href=(crate::base::url(format!("/static-style/{hash}.css")));
+        }
         // Live updates and the refund address save (structured_logging.md
         // part 8), in this order: the glue sets fixi's defaults.
         (script("fx-glue.js", Load::Defer))
@@ -1144,6 +1150,7 @@ mod tests {
             refund_address_locked: false,
             refund_address_error: None,
             layout: Layout::Detailed,
+            style_hash: None,
             refund_enabled: true,
             query_suffix: String::new(),
             auto_refresh: true,

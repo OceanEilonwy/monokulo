@@ -572,6 +572,10 @@ async fn build_checkout_view(
             && detail.order.amount_received_piconero > pricing::xmr_amount::Piconero::ZERO,
         refund_address_error,
         layout: options.layout(row),
+        style_hash: row
+            .checkout_style
+            .css()
+            .map(|css| views::checkout_style::stylesheet_hash(&css)),
         refund_enabled: options.refund_enabled(),
         query_suffix: options.suffix(),
         auto_refresh: options.auto_refresh(),
@@ -987,6 +991,37 @@ pub async fn checkout_events(
             }
         },
     )
+}
+
+/// `GET /static-style/{hash}.css`: a stylesheet a checkout page links by the hash
+/// of its content, so a browser may keep it for a year.
+pub async fn stylesheet(
+    axum::extract::Path(file): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(hash) = file
+        .strip_suffix(".css")
+        .filter(|hash| hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_string)
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match state.db.read(move |db| db.checkout_stylesheet(&hash)).await {
+        Ok(Some(css)) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8"),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "public, max-age=31536000, immutable",
+                ),
+                (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            css,
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// `GET /checkout/{order_id}/share` - the payment link the order page
@@ -1975,6 +2010,152 @@ mod tests {
         );
         let share = body_text(router.clone().oneshot(page("/share")).await.unwrap()).await;
         assert!(share.contains("view=detailed"), "{share}");
+    }
+
+    /// A store's colours reach the page as a stylesheet named by its content,
+    /// kept for a year; a colour that isn't one is refused; and a page goes
+    /// back to none when they're all cleared.
+    #[tokio::test]
+    async fn a_stores_colours_reach_its_checkout_as_a_hashed_stylesheet() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "coloured-store@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &state, &session_token).await;
+        let store = state
+            .db
+            .lock()
+            .get_store_connection_by_public_key(&pk)
+            .unwrap()
+            .unwrap();
+        let settings = format!("/stores/{}/settings", store.id);
+        let cookie = format!("session={session_token}");
+        let order = create_order(&router, &pk, "10.00").await;
+        let page = || async {
+            body_text(
+                router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/checkout/{order}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .await
+        };
+        let href = |html: &str| {
+            html.find("/static-style/").map(|at| {
+                let rest = &html[at..];
+                rest[..rest.find('"').unwrap()].to_string()
+            })
+        };
+        assert_eq!(href(&page().await), None);
+
+        let save = |value: &str| {
+            crate::http::test_support::form_post(
+                &settings,
+                Some(&cookie),
+                &[("style_light_accent", value)],
+            )
+        };
+        let saved = router.clone().oneshot(save("#2F6B4F")).await.unwrap();
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        let link = href(&page().await).expect("the page links its stylesheet");
+        let sheet = router
+            .clone()
+            .oneshot(Request::builder().uri(&link).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(sheet.status(), StatusCode::OK);
+        assert_eq!(
+            sheet.headers()[axum::http::header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            body_text(sheet).await,
+            ":root[data-theme=\"light\"]{--accent:#2f6b4f;--accent-text:#2f6b4f;}@media not (prefers-color-scheme:dark){:root:not([data-theme=\"dark\"]){--accent:#2f6b4f;--accent-text:#2f6b4f;}}"
+        );
+
+        let refused = router.clone().oneshot(save("red;}html{")).await.unwrap();
+        assert_ne!(refused.status(), StatusCode::SEE_OTHER);
+        assert_eq!(href(&page().await).as_deref(), Some(link.as_str()));
+
+        // Still served for a page that's open, and gone from new pages.
+        let cleared = router.clone().oneshot(save("")).await.unwrap();
+        assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
+        assert_eq!(href(&page().await), None);
+
+        for (path, status) in [
+            (link.as_str(), StatusCode::OK),
+            (
+                "/static-style/00000000000000000000000000000000.css",
+                StatusCode::NOT_FOUND,
+            ),
+            ("/static-style/not-a-hash.css", StatusCode::NOT_FOUND),
+        ] {
+            let got = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(got.status(), status, "{path}");
+        }
+
+        // Two stores with the same colours: one going leaves the other's.
+        let other = crate::http::test_support::store_with_keys(
+            &router,
+            &state,
+            &session_token,
+            "same-colours.example",
+            "XMR",
+        )
+        .await;
+        let other = engine_protocol::ids::ConnectionId::new(other.id);
+        let style = crate::views::checkout_style::CheckoutStyle {
+            light: crate::views::checkout_style::Roles {
+                accent: Some("#123456".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let hash = crate::views::checkout_style::stylesheet_hash(&style.css().unwrap());
+        let now = crate::now_unix();
+        state
+            .db
+            .lock()
+            .set_store_checkout_style(&store.id, &style, now)
+            .unwrap();
+        state
+            .db
+            .lock()
+            .set_store_checkout_style(&other, &style, now)
+            .unwrap();
+        state.db.lock().delete_store(&store.id).unwrap();
+        assert!(state
+            .db
+            .lock()
+            .checkout_stylesheet(&hash)
+            .unwrap()
+            .is_some());
+        state.db.lock().delete_store(&other).unwrap();
+        assert_eq!(state.db.lock().checkout_stylesheet(&hash).unwrap(), None);
+    }
+
+    /// A release that writes colours differently asks pages for a new hash, which
+    /// each start writes, rather than leaving every styled store's page without.
+    #[test]
+    fn a_stores_stylesheet_is_written_again_at_each_start() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let conn = db.conn_for_test();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        assert_eq!(db.refresh_checkout_stylesheets(1).unwrap(), 0);
     }
 
     #[tokio::test]
