@@ -709,6 +709,13 @@ pub struct StoreDomainRow {
     pub last_error: Option<String>,
 }
 
+impl StoreDomainRow {
+    /// Where this domain stands at `now`.
+    pub fn state(&self, now: i64) -> domain_proof::DomainState {
+        domain_proof::DomainState::of(self.verified_at, self.failing_since, now)
+    }
+}
+
 const STORE_DOMAIN_COLUMNS: &str =
     "id, connection_id, domain, token, created_at_utc, verified_at_utc, failing_since_utc, last_checked_at_utc, last_error";
 
@@ -2653,9 +2660,27 @@ impl Db {
         Ok(())
     }
 
+    /// Records a check that got no answer (a timeout, an unreachable
+    /// resolver or onion service). It says nothing about the proof, so it
+    /// neither verifies a domain nor starts or clears its grace period;
+    /// `last_error` brings the next re-check forward.
+    pub fn record_store_domain_unanswered(
+        &self,
+        id: &str,
+        checked_at: i64,
+        error: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE store_domains SET last_checked_at_utc = ?2, last_error = ?3 WHERE id = ?1",
+            params![id, checked_at, error],
+        )?;
+        Ok(())
+    }
+
     /// Verified domains whose next scheduled re-check is due: every
-    /// `every_secs`, or every `failing_every_secs` while failing. Domains
-    /// never verified are only checked when the merchant asks.
+    /// `every_secs`, or every `failing_every_secs` while failing or after
+    /// a check with no answer. Domains never verified are only checked when
+    /// the merchant asks.
     pub fn list_store_domains_due_for_recheck(
         &self,
         now: i64,
@@ -2666,8 +2691,8 @@ impl Db {
             "SELECT {STORE_DOMAIN_COLUMNS} FROM store_domains
              WHERE verified_at_utc IS NOT NULL
                AND (last_checked_at_utc IS NULL
-                    OR (failing_since_utc IS NULL AND last_checked_at_utc <= ?1 - ?2)
-                    OR (failing_since_utc IS NOT NULL AND last_checked_at_utc <= ?1 - ?3))
+                    OR (failing_since_utc IS NULL AND last_error IS NULL AND last_checked_at_utc <= ?1 - ?2)
+                    OR ((failing_since_utc IS NOT NULL OR last_error IS NOT NULL) AND last_checked_at_utc <= ?1 - ?3))
              ORDER BY last_checked_at_utc"
         ))?;
         let rows = stmt.query_map(

@@ -980,7 +980,7 @@ pub(super) async fn render_store_settings_page_with(
     let now = crate::now_unix();
     let embed_can_restrict = embed_domain_rows
         .iter()
-        .any(|domain| crate::embed_domains::DomainState::of(domain, now).counts());
+        .any(|domain| domain.state(now).counts());
     let embed_domains = super::embed_domains::domain_views(embed_domain_rows, now);
 
     let webhooks = super::webhooks::card(

@@ -331,11 +331,11 @@ async fn main() {
         encryption_key: monokulo::crypto::AtRestKey::new([7u8; 32]),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Arc::default(),
-        proofs: monokulo::embed_domains::Proofs {
-            dns: Arc::new(monokulo::embed_domains::UnavailableDns(
+        proofs: domain_proof::Proofs {
+            dns: Arc::new(domain_proof::UnavailableDns(
                 "DNS is not available in tests".to_owned(),
             )),
-            onion: Arc::new(monokulo::embed_domains::UnavailableTor(
+            onion: Arc::new(domain_proof::UnavailableTor(
                 "Tor is not available in tests".to_owned(),
             )),
         },

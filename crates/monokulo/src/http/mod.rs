@@ -212,7 +212,7 @@ pub struct AppState {
     /// How verified embed domains are proved (`crate::embed_domains`): TXT
     /// lookups for a web domain, an onion shop's file fetched over Tor
     /// inside monokulo - the real ones in the binary, fakes in tests.
-    pub proofs: crate::embed_domains::Proofs,
+    pub proofs: domain_proof::Proofs,
     /// monokulo's settings registry (admin_settings_v2.md part 1): saves from
     /// the admin page go through it and apply to the running process.
     pub settings: Arc<crate::settings::MonokuloSettings>,
@@ -304,11 +304,11 @@ impl AppState {
             encryption_key: TEST_ENCRYPTION_KEY,
             exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             abuse: Default::default(),
-            proofs: crate::embed_domains::Proofs {
-                dns: Arc::new(crate::embed_domains::UnavailableDns(
+            proofs: domain_proof::Proofs {
+                dns: Arc::new(domain_proof::UnavailableDns(
                     "DNS is not available in tests".to_string(),
                 )),
-                onion: Arc::new(crate::embed_domains::UnavailableTor(
+                onion: Arc::new(domain_proof::UnavailableTor(
                     "Tor is not available in tests".to_string(),
                 )),
             },

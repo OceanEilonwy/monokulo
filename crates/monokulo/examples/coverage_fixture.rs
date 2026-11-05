@@ -17,7 +17,6 @@ use engine_test_support::{TestEngineConfig, TestEngineHandle};
 use monokulo::{
     crypto,
     db::{Database, Db},
-    embed_domains::UnavailableDns,
     engine_client::{CreateTenantRequest, EngineClient},
     exchange_rate_config::ExchangeRateProviders,
     http::{build_router, AppState},
@@ -1513,9 +1512,11 @@ async fn main() {
             signed_in_per_min: 10_000,
             ..Default::default()
         })),
-        proofs: monokulo::embed_domains::Proofs {
-            dns: Arc::new(UnavailableDns("DNS is unavailable in browser tests".into())),
-            onion: Arc::new(monokulo::embed_domains::UnavailableTor(
+        proofs: domain_proof::Proofs {
+            dns: Arc::new(domain_proof::UnavailableDns(
+                "DNS is unavailable in browser tests".into(),
+            )),
+            onion: Arc::new(domain_proof::UnavailableTor(
                 "Tor is unavailable in browser tests".into(),
             )),
         },

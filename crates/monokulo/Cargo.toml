@@ -84,8 +84,8 @@ pricing = { path = "../pricing" }
 outbound = { path = "../outbound" }
 push = { path = "../push" }
 push-relay = { path = "../push-relay", optional = true }
-# Reads a verified domain's TXT records (`embed_domains::LiveDns`).
-dns-client = { path = "../dns-client" }
+# Proving a merchant controls a domain: by TXT record, or a file over Tor.
+domain-proof = { path = "../domain-proof" }
 # Constant-time comparison of a presented store secret key (`http::store_key`).
 subtle = "2.6.1"
 # Who a request is from, its limits, challenges and the onion listener;
@@ -142,6 +142,8 @@ flate2 = "1.1.10"
 # Every `/api/v1` response the tests see is checked against the OpenAPI
 # document (`api::runtime::openapi`).
 jsonschema = { version = "0.33.0", default-features = false }
+# Fake DNS and onion answers (`http::embed_domains` tests).
+domain-proof = { path = "../domain-proof", features = ["test-support"] }
 # Turns on `test-support` for this crate's own integration tests and examples.
 monokulo = { path = ".", features = ["test-support"] }
 # Signs a webhook delivery the way a shop's receiver checks it

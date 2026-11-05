@@ -1,0 +1,32 @@
+[package]
+name = "domain-proof"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "Proving a merchant controls a domain: a TXT record for a web domain, a file fetched only over Tor for an onion address"
+
+[lib]
+# No doctests: each is compiled and linked on its own, the slowest thing a
+# crate can add to CI for what a unit test proves as well.
+doctest = false
+
+[features]
+# `FakeDns`, `FakeOnion` and `test_support::proofs`, for other crates' tests.
+# Enabled only from [dev-dependencies].
+test-support = []
+
+[dependencies]
+# Reads a web domain's TXT records from the root servers down.
+dns-client = { path = "../dns-client" }
+# What an onion name is, as everything that refuses to look one up reads it.
+outbound = { path = "../outbound" }
+tokio = { version = "1.53.1", features = ["time"] }
+# Fetches an onion shop's file, and checks onion addresses.
+tor-service = { path = "../tor-service" }
+
+[dev-dependencies]
+domain-proof = { path = ".", features = ["test-support"] }
+tokio = { version = "1.53.1", features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true

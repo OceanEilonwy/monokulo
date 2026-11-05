@@ -195,13 +195,12 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
 
     // Verified embed domains: looked up from the root servers down
     // (`dns_client`), so a record shows the moment it is published.
-    let dns: Arc<dyn monokulo::embed_domains::TxtLookup> =
-        Arc::new(monokulo::embed_domains::LiveDns::new());
+    let dns: Arc<dyn domain_proof::TxtLookup> = Arc::new(domain_proof::LiveDns::new());
     // Onion shops are proved by a file fetched over Tor inside monokulo.
     let tor = tor_service::Tor::default();
-    let proofs = monokulo::embed_domains::Proofs {
+    let proofs = domain_proof::Proofs {
         dns,
-        onion: Arc::new(monokulo::embed_domains::WellKnownOverTor(tor.clone())),
+        onion: Arc::new(domain_proof::WellKnownOverTor(tor.clone())),
     };
 
     // Every setting, live (admin_settings_v2.md parts 1 and 3): the engine
