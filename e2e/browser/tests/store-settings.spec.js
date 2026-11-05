@@ -168,9 +168,10 @@ test('the Checkout tab shows each layout as a skeleton, with Custom among them, 
   const custom = page.locator('.layout-custom');
   await expect(custom).toContainText('Custom');
   await expect(custom).toContainText('{{ your template }}');
-  await custom.click();
-  await expect(page).toHaveURL(/#card-custom-page$/);
-  await expect(page.locator('#card-custom-page')).toBeInViewport();
+  // No verified domain here: it's greyed out, says what it needs, and goes nowhere.
+  await expect(custom).not.toContainText('Not available yet');
+  await expect(custom).toContainText('Needs a verified domain');
+  await expect(page.getByRole('link', { name: /^Custom/ })).toHaveCount(0);
   // Layout, the custom page, then colours: though the custom page's forms can't be
   // inside the settings form, its card is.
   expect(await page.locator('#settings-form section.settings-card').evaluateAll(cards => cards.map(card => card.id)))

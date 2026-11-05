@@ -91,7 +91,12 @@ test('a draft is discarded from its card on the Checkout tab', async ({ page, co
   await page.goto(`${fixture.base_url}/stores/coverage-store/settings?tab=checkout`);
   const card = page.locator('#card-custom-page');
   await expect(card).toContainText('Waiting for approval');
-  await expect(page.locator('.layout-custom')).toContainText('Waiting for approval');
+  // With a verified domain, Custom among the layouts says how it stands and goes there.
+  const custom = page.getByRole('link', { name: /^Custom/ });
+  await expect(custom).toContainText('Waiting for approval');
+  await custom.click();
+  await expect(page).toHaveURL(/#card-custom-page$/);
+  await expect(card).toBeInViewport();
   await card.getByRole('button', { name: 'Discard draft' }).click();
   await expect(page.locator('#card-custom-page')).toContainText('Not set up');
 });
