@@ -14,10 +14,11 @@
  * `GET /api/v1/orders/{order_id}` with the public key, where EventSource is
  * unavailable or refused) to drive `onStatusChange`/`onPaid`/`onExpired`.
  * The iframed page keeps itself up to date and has a no-JavaScript
- * fallback. The only thing it posts back is its content height, which this
- * file uses to size the frame; this file's own subscription (running here,
- * in the merchant's page, not inside the frame) is what makes the callbacks
- * below fire.
+ * fallback. It posts back its content height, which this file uses to size
+ * the frame, and its status, for a page that frames it without this library.
+ * This file ignores the status: its own subscription (running here, in the
+ * merchant's page, not inside the frame) is what makes the callbacks below
+ * fire.
  *
  * Errors are `application/problem+json`: `detail` says what went wrong.
  *

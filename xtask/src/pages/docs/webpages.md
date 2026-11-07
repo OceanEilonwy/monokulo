@@ -175,8 +175,9 @@ checkout.destroy();
 
 The script is optional. The checkout is a page for people at
 `/api/v1/checkout/{order_id}`, and an `<iframe>` on it is all a page needs. It
-takes no key and works without JavaScript; the script only adds `onPaid` and
-`onExpired` callbacks. An order links to its page as `mk:checkout` (and
+takes no key and works without JavaScript; the script adds `onPaid` and
+`onExpired` callbacks, and a frame can [follow the status](#order-statuses)
+itself with a few lines of your own. An order links to its page as `mk:checkout` (and
 `mk:onion-checkout` while Monokulo has an onion address): build the URL from
 that link, not by hand.
 
@@ -193,7 +194,7 @@ that link, not by hand.
 - `sandbox`: the page's script, its refund form and its links out need exactly these.
 - `allow="camera"`: the refund form scans a QR code of an address.
 - `referrerpolicy="strict-origin"`: says which site is framing the page, even from a page that sends no `Referer`. A store with verified domains only lets those sites frame it (`Content-Security-Policy: frame-ancestors`, set on its Domains tab); anywhere else the frame is refused.
-- Height: start from the layout's size: `tiny` 152px, `compact` 380px, `detailed` 880px. The page is cross-origin, so your page can't measure it, but it tells you: inside a frame it posts `{ type: "monokulo:resize", height }` to its parent whenever its height changes, and nothing else. Apply it to the frame it came from, ignoring any other source:
+- Height: start from the layout's size: `tiny` 152px, `compact` 380px, `detailed` 880px. The page is cross-origin, so your page can't measure it, but it tells you: inside a frame it posts `{ type: "monokulo:resize", height }` to its parent whenever its height changes. Apply it to the frame it came from, ignoring any other source:
 
 ```js Follow the checkout's height
 window.addEventListener("message", (event) => {
@@ -202,6 +203,19 @@ window.addEventListener("message", (event) => {
   if (!frame || event.source !== frame.contentWindow) return;
   if (data?.type === "monokulo:resize" && Number.isFinite(data.height) && data.height > 0) {
     frame.style.height = Math.min(Math.ceil(data.height), 5000) + "px";
+  }
+});
+```
+
+- Status: inside a frame the page also posts `{ type: "monokulo:status", status }` to its parent when it loads and each time the [status](#order-statuses) changes, so your page can react, say by offering a new order once one has expired. Those two messages are all it posts, and it listens to none. Like the script's callbacks, this only tells you what the customer is seeing: see [Trusting a payment](#trusting-a-payment).
+
+```js Follow the checkout's status
+window.addEventListener("message", (event) => {
+  const frame = document.querySelector("#pay iframe");
+  const data = event.data;
+  if (!frame || event.source !== frame.contentWindow) return;
+  if (data?.type === "monokulo:status" && data.status === "expired") {
+    showNewOrderButton();
   }
 });
 ```

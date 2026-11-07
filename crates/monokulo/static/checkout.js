@@ -34,11 +34,23 @@
   showLocalTimes();
   document.addEventListener('fx:sse:swapped', showLocalTimes);
 
+  // Tell a page that frames this one the order's status, when the page loads
+  // and each time it changes, so it can react to what the customer is looking
+  // at. The frame can't know who framed it, so this goes to anyone: the status
+  // and the height below are all that leave it, and nothing comes in. It only
+  // describes the screen: a merchant ships on the signed webhook, never this.
+  var sentStatus = null;
+  function reportStatus(status) {
+    if (window.parent === window || status === sentStatus) return;
+    sentStatus = status;
+    window.parent.postMessage({ type: 'monokulo:status', status: status }, '*');
+  }
+  reportStatus(root.dataset.status);
+
   // Tell a page that frames this one how tall the checkout is, so it can size
-  // the frame to fit. Only a number goes out: the frame is cross-origin and
-  // nothing else about the checkout leaves it, nor does anything come in. The
-  // page's own height is measured from the checkout's root, as the body is at
-  // least as tall as the frame and so can never report a smaller one.
+  // the frame to fit. The page's own height is measured from the checkout's
+  // root, as the body is at least as tall as the frame and so can never report
+  // a smaller one.
   if (window.parent !== window && typeof ResizeObserver === 'function') {
     var sentHeight = 0;
     var reportHeight = function () {
@@ -324,8 +336,7 @@
   // the element it replaces. Nothing else is touched, so a refund address
   // mid-edit or a camera scan in progress carries on undisturbed. A
   // dropped stream reconnects with Last-Event-ID (fx-sse-reconnect); the
-  // server says "done" once the order is final. The page knows nothing
-  // about whatever embeds it; an embedder follows the order on its own.
+  // server says "done" once the order is final.
   var streamElement = document.getElementById('checkout-stream');
   if (!streamElement) return;
   if (typeof window.ReadableStream !== 'function' || typeof window.fetch !== 'function') {
@@ -361,6 +372,7 @@
     var state;
     try { state = JSON.parse(event.detail.message.data); } catch (_) { return; }
     root.dataset.status = state.status;
+    reportStatus(state.status);
     if (state.is_terminal) finished = true;
   });
   window.addEventListener('pagehide', function () { finished = true; if (liveStream) liveStream.close(); liveStream = null; });

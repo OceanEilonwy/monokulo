@@ -1917,15 +1917,17 @@ async fn the_embed_library_never_calls_the_engine_and_only_hears_its_checkouts_h
             "text/javascript; charset=utf-8"
         );
     }
-    // The checkout page and whatever embeds it (the POS terminal, this
-    // library, a merchant's own page) each follow the order themselves. The
-    // page tells its embedder its height and nothing else, and listens to no one.
+    // The checkout page tells whatever embeds it (the POS terminal, this
+    // library, a merchant's own page) its height and the order's status and
+    // nothing else, and listens to no one.
     let checkout_js = include_str!("../../../../static/checkout.js");
     assert!(
         checkout_js.contains("monokulo:resize")
+            && checkout_js.contains("monokulo:status")
+            && checkout_js.matches("postMessage").count() == 2
             && !checkout_js.contains("addEventListener('message'")
             && !checkout_js.contains("window.top"),
-        "checkout.js may post its height to its embedder, and nothing more"
+        "checkout.js may post its height and status to its embedder, and nothing more"
     );
 }
 
