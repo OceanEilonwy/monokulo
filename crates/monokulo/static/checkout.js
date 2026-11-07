@@ -34,6 +34,24 @@
   showLocalTimes();
   document.addEventListener('fx:sse:swapped', showLocalTimes);
 
+  // Tell a page that frames this one how tall the checkout is, so it can size
+  // the frame to fit. Only a number goes out: the frame is cross-origin and
+  // nothing else about the checkout leaves it, nor does anything come in. The
+  // page's own height is measured from the checkout's root, as the body is at
+  // least as tall as the frame and so can never report a smaller one.
+  if (window.parent !== window && typeof ResizeObserver === 'function') {
+    var sentHeight = 0;
+    var reportHeight = function () {
+      var below = parseFloat(getComputedStyle(document.body).paddingBottom) || 0;
+      var height = Math.ceil(root.getBoundingClientRect().bottom + window.scrollY + below);
+      if (height === sentHeight) return;
+      sentHeight = height;
+      window.parent.postMessage({ type: 'monokulo:resize', height: height }, '*');
+    };
+    new ResizeObserver(reportHeight).observe(root);
+    reportHeight();
+  }
+
   var refundInput = document.getElementById('refund_address');
   var refundForm = document.getElementById('refund-form');
   var refundField = document.getElementById('refund-field');
