@@ -14,9 +14,10 @@
  * `GET /api/v1/orders/{order_id}` with the public key, where EventSource is
  * unavailable or refused) to drive `onStatusChange`/`onPaid`/`onExpired`.
  * The iframed page keeps itself up to date and has a no-JavaScript
- * fallback. It does not post messages back to this library; this file's
- * own subscription (running here, in the merchant's page, not inside the
- * frame) is what makes the callbacks below fire.
+ * fallback. The only thing it posts back is its content height, which this
+ * file uses to size the frame; this file's own subscription (running here,
+ * in the merchant's page, not inside the frame) is what makes the callbacks
+ * below fire.
  *
  * Errors are `application/problem+json`: `detail` says what went wrong.
  *
@@ -340,19 +341,25 @@
     var iframe = document.createElement("iframe");
     iframe.title = "Monero Payment";
     iframe.style.border = "none";
-    // The size each layout needs, when one was asked for. A store's own choice
-    // isn't known here: an embed using a small one passes its `height`.
+    // Where the frame starts, before the checkout reports its own height: the
+    // size each layout needs, when one was asked for, else the tallest
+    // (everything on the way to Paid fits at 420px wide, with a verified domain
+    // and an order description too).
     var size = { tiny: ["280px", "152px"], compact: ["280px", "380px"] }[options.view] || ["420px", "880px"];
     iframe.style.width = options.width || size[0];
-    // 880px: everything on the way to Paid fits at this default 420px width,
-    // with a verified domain and an order description too. What only shows when
-    // something's gone wrong, or a payments table opened, scrolls in the frame.
-    // Auto-sizing to the framed page's content isn't available here: the
-    // frame is cross-origin to the caller's page, so its content height
-    // can't be read. A caller who wants a
-    // specifically sized/no-scroll embed should still pass an explicit
-    // `height` in `options`.
     iframe.style.height = options.height || size[1];
+    // The checkout page posts its content height as it changes (a store's own
+    // layout, an error, a payments table opening), and the frame follows it, so
+    // it never scrolls or leaves a gap. Only a message from this frame's own
+    // window counts. An explicit `height` in `options` pins the frame instead.
+    function onResize(event) {
+      var data = event.data;
+      if (options.height || event.source !== iframe.contentWindow) return;
+      if (!data || data.type !== "monokulo:resize") return;
+      if (typeof data.height !== "number" || !isFinite(data.height) || data.height < 1) return;
+      iframe.style.height = Math.min(Math.ceil(data.height), 5000) + "px";
+    }
+    global.addEventListener("message", onResize);
     // The checkout script and refund form need these sandbox capabilities;
     // this mount() still follows status independently for merchant callbacks.
     iframe.setAttribute("sandbox", "allow-same-origin allow-scripts allow-forms allow-popups");
@@ -460,6 +467,7 @@
         if (destroyed) return;
         destroyed = true;
         stopUpdates();
+        global.removeEventListener("message", onResize);
         if (activeMounts.get(el) === handle) activeMounts["delete"](el);
         if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
       },

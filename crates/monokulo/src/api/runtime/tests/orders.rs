@@ -1864,7 +1864,7 @@ async fn creating_an_order_with_an_unknown_currency_is_rejected_before_ever_reac
 }
 
 #[tokio::test]
-async fn the_embed_library_never_calls_the_engine_and_never_talks_to_its_checkout() {
+async fn the_embed_library_never_calls_the_engine_and_only_hears_its_checkouts_height() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state.clone());
 
@@ -1891,10 +1891,11 @@ async fn the_embed_library_never_calls_the_engine_and_never_talks_to_its_checkou
         !js.contains("/pay/v1/"),
         "must not reference an engine checkout route: {js}"
     );
-    // The iframe posts no messages back: mount() follows the order itself.
+    // The frame reports its height so the embed can fit it, and the library
+    // only believes the frame it made.
     assert!(
-        !js.contains("postMessage"),
-        "the embed library must not depend on the iframe posting a message any more, got: {js}"
+        js.contains("monokulo:resize") && js.contains("event.source !== iframe.contentWindow"),
+        "the embed library must size the frame from its own checkout's height message, got: {js}"
     );
     for asset in [
         crate::assets::url("checkout.js"),
@@ -1912,14 +1913,14 @@ async fn the_embed_library_never_calls_the_engine_and_never_talks_to_its_checkou
         );
     }
     // The checkout page and whatever embeds it (the POS terminal, this
-    // library, a merchant's own page) stay independent: each follows the
-    // order itself, and neither talks to the other.
+    // library, a merchant's own page) each follow the order themselves. The
+    // page tells its embedder its height and nothing else, and listens to no one.
     let checkout_js = include_str!("../../../../static/checkout.js");
     assert!(
-        !checkout_js.contains("postMessage")
-            && !checkout_js.contains("window.parent")
+        checkout_js.contains("monokulo:resize")
+            && !checkout_js.contains("addEventListener('message'")
             && !checkout_js.contains("window.top"),
-        "checkout.js must not know about its embedder"
+        "checkout.js may post its height to its embedder, and nothing more"
     );
 }
 
