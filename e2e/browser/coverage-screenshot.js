@@ -21,6 +21,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const sharp = require('sharp');
+const { framesWithDocument, loadLazyFrames } = require('./coverage-frames');
 
 const output = process.env.COVERAGE_OUTPUT;
 const enabled = process.env.COVERAGE_SCREENSHOTS === '1' && output;
@@ -38,7 +39,7 @@ const NAME = /^[a-z]+-[a-z0-9-]+$/;
 /** Shows every frame of `page` in `theme`, remembering what each had. */
 async function showTheme(page, theme) {
   await page.emulateMedia({ colorScheme: theme });
-  for (const frame of page.frames()) {
+  for (const frame of framesWithDocument(page)) {
     await frame.evaluate((theme) => {
       const root = document.documentElement;
       if (!root.hasAttribute('data-coverage-theme')) root.setAttribute('data-coverage-theme', root.getAttribute('data-theme') || '');
@@ -50,7 +51,7 @@ async function showTheme(page, theme) {
 /** Puts back what `showTheme` changed. */
 async function restoreTheme(page, colorScheme) {
   await page.emulateMedia({ colorScheme });
-  for (const frame of page.frames()) {
+  for (const frame of framesWithDocument(page)) {
     await frame.evaluate(() => {
       const root = document.documentElement;
       if (!root.hasAttribute('data-coverage-theme')) return;
@@ -118,6 +119,7 @@ async function capture(target, stage, testInfo, options) {
     await save(testInfo, name('element'), { group, stage, shape: 'element', theme: 'light' }, body);
     return;
   }
+  await loadLazyFrames(target);
   const original = target.viewportSize();
   const colorScheme = await target.evaluate(() => (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   for (const shape of shapes) {
@@ -126,8 +128,11 @@ async function capture(target, stage, testInfo, options) {
       await showTheme(target, theme);
       // Force layout at the new size and theme (no timers: some tests fake
       // the clock).
-      await target.evaluate(() => document.documentElement.getBoundingClientRect().height);
-      const body = await target.screenshot({ animations: 'disabled', caret: 'hide', fullPage: true });
+      const height = await target.evaluate(() => document.documentElement.scrollHeight);
+      // Chromium doesn't paint a cross-origin frame outside the viewport, and
+      // a full-page shot doesn't count as inside it: make the viewport the page.
+      if (target.frames().length > 1) await target.setViewportSize({ width: SHAPES[shape].width, height });
+      const body =await target.screenshot({ animations: 'disabled', caret: 'hide', fullPage: true });
       await save(testInfo, name(shape, theme), { group, stage, shape, theme }, body);
     }
   }

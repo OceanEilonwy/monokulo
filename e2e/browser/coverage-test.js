@@ -2,6 +2,7 @@ const base = require('@playwright/test');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { framesWithDocument } = require('./coverage-frames');
 
 async function installCoverageContext(context) {
   if (!process.env.COVERAGE_RAW_DIR) return;
@@ -22,7 +23,7 @@ async function collectCoverageContext(context, testInfo) {
   if (!process.env.COVERAGE_RAW_DIR) return;
   const snapshots = [];
   for (const page of context.pages()) {
-    for (const frame of page.frames()) {
+    for (const frame of framesWithDocument(page)) {
       try {
         const captured = await frame.evaluate(() => {
           let previous = [];

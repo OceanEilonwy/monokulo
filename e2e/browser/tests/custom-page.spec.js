@@ -5,6 +5,7 @@
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
+const { framesWithDocument, loadLazyFrames } = require('../coverage-frames');
 
 let fixture;
 test.describe.configure({ mode: 'default' });
@@ -75,6 +76,27 @@ test('a custom page can be written without JavaScript', async ({ browser, reques
   await expect(page).toHaveURL(/checkout-page\/preview/);
   await expect(page.frameLocator('.template-preview iframe').first().locator('[data-part="status"]')).toBeVisible();
   await context.close();
+});
+
+// The gallery photographs this page, and coverage reads every frame of it when a
+// test ends: asking a frame that hasn't started loading would wait for good.
+test('the test helpers pass over a preview frame still waiting to load, and can load it', async ({ page, context, request }) => {
+  await login(context);
+  expect((await request.post(`${fixture.base_url}/__coverage/domains/verified`)).status()).toBe(204);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(fixture.base_url + page_);
+  await page.locator('#template').fill(good);
+  await page.getByRole('button', { name: 'Check and preview' }).click();
+  await expect(page).toHaveURL(/checkout-page\/preview/);
+  await expect(page.locator('.template-preview iframe')).toHaveCount(9);
+
+  const asked = framesWithDocument(page);
+  expect(asked.length).toBeLessThan(page.frames().length);
+  for (const frame of asked) await frame.evaluate(() => document.readyState);
+
+  await loadLazyFrames(page);
+  expect(framesWithDocument(page)).toHaveLength(page.frames().length);
+  await expect(page.frameLocator('.template-preview iframe').last().locator('[data-part="status"]')).toBeAttached();
 });
 
 // The card sits among the settings form's cards, with its buttons sending forms of
