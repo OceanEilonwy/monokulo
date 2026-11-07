@@ -37,11 +37,17 @@ component! {
         tail: usize,
         /// `Segments`' ranges.
         segments: Option<String>,
+        /// The button as a copy symbol, a tick for a while after a copy, for
+        /// a small frame. `copy_label` still names it.
+        #[default(false)]
+        icon: bool,
     }
     behaviour "copy.behaviour.ts" {
         uses(value, truncate, segments, head, tail),
         /// The shortened value, when it is shorter.
         preview: Option<String>,
+        /// The last copy went through: an icon button says so for a while.
+        copied: bool,
         /// What the last copy did, for screen readers too.
         status: String,
         busy: bool,
@@ -56,7 +62,16 @@ component! {
                 @if let Some(preview) = b.preview {
                     span class="mk-copy-preview mk-mono" aria-hidden="true" on:click=reveal { (preview) }
                 }
-                button class="mk-btn" data-size="compact" type="button" aria-label=(copy_label) disabled[b.busy] on:click=copy { "Copy" }
+                button class="mk-btn" data-size="compact" type="button" aria-label=(copy_label) disabled[b.busy] on:click=copy {
+                    @if icon {
+                        svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true" {
+                            @if b.copied { path d="M5 12l5 5L20 7" {} }
+                            @else { rect x="8" y="8" width="12" height="13" rx="2" {} path d="M16 8V3H3v13h5" {} }
+                        }
+                    } @else {
+                        "Copy"
+                    }
+                }
                 span class="mk-copy-status" role="status" { (b.status) }
             }
         }

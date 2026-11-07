@@ -261,3 +261,78 @@ Newest last. Each says what was chosen and why, so it can be reversed.
 54. **Contrast warnings read a role left alone as the theme's colour.** They only
     compared two colours the store had set, so a dark background under the theme's
     dark text went unwarned, which is the likeliest mistake with a picker.
+55. **New designs for the three stock layouts, from canvas
+    <https://claude.ai/artifact/7F6TTepZoqmxFKNBxTRxV6>.** The owner chose its Stub C
+    as Tiny (280 by 152, the code with everything beside it), Pass A as Compact
+    (a 280 by 380 card) and Compact 2 as Detailed (one centred column). This replaces
+    decision 25's short form only in its look: `ui::CopyValue` gains an `icon` form.
+    It changes the JS client's default frames for `view`: a shop that sized its frame
+    for the old Compact (420 by 680) sees a narrower card in it.
+56. **The owner's calls on what a spent order shows, against what stood before.** The
+    code stays, at 30% opacity, under a symbol in a tinted circle (purple tick while
+    confirming, green tick when paid, cross when over, exclamation mark when reversed),
+    where Tiny used to swap it for words. The address and its Copy stay in every state,
+    where they used to lose Copy once they shouldn't be paid. **The faded code still
+    encodes the payment.** A decoder read clean screenshots of it at every opacity
+    tried (down to 8%, in both themes, and so at the old 14% too), and the owner chose
+    to keep it that way: "if they can still scan it so be it". So the old comment
+    calling it too faint for a wallet's camera is gone, and nothing should claim that.
+57. **Tiny and Compact's messages are short, and there's one in every state.** "Scan
+    or copy to pay.", "Send the rest to finish.", "3 of 10. Don't send it again.",
+    "Nothing more to do.", "Don't send!" then "Already sent? Keep this page open.", and
+    "Contact the merchant." Compact shows no status word, so on Expired and Reversed
+    only its symbol names the state.
+58. **The caveats the canvas's messages didn't cover stay, in its words.** "Keep this
+    page open" is only true while the engine watches the order, so a final order says
+    "Don't send to this address."; money already in says "Don't send more. Contact the
+    merchant."; a payment reversed while money is owed still says it doesn't count.
+    Overpaid, Seen and Cancelled weren't drawn: Seen and Overpaid take the nearest
+    drawn message and tick, Cancelled takes Expired's message and cross.
+59. **Compact and Tiny drop the merchant line, the countdown and the refund form,**
+    as their designs do. A store that collects refund addresses gets them only from
+    Detailed or a custom page. This reverses part of decision 19 for Compact.
+60. **Detailed keeps everything the old one had, restyled, where the canvas drew less.**
+    It promises "everything", and it's the share page: so the merchant's icon, verified
+    domain and description stay (centred, unboxed), and the received-amount progress,
+    payments and order id stay below the refund form, which the canvas didn't show. The
+    fiat line drops "Price held until" for the canvas's price and time left. The status
+    track is the same component restyled as flat bars, under the address.
+61. **`{{status label}}` joins the template options:** the POS's symbol with its short
+    word. `{{status icon}}` now draws the POS's symbol too, as its checkout stylesheet
+    and symbols are on every checkout page. `{{qr medium}}` links to the wallet like
+    `small`.
+62. **The address's label no longer warns, and the part-payment note is gone.** The owner
+    removed "Payment seen. Don't send it again" and "Wallets that read payment codes fill
+    in ..." from the rendered Detailed page. The label reads "Payment address" once paying
+    is over, as Paid already did. This reverses decision 22: while a payment confirms,
+    Detailed warns through the code's tick, the track and "XMR received", not in words.
+    Tiny and Compact keep their short message.
+63. **A part payment strikes through the amount last due, and the ring around the code
+    is gone.** The owner picked this from five options on the canvas. It stays on screen,
+    so a payer looking back from their wallet still sees what changed. The amount is what
+    was due before the latest payment: the total after the first, what the first left
+    after the second. After a reversal nothing is struck, as the payments can't say what
+    was last shown. If two payments arrive between looks, it's the amount before the
+    second, which the payer may not have seen. "Still to pay" is gone from the screen,
+    as the strike-through says it; a screen reader still hears it.
+64. **Detailed's track sits above the code, each step filled by how much of it is done,
+    and its big progress bar is gone.** Send fills by the share received, Confirm by
+    confirmations, and the count joins the step's name ("Confirm (2/10)") so nothing moves
+    as a payment confirms. The fill is an SVG's own attribute, as the page's policy allows
+    no `style`. Detailed shows no "Payment seen" words; Tiny and Compact keep their line.
+65. **New template options, add-only:** `{{status track}}`, `{{message full}}` (what's gone
+    wrong, under the address), `{{progress text}}` and `{{payments folded}}`. `{{status}}`,
+    `{{progress}}` and `{{payments}}` are as they were for pages already written.
+66. **The wording is short, and asks less of the payer:** "Send the remaining amount",
+    "Payment seen", "Payment confirmed (2 of 10)". The "Check your wallet shows..." line is
+    gone from every page. The owner's call, with decision 22's concern about a second
+    payment left to the tick on the faded code and the track.
+67. **Part paid shows what's left in fiat,** the quote times the share of XMR left, and an
+    overpaid order's tick is orange, tying in with its coins.
+68. **The default embed for Detailed is 420 by 880,** down from 1000. The tallest state on
+    the way to Paid needs about 836px, and a verified domain and description about 38px
+    more. Part paid, a reversal and the like may go past that and scroll inside the frame,
+    as an open payments table does. An existing embed that names its height keeps it.
+69. **The confirming wedge reads its value from the attribute.** A checkout page's policy
+    drops the symbol's `style`, so Tiny and Compact's wedge drew empty on real pages.
+    `checkout.css` maps each 10% step back.

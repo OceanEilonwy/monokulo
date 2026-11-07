@@ -64,6 +64,10 @@ pub struct CheckoutViewModel {
     /// What is still owed: the whole amount, or the rest after a partial
     /// payment; zero once covered.
     pub amount_due_xmr: String,
+    /// While part paid, what was due before the latest payment, struck through
+    /// beside what's due now so the change is seen whenever the payer looks
+    /// back. `None` if a reversal means it can't be known.
+    pub previous_due_xmr: Option<String>,
     pub amount_received_xmr: String,
     pub amount: String,
     pub currency: String,
@@ -179,32 +183,25 @@ pub fn content_security_policy(data: &CheckoutViewModel) -> String {
 fn merchant_header(data: &CheckoutViewModel) -> Markup {
     html! {
         header class="merchant" {
-            @if data.layout == Layout::Compact {
-                (ui::Hint::new(html! {
-                    strong { (data.store_name) }
-                    @if let Some(reference) = &data.merchant_reference { " · " (reference) }
-                }))
-            } @else {
-                // The site's own icon once a verified domain covers it, its
-                // name's letter until then (or if it has none, or the
-                // visitor is on Tor).
-                (ui::Avatar::of(&data.store_name).maybe_src(merchant_icon_site(data).map(|site| {
-                    format!("{}/favicon.ico", site.link())
-                })))
-                div class="merchant-about" {
-                    (ui::Heading::new(data.store_name.as_str()))
-                    @if let Some(site) = &data.merchant_site {
-                        (ui::Hint::new(html! {
-                            (site) " " (PreEscaped(ui::assets::icons::CHECK))
-                            span class="visually-hidden" { " (a verified domain)" }
-                        }).attr("data-merchant", "site"))
-                    }
-                    @if let Some(description) = &data.description {
-                        p class="merchant-for" { (description) }
-                    }
-                    @if let Some(reference) = &data.merchant_reference {
-                        (ui::Hint::new(html! { "Reference " span class="mk-mono" { (reference) } }))
-                    }
+            // The site's own icon once a verified domain covers it, its
+            // name's letter until then (or if it has none, or the
+            // visitor is on Tor).
+            (ui::Avatar::of(&data.store_name).maybe_src(merchant_icon_site(data).map(|site| {
+                format!("{}/favicon.ico", site.link())
+            })))
+            div class="merchant-about" {
+                (ui::Heading::new(data.store_name.as_str()))
+                @if let Some(site) = &data.merchant_site {
+                    (ui::Hint::new(html! {
+                        (site) " " (PreEscaped(ui::assets::icons::CHECK))
+                        span class="visually-hidden" { " (a verified domain)" }
+                    }).attr("data-merchant", "site"))
+                }
+                @if let Some(description) = &data.description {
+                    p class="merchant-for" { (description) }
+                }
+                @if let Some(reference) = &data.merchant_reference {
+                    (ui::Hint::new(html! { "Reference " span class="mk-mono" { (reference) } }))
                 }
             }
         }
@@ -290,8 +287,11 @@ fn render_part(data: &CheckoutViewModel, part: &Part) -> Markup {
         Feature::Store => html! { span data-part="store" { (data.store_name) } },
         Feature::OrderId => html! { span data-part="order-id" { (data.order_id) } },
         Feature::Merchant => merchant_header(data),
-        Feature::Status if part.option == Some("icon") => live_status_icon(data),
+        Feature::Status if part.option == Some("icon") => live_status_icon(data, false),
+        Feature::Status if part.option == Some("label") => live_status_icon(data, true),
+        Feature::Status if part.option == Some("track") => live_track(data),
         Feature::Status => live_status(data),
+        Feature::Message if part.option == Some("full") => live_message_full(data),
         Feature::Message => live_message(data),
         Feature::Amount => live_amount(data, part.option == Some("bare")),
         Feature::Fiat => live_fiat(data),
@@ -299,9 +299,9 @@ fn render_part(data: &CheckoutViewModel, part: &Part) -> Markup {
         Feature::Qr => live_qr(data, part.option),
         Feature::Address if part.option == Some("short") => live_address_short(data),
         Feature::Address => live_address(data),
-        Feature::Progress => live_progress(data),
+        Feature::Progress => live_progress(data, part.option != Some("text")),
         Feature::Refund => refund_part(data),
-        Feature::Payments => live_payments(data),
+        Feature::Payments => live_payments(data, part.option == Some("folded")),
     }
 }
 
@@ -470,6 +470,7 @@ fn page(
                 }
             }
         }
+        (super::stylesheet("status.css"))
         (super::stylesheet("checkout.css"))
         // The store's colours and shape, over the theme.
         @if let Some(hash) = &data.style_hash {
@@ -495,7 +496,7 @@ fn page(
         }
     };
     let body = html! {
-        div class=(match data.layout { _ if data.page_token.is_some() => "pay-wrap checkout-custom", Layout::Detailed => "pay-wrap", Layout::Compact => "pay-wrap checkout-compact", Layout::Tiny => "pay-wrap checkout-tiny" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
+        div class=(match data.layout { _ if data.page_token.is_some() => "pay-wrap checkout-custom", Layout::Detailed => "pay-wrap checkout-detailed", Layout::Compact => "pay-wrap checkout-compact", Layout::Tiny => "pay-wrap checkout-tiny" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
             h1 class="sr-only" { "Monero payment of " (data.xmr_amount) " XMR" }
             // Always here, and only its text replaced, so a screen reader
             // announces each change of status.
@@ -517,6 +518,8 @@ fn page(
                 span id="checkout-stream" hidden fx-action=(events_url(data, template)) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect fx-own-errors {}
             }
 
+            // What the status symbol draws with.
+            (PreEscaped(ui::assets::STATUS_SYMBOLS))
             (PreEscaped(page_body(template, data)))
         }
         @if scripts { (script("checkout.js", Load::Now)) }
@@ -539,8 +542,8 @@ pub fn live_fragment(data: &CheckoutViewModel) -> Markup {
         (live_status(data))
         (live_pay(data))
         (live_address(data))
-        (live_progress(data))
-        (live_payments(data))
+        (live_progress(data, true))
+        (live_payments(data, false))
     }
 }
 
@@ -551,8 +554,8 @@ pub fn live_parts(data: &CheckoutViewModel) -> [(&'static str, Markup); 5] {
         ("live-status", live_status(data)),
         ("live-pay", live_pay(data)),
         ("live-address", live_address(data)),
-        ("live-progress", live_progress(data)),
-        ("live-payments", live_payments(data)),
+        ("live-progress", live_progress(data, true)),
+        ("live-payments", live_payments(data, false)),
     ]
 }
 
@@ -696,8 +699,74 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
     }
 }
 
-/// The status as one icon, for a small frame: its words for a screen reader.
-fn live_status_icon(data: &CheckoutViewModel) -> Markup {
+/// How much of each step of the track is done, in percent, in its order.
+fn track_fills(data: &CheckoutViewModel) -> [u8; 3] {
+    let amount = |xmr: &str| xmr.parse::<f64>().unwrap_or(0.0);
+    let total = amount(&data.xmr_amount);
+    let share = |part: f64| {
+        if total > 0.0 {
+            (part / total * 100.0).round().clamp(0.0, 100.0) as u8
+        } else {
+            0
+        }
+    };
+    if reversed_at(data.status, data.double_spend_detected_at).is_some() && !awaiting_payment(data)
+    {
+        return [100, 0, 0];
+    }
+    match data.status {
+        OrderStatus::Pending => [0, 0, 0],
+        OrderStatus::Partial | OrderStatus::Expired | OrderStatus::Cancelled => {
+            [share(amount(&data.amount_received_xmr)), 0, 0]
+        }
+        OrderStatus::Unconfirmed => [100, 0, 0],
+        OrderStatus::Confirming => [100, data.progress_percent.min(100), 0],
+        OrderStatus::Paid | OrderStatus::Overpaid => [100, 100, 100],
+    }
+}
+
+/// The track alone, each step a bar filled by how much of it is done. What's
+/// gone wrong is `{{message full}}`'s.
+/// The fill is an SVG's own attribute: the page's policy allows no `style`.
+fn live_track(data: &CheckoutViewModel) -> Markup {
+    let [send, confirm, paid] = track_fills(data);
+    let fills = if data.confirmations_required == 0 {
+        vec![send, paid]
+    } else {
+        vec![send, confirm, paid]
+    };
+    // In the step's name, so nothing moves as a payment confirms.
+    let reversed = reversed_at(data.status, data.double_spend_detected_at).is_some();
+    let counting = data.status == OrderStatus::Confirming && !reversed;
+    let steps: Vec<_> = stage_steps(data)
+        .into_iter()
+        .zip(fills)
+        .map(|(mut step, fill)| {
+            if counting && step.label == "Confirm" {
+                step.label = format!("Confirm ({}/{})", data.confirmations, data.confirmations_required);
+            }
+            step.icon(html! {
+                svg class="track-fill" width="100%" height="100%" aria-hidden="true" { rect width=(format!("{fill}%")) height="100%" {} }
+            })
+        })
+        .collect();
+    let shown = super::order_state(data.status).1;
+    let state = if reversed {
+        ui::OrderState::DoubleSpend
+    } else {
+        shown
+    };
+    html! {
+        div id="live-status" class="stage-slot" data-live data-part="status" {
+            span id="status-badge" class=(format!("sr-only state-{shown}")) { (data.status_label) }
+            (ui::ProgressSteps::new("Payment progress", steps).state(state).plain(true))
+        }
+    }
+}
+
+/// The status as the POS's symbol, for a small frame: with its word when
+/// `word`, and otherwise the word only for a screen reader.
+fn live_status_icon(data: &CheckoutViewModel, word: bool) -> Markup {
     let shown = super::order_state(data.status).1;
     let reversed = reversed_at(data.status, data.double_spend_detected_at).is_some();
     let state = if reversed {
@@ -705,91 +774,107 @@ fn live_status_icon(data: &CheckoutViewModel) -> Markup {
     } else {
         shown
     };
-    let icon = if reversed {
-        "M12 7v7M12 17.5v.5"
+    let wedge = (state == ui::OrderState::Confirming).then(|| confirming_wedge(data));
+    let short = if reversed {
+        "Reversed"
     } else {
-        match data.status {
-            OrderStatus::Pending | OrderStatus::Unconfirmed | OrderStatus::Confirming => {
-                "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z"
-            }
-            OrderStatus::Partial => "M12 3a9 9 0 1 0 0 18V3z",
-            OrderStatus::Paid => "m5 12 5 5 9-10",
-            OrderStatus::Overpaid => "M12 7v7M12 17.5v.5",
-            OrderStatus::Expired | OrderStatus::Cancelled => "m6 6 12 12M18 6 6 18",
-        }
+        super::order_state_short(data.status)
     };
     html! {
-        span id="live-status" class=(format!("tiny-icon state-{state}")) data-live data-part="status" {
-            span id="status-badge" class=(format!("sr-only state-{shown}")) { (data.status_label) }
-            svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true" { path d=(icon) {} }
+        span id="live-status" class=(format!("status-symbol state-{state}")) data-live data-part="status" {
+            (ui::StatusIcon::new(state).maybe_progress(wedge))
+            @if word {
+                span id="status-badge" class="status-word" { (short) }
+            } @else {
+                span id="status-badge" class=(format!("sr-only state-{shown}")) { (data.status_label) }
+            }
         }
     }
 }
 
-/// A few words on where the order stands, once there's no code to pay. Says
-/// less than the status line of a bigger page, for a small frame.
+/// The POS's confirming wedge: at least 20%, rising in 10% steps, full at the
+/// threshold.
+fn confirming_wedge(data: &CheckoutViewModel) -> u32 {
+    if data.confirmations_required == 0 {
+        return 100;
+    }
+    let tenths = data
+        .confirmations
+        .saturating_mul(10)
+        .div_ceil(data.confirmations_required);
+    u32::try_from(tenths.saturating_mul(10).clamp(20, 100)).unwrap_or(100)
+}
+
+/// A few words on what to do now, for a small frame.
 fn live_message(data: &CheckoutViewModel) -> Markup {
     let received = super::trim_xmr(&data.amount_received_xmr);
     let message = if reversed_at(data.status, data.double_spend_detected_at).is_some() {
         if awaiting_payment(data) {
             "A payment was reversed. It doesn't count.".to_string()
         } else {
-            "Payment reversed. Contact the merchant.".to_string()
+            "Contact the merchant.".to_string()
         }
     } else {
         match data.status {
-            OrderStatus::Pending | OrderStatus::Partial => String::new(),
-            OrderStatus::Unconfirmed => "Seen on the network. Don't send it again.".to_string(),
+            OrderStatus::Pending => "Scan or copy to pay.".to_string(),
+            OrderStatus::Partial => "Send the remaining amount".to_string(),
+            OrderStatus::Unconfirmed => "Payment seen".to_string(),
             OrderStatus::Confirming => format!(
-                "{} of {} confirmations. Don't send it again.",
+                "Payment confirmed ({} of {})",
                 data.confirmations, data.confirmations_required
             ),
-            OrderStatus::Paid => "Paid. Nothing more to do.".to_string(),
-            OrderStatus::Overpaid => {
-                "Paid, with extra. Don't send more; contact the merchant.".to_string()
-            }
+            OrderStatus::Paid => "Nothing more to do.".to_string(),
+            OrderStatus::Overpaid => "Don't send more. Contact the merchant.".to_string(),
             OrderStatus::Expired | OrderStatus::Cancelled => {
-                let what = if data.status == OrderStatus::Expired {
-                    "This payment expired."
-                } else {
-                    "This order was cancelled."
-                };
                 if received != "0" {
-                    format!("{what} Don't send more; contact the merchant.")
+                    "Don't send more. Contact the merchant.".to_string()
                 } else if data.is_terminal {
-                    format!("{what} Don't send to this address.")
+                    "Don't send to this address.".to_string()
                 } else {
-                    format!("{what} Don't send to this address. If you already sent it, keep this page open.")
+                    "Don't send!\nAlready sent? Keep this page open.".to_string()
                 }
             }
         }
     };
     html! {
-        p id="live-message" class="tiny-message" data-live data-part="message" role="status" { (message) }
+        p id="live-message" class="live-message" data-live data-part="message" role="status" { (message) }
     }
 }
 
-/// The address shortened, for a small frame, with Copy giving the whole of it.
-/// Without JavaScript, it's selectable and focus shows it in full. Once it
-/// shouldn't be paid, nothing to copy it with, as for the whole address.
-fn live_address_short(data: &CheckoutViewModel) -> Markup {
-    if !awaiting_payment(data) {
-        let chars: Vec<char> = data.address.chars().collect();
-        let first: String = chars.iter().take(6).collect();
-        let last: String = chars[chars.len().saturating_sub(6)..].iter().collect();
-        return html! {
-            div id="live-address" class="address-short is-spent" data-live data-part="address" {
-                span class="mk-mono" { (first) "…" (last) }
-            }
-        };
-    }
+/// What's gone wrong and what to do now, in full, when it has; nothing otherwise.
+fn live_message_full(data: &CheckoutViewModel) -> Markup {
+    let reversed = reversed_at(data.status, data.double_spend_detected_at).is_some();
+    let state = if reversed {
+        ui::OrderState::DoubleSpend
+    } else {
+        super::order_state(data.status).1
+    };
     html! {
-        div id="live-address" class="address-short" data-live data-part="address" {
+        div id="live-message" class=(format!("stage-note state-{state}")) data-live data-part="message" {
+            @if let Some((title, message)) = stage_message(data) {
+                p role="status" { strong { (title) "." } " " (message) }
+            }
+        }
+    }
+}
+
+/// The address shortened, for a small frame, with a copy symbol giving the
+/// whole of it, in every state. Muted once it shouldn't be paid. Without
+/// JavaScript, it's selectable and focus shows it in full.
+fn live_address_short(data: &CheckoutViewModel) -> Markup {
+    let class = if awaiting_payment(data) {
+        "address-short"
+    } else {
+        "address-short is-spent"
+    };
+    html! {
+        div id="live-address" class=(class) data-live data-part="address" {
             (ui::CopyValue::new(data.address.as_str())
                 .copy_label("Copy the full address")
                 .truncate(ui::Truncate::Middle)
                 .head(6usize)
-                .tail(6usize))
+                .tail(6usize)
+                .icon(true))
         }
     }
 }
@@ -836,21 +921,52 @@ fn live_amount(data: &CheckoutViewModel, bare: bool) -> Markup {
     html! {
         span id="live-amount" data-live data-part="amount" {
             @if !bare { span class="amount-label" id="amount-label" { (label) } }
+            @if let (OrderStatus::Partial, Some(was)) = (data.status, &data.previous_due_xmr) {
+                s class="amount-was" {
+                    span class="visually-hidden" { "Was " }
+                    (super::trim_xmr(was)) " XMR"
+                }
+            }
             // The number and its unit never split; the font shrinks with
             // the frame instead (see `.amount`).
             span class="amount" id="xmr-amount" aria-labelledby=[(!bare).then_some("amount-label")] {
                 span class="amount-value" { (amount) } " " span class="amount-unit" { "XMR" }
+                // With no label to say so; on screen, the struck amount does.
+                @if bare && data.status == OrderStatus::Partial { " " span class="visually-hidden" { "still to pay" } }
             }
         }
     }
 }
 
-/// A fiat equivalent, only for an order priced in fiat.
+/// What's left of the quoted price, in proportion to the XMR left, written to
+/// the same places as the quote.
+fn remaining_fiat(data: &CheckoutViewModel) -> Option<String> {
+    let total = data
+        .xmr_amount
+        .parse::<f64>()
+        .ok()
+        .filter(|total| *total > 0.0)?;
+    let due = data.amount_due_xmr.parse::<f64>().ok()?;
+    let quoted = data.amount.parse::<f64>().ok()?;
+    let places = data
+        .amount
+        .split_once('.')
+        .map_or(0, |(_, places)| places.len());
+    Some(format!("{:.*}", places, quoted * due / total))
+}
+
+/// A fiat equivalent, only for an order priced in fiat: of what's left, while
+/// part paid.
 fn live_fiat(data: &CheckoutViewModel) -> Markup {
+    let amount = if data.status == OrderStatus::Partial {
+        remaining_fiat(data)
+    } else {
+        Some(data.amount.clone())
+    };
     html! {
         span id="live-fiat" data-live data-part="fiat" {
-            @if data.status != OrderStatus::Partial && priced_in_fiat(data) {
-                span class="fiat-amount" { "≈ " (super::display_amount(&data.amount, &data.currency)) }
+            @if let Some(amount) = amount.filter(|_| priced_in_fiat(data)) {
+                span class="fiat-amount" { "≈ " (super::display_amount(&amount, &data.currency)) }
             }
         }
     }
@@ -869,30 +985,47 @@ fn live_countdown(data: &CheckoutViewModel) -> Markup {
 
 /// The code, always in the same place. After a partial payment it's redrawn
 /// for what's left; once it shouldn't be paid (the payment is in, or the order
-/// is over) it fades (`.is-spent`), so nothing invites a second payment.
+/// is over) it fades (`.is-spent`) under a symbol of why, so nothing invites a
+/// second payment.
 fn live_qr(data: &CheckoutViewModel, size: Option<&str>) -> Markup {
-    let partial = data.status == OrderStatus::Partial;
-    let state = if partial {
-        " qr-new"
-    } else if awaiting_payment(data) {
+    let state = if awaiting_payment(data) {
         ""
     } else {
         " is-spent"
     };
+    let small = matches!(size, Some("small" | "medium"));
     let size = size.map_or(String::new(), |size| format!(" qr-{size}"));
     html! {
         div id="live-qr" data-live data-part="qr" {
             // In a small frame, a tap opens the customer's wallet, with or
             // without JavaScript: `_blank`, as an embed's sandbox lets a popup
             // leave the frame but not the frame itself.
-            @if size == " qr-small" && awaiting_payment(data) {
+            @if small && awaiting_payment(data) {
                 a class=(format!("qr-wrap{state}{size}")) href=(data.payment_uri) target="_blank" rel="noopener noreferrer" aria-label="Open in your wallet" { (data.qr_code_svg) }
             } @else {
-                div class=(format!("qr-wrap{state}{size}")) { (data.qr_code_svg) }
+                div class=(format!("qr-wrap{state}{size}")) {
+                    (data.qr_code_svg)
+                    @if !awaiting_payment(data) { (spent_mark(data)) }
+                }
             }
-            @if partial {
-                p class="qr-note" { "Wallets that read payment codes fill in " (super::trim_xmr(&data.amount_due_xmr)) " XMR for you." }
-            }
+        }
+    }
+}
+
+/// Over a code that shouldn't be paid, why: a tick once the payment is in, a
+/// cross once the order is over, an exclamation mark if a payment was reversed.
+fn spent_mark(data: &CheckoutViewModel) -> Markup {
+    let reversed = reversed_at(data.status, data.double_spend_detected_at).is_some();
+    let (kind, symbol) = match data.status {
+        _ if reversed => ("reversed", "M12 6v8M12 18v.5"),
+        OrderStatus::Expired | OrderStatus::Cancelled => ("over", "M7 7l10 10M17 7 7 17"),
+        OrderStatus::Unconfirmed | OrderStatus::Confirming => ("confirming", "m4.5 12.5 5 5 10-11"),
+        OrderStatus::Overpaid => ("overpaid", "m4.5 12.5 5 5 10-11"),
+        _ => ("paid", "m4.5 12.5 5 5 10-11"),
+    };
+    html! {
+        span class="qr-mark" data-mark=(kind) aria-hidden="true" {
+            svg viewBox="0 0 24 24" { path d=(symbol) {} }
         }
     }
 }
@@ -942,32 +1075,20 @@ fn countdown(data: &CheckoutViewModel) -> ui::Countdown {
 }
 
 /// The address, whole, in groups to check by eye, under what to send to
-/// it. Muted, with nothing to copy it with, once it shouldn't be paid: a live
+/// it. Muted once it shouldn't be paid, still with its Copy button: a live
 /// part, so that follows the order.
 fn live_address(data: &CheckoutViewModel) -> Markup {
     const GROUP: usize = 6;
     let open = awaiting_payment(data);
-    let chars: Vec<char> = data.address.chars().collect();
-    let last = match chars.len() % GROUP {
-        0 => GROUP,
-        rest => rest,
-    };
-    let first: String = chars.iter().take(GROUP).collect();
-    let end: String = chars[chars.len().saturating_sub(last)..].iter().collect();
-    let mut address = ui::GroupedValue::of(data.address.as_str(), GROUP)
-        .copy_label("Copy address")
-        .void(!open);
-    if open {
-        address = address.hint(html! {
-            "Check your wallet shows " strong { (first) } " at the start and " strong { (end) } " at the end."
-        });
+    let mut address = ui::GroupedValue::of(data.address.as_str(), GROUP).copy_label("Copy address");
+    if !open {
+        address = address.attr("data-spent", "");
     }
     html! {
         div class="address-block" id="live-address" data-live data-part="address" {
             span class="address-label" id="address-label" {
                 @if data.status == OrderStatus::Partial { "Send the remaining amount to" }
                 @else if data.status == OrderStatus::Pending { "Send exactly this amount to" }
-                @else if matches!(data.status, OrderStatus::Unconfirmed | OrderStatus::Confirming) { "Payment seen. Don't send it again" }
                 @else { "Payment address" }
             }
             (address)
@@ -975,23 +1096,27 @@ fn live_address(data: &CheckoutViewModel) -> Markup {
     }
 }
 
-fn live_progress(data: &CheckoutViewModel) -> Markup {
+/// What's confirmed and what's come in, with its bar when `bar`.
+fn live_progress(data: &CheckoutViewModel, bar: bool) -> Markup {
     html! {
         div class="section" id="live-progress" data-live data-part="progress" {
             div class="progress-row" {
                 span id="confirmations-label" { (data.confirmations) " / " (data.confirmations_required) " confirmations" }
                 span id="received-label" { (super::trim_xmr(&data.amount_received_xmr)) " XMR received" }
             }
-            progress class="progress-bar" id="progress-bar" aria-labelledby="confirmations-label"
-                max="100" value=(data.progress_percent)
-                aria-valuetext=(format!("{} of {} confirmations", data.confirmations, data.confirmations_required)) {
-                (data.progress_percent) "%"
+            @if bar {
+                progress class="progress-bar" id="progress-bar" aria-labelledby="confirmations-label"
+                    max="100" value=(data.progress_percent)
+                    aria-valuetext=(format!("{} of {} confirmations", data.confirmations, data.confirmations_required)) {
+                    (data.progress_percent) "%"
+                }
             }
         }
     }
 }
 
-fn live_payments(data: &CheckoutViewModel) -> Markup {
+/// The payments in, behind a disclosure when `folded`.
+fn live_payments(data: &CheckoutViewModel, folded: bool) -> Markup {
     let rows = data.payments.iter().map(|payment| {
         ui::Slot::from(ui::Row::new(ui::Slot::many([
             ui::Cell::new(super::short_id(&payment.txid)).into(),
@@ -1009,15 +1134,20 @@ fn live_payments(data: &CheckoutViewModel) -> Markup {
     html! {
         div id="live-payments" data-live data-part="payments" {
             @if !data.payments.is_empty() {
+                @let table = ui::Table::new(ui::Slot::many(rows))
+                    .head(ui::Row::new(ui::Slot::many(
+                        ["Tx", "Amount", "Confirmations"]
+                            .map(|name| ui::Slot::from(ui::Cell::new(name).header(true).attr("scope", "col"))),
+                    )))
+                    .caption("Individual payments received toward this order")
+                    .scroll(false)
+                    .attr("data-table", "payments");
                 div class="section" {
-                    (ui::Table::new(ui::Slot::many(rows))
-                        .head(ui::Row::new(ui::Slot::many(
-                            ["Tx", "Amount", "Confirmations"]
-                                .map(|name| ui::Slot::from(ui::Cell::new(name).header(true).attr("scope", "col"))),
-                        )))
-                        .caption("Individual payments received toward this order")
-                        .scroll(false)
-                        .attr("data-table", "payments"))
+                    @if folded {
+                        (ui::Disclosure::new(format!("Payments ({})", data.payments.len()), html! { (table) }))
+                    } @else {
+                        (table)
+                    }
                 }
             }
         }
@@ -1190,6 +1320,7 @@ mod tests {
             qr_code_svg: crate::qr::QrSvg::for_test("<svg></svg>"),
             xmr_amount: "0.500000000000".to_string(),
             amount_due_xmr: "0.500000000000".to_string(),
+            previous_due_xmr: None,
             amount_received_xmr: "0.000000000000".to_string(),
             amount: "0.5".to_string(),
             currency: "XMR".to_string(),
@@ -1333,10 +1464,7 @@ mod tests {
             "the refund form must never be swapped mid-edit"
         );
         // The QR code follows the amount due, so it is a live part too.
-        assert!(
-            fragment.contains(r#"<div class="qr-wrap qr-new">"#),
-            "{fragment}"
-        );
+        assert!(fragment.contains(r#"<div class="qr-wrap">"#), "{fragment}");
         // Every region in the fragment is the same markup the page itself renders.
         let page = checkout_page(&chrome(), &data).into_string();
         assert!(page.contains(
@@ -1401,20 +1529,25 @@ mod tests {
         data.amount_received_xmr = "0.200000000000".to_string();
         data.amount_due_xmr = "0.300000000000".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains("Still to pay"), "{html}");
+        assert!(html.contains("still to pay"), "{html}");
         assert!(
             html.contains(r#"<span class="amount-value">0.3</span>"#),
             "{html}"
         );
-        assert!(html.contains(r#"<div class="qr-wrap qr-new">"#), "{html}");
+        assert!(html.contains(r#"<div class="qr-wrap">"#), "{html}");
+        assert!(!html.contains("amount-was"), "{html}");
+        data.previous_due_xmr = Some("0.500000000000".to_string());
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(html.contains("Was </span>0.5 "), "{html}");
         assert!(html.contains(" left to pay</span>"), "{html}");
         assert!(html.contains("Send the remaining amount to"), "{html}");
+        assert!(!html.contains("Wallets that read"), "{html}");
 
         // Paid in full: no deadline.
         data.status = engine_protocol::order_status::OrderStatus::Confirming;
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(!html.contains(" left to pay</span>"), "{html}");
-        assert!(html.contains("Payment seen"), "{html}");
+        assert!(!html.contains("Don't send it again"), "{html}");
 
         // Overpaid: the extra explained, over the order total.
         data.status = engine_protocol::order_status::OrderStatus::Overpaid;
@@ -1469,7 +1602,70 @@ mod tests {
         assert_eq!(html.matches("<li class=\"step-").count(), 2, "{html}");
         assert!(!html.contains("Confirm<span"), "{html}");
         // Seen is the last step before Paid, so Paid is where the order is.
-        assert!(html.contains(r#"<li class="step-now"><span class="mk-track-dot" aria-hidden="true"></span><span class="mk-track-name">Paid<span class="visually-hidden">, now</span>"#), "{html}");
+        let now = html.find(r#"<li class="step-now">"#).expect("a step now");
+        assert!(
+            html[now..].contains(r#"<span class="mk-track-name">Paid"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_track_shows_how_much_of_each_step_is_done() {
+        let mut data = test_checkout_view_model(false);
+        data.xmr_amount = "1.000000000000".to_string();
+        data.amount_received_xmr = "0.250000000000".to_string();
+        data.status = OrderStatus::Partial;
+        let html = live_track(&data).into_string();
+        assert!(html.contains(r#"<rect width="25%""#), "{html}");
+        assert!(html.contains(r#"<rect width="0%""#), "{html}");
+
+        data.status = OrderStatus::Confirming;
+        data.confirmations = 2;
+        data.confirmations_required = 10;
+        data.progress_percent = 20;
+        let html = live_track(&data).into_string();
+        assert!(html.contains(r#"<rect width="20%""#), "{html}");
+        assert!(html.contains("Confirm (2/10)"), "{html}");
+
+        // Nothing in a `style`, which the page's policy would drop.
+        assert!(!html.contains("style="), "{html}");
+    }
+
+    #[test]
+    fn part_paid_shows_what_is_left_of_the_quoted_price() {
+        let mut data = test_checkout_view_model(false);
+        data.status = OrderStatus::Partial;
+        data.currency = "USD".to_string();
+        data.amount = "84.00".to_string();
+        data.xmr_amount = "1.000000000000".to_string();
+        data.amount_due_xmr = "0.250000000000".to_string();
+        assert!(live_fiat(&data).into_string().contains("21.00 USD"));
+        data.status = OrderStatus::Pending;
+        assert!(live_fiat(&data).into_string().contains("84.00 USD"));
+    }
+
+    #[test]
+    fn an_overpaid_order_marks_its_code_apart_from_a_paid_one() {
+        let mut data = test_checkout_view_model(true);
+        data.status = OrderStatus::Overpaid;
+        assert!(spent_mark(&data)
+            .into_string()
+            .contains(r#"data-mark="overpaid""#));
+        data.status = OrderStatus::Paid;
+        assert!(spent_mark(&data)
+            .into_string()
+            .contains(r#"data-mark="paid""#));
+    }
+
+    #[test]
+    fn the_full_message_says_nothing_until_something_has_gone_wrong() {
+        let mut data = test_checkout_view_model(false);
+        data.status = OrderStatus::Confirming;
+        assert!(!live_message_full(&data).into_string().contains("<p"));
+        data.status = OrderStatus::Expired;
+        assert!(live_message_full(&data)
+            .into_string()
+            .contains("This payment expired."));
     }
 
     #[test]
@@ -1603,12 +1799,12 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "live-status",
                 "live-amount",
                 "live-fiat",
-                "live-countdown",
+                "live-status",
                 "live-qr",
-                "live-address"
+                "live-address",
+                "live-message"
             ]
         );
         data.layout = Layout::Detailed;
@@ -1677,14 +1873,8 @@ mod tests {
             html[start..start + html[start..].find('<').unwrap()].to_string()
         };
         assert_eq!(label(OrderStatus::Pending), "Send exactly this amount to");
-        assert_eq!(
-            label(OrderStatus::Unconfirmed),
-            "Payment seen. Don't send it again"
-        );
-        assert_eq!(
-            label(OrderStatus::Confirming),
-            "Payment seen. Don't send it again"
-        );
+        assert_eq!(label(OrderStatus::Unconfirmed), "Payment address");
+        assert_eq!(label(OrderStatus::Confirming), "Payment address");
         assert_eq!(label(OrderStatus::Paid), "Payment address");
     }
 
@@ -1697,45 +1887,45 @@ mod tests {
         assert_eq!(parse_showing("", 0), Some(vec![]));
     }
 
-    /// Tiny swaps the code for words once nothing is owed, in the same place.
+    /// Tiny keeps the same parts in every state, so nothing moves.
     #[test]
-    fn tiny_shows_the_code_only_while_money_is_owed() {
+    fn tiny_shows_the_same_parts_in_every_state() {
         use engine_protocol::order_status::OrderStatus::*;
-        let parts = |status, reversed: Option<i64>| {
+        for status in [
+            Pending,
+            Partial,
+            Unconfirmed,
+            Confirming,
+            Paid,
+            Overpaid,
+            Expired,
+            Cancelled,
+        ] {
             let mut data = test_checkout_view_model(false);
             data.layout = Layout::Tiny;
             data.status = status;
-            data.double_spend_detected_at = reversed;
             let mut showing = Vec::new();
-            live_updates(data.layout.template(), &data, &mut showing)
+            let ids: Vec<String> = live_updates(data.layout.template(), &data, &mut showing)
                 .into_iter()
                 .map(|(id, _)| id)
-                .filter(|id| !id.starts_with("mk-if"))
-                .collect::<Vec<_>>()
-        };
-        for status in [Pending, Partial] {
+                .collect();
             assert_eq!(
-                parts(status, None),
+                ids,
                 [
-                    "live-status",
+                    "live-qr",
                     "live-amount",
                     "live-fiat",
-                    "live-qr",
+                    "live-status",
+                    "live-message",
                     "live-address"
-                ]
-            );
-        }
-        for status in [Unconfirmed, Confirming, Paid, Overpaid, Expired, Cancelled] {
-            assert_eq!(
-                parts(status, None),
-                ["live-status", "live-amount", "live-fiat", "live-message"],
+                ],
                 "{status:?}"
             );
         }
     }
 
     #[test]
-    fn tinys_message_says_what_to_do_in_each_state_with_its_caveats() {
+    fn the_message_says_what_to_do_in_each_state_with_its_caveats() {
         use engine_protocol::order_status::OrderStatus::*;
         let said = |status, terminal: bool, received: &str, reversed: Option<i64>| {
             let mut data = test_checkout_view_model(terminal);
@@ -1745,29 +1935,65 @@ mod tests {
             let html = live_message(&data).into_string();
             html[html.find('>').unwrap() + 1..html.rfind('<').unwrap()].to_string()
         };
-        assert_eq!(said(Pending, false, "0", None), "");
-        assert_eq!(said(Paid, true, "0.5", None), "Paid. Nothing more to do.");
+        assert_eq!(said(Pending, false, "0", None), "Scan or copy to pay.");
+        assert_eq!(
+            said(Partial, false, "0.1", None),
+            "Send the remaining amount"
+        );
+        assert_eq!(said(Paid, true, "0.5", None), "Nothing more to do.");
         assert_eq!(
             said(Expired, false, "0", None),
-            "This payment expired. Don&#39;t send to this address. If you already sent it, keep this page open."
-                .replace("&#39;", "'")
+            "Don't send!\nAlready sent? Keep this page open."
         );
         assert_eq!(
             said(Expired, true, "0", None),
-            "This payment expired. Don't send to this address."
+            "Don't send to this address."
         );
         assert_eq!(
             said(Cancelled, true, "0.1", None),
-            "This order was cancelled. Don't send more; contact the merchant."
+            "Don't send more. Contact the merchant."
         );
         assert_eq!(
             said(Unconfirmed, false, "0", Some(1)),
-            "Payment reversed. Contact the merchant."
+            "Contact the merchant."
         );
-        assert_eq!(
-            said(Paid, true, "0.5", Some(1)),
-            "Paid. Nothing more to do."
-        );
+        assert_eq!(said(Paid, true, "0.5", Some(1)), "Nothing more to do.");
+    }
+
+    /// Over a code that shouldn't be paid, a symbol says why, and not over one
+    /// that can be.
+    #[test]
+    fn a_spent_code_carries_the_symbol_of_why() {
+        use engine_protocol::order_status::OrderStatus::*;
+        let mark = |status, reversed: Option<i64>| {
+            let mut data = test_checkout_view_model(false);
+            data.status = status;
+            data.double_spend_detected_at = reversed;
+            let html = live_qr(&data, Some("small")).into_string();
+            html.split_once("data-mark=\"")
+                .map(|(_, rest)| rest[..rest.find('"').unwrap()].to_string())
+        };
+        assert_eq!(mark(Pending, None), None);
+        assert_eq!(mark(Partial, None), None);
+        assert_eq!(mark(Confirming, None).as_deref(), Some("confirming"));
+        assert_eq!(mark(Paid, None).as_deref(), Some("paid"));
+        assert_eq!(mark(Expired, None).as_deref(), Some("over"));
+        assert_eq!(mark(Unconfirmed, Some(1)).as_deref(), Some("reversed"));
+    }
+
+    /// The POS's wedge: at least 20%, in 10% steps, full at the threshold.
+    #[test]
+    fn the_confirming_wedge_steps_as_the_poss_does() {
+        let wedge = |confirmations, required| {
+            let mut data = test_checkout_view_model(false);
+            data.confirmations = confirmations;
+            data.confirmations_required = required;
+            confirming_wedge(&data)
+        };
+        assert_eq!(wedge(1, 10), 20);
+        assert_eq!(wedge(3, 10), 30);
+        assert_eq!(wedge(10, 10), 100);
+        assert_eq!(wedge(0, 0), 100);
     }
 
     /// In a small frame the code opens the wallet, only while it can be paid.
@@ -1783,40 +2009,32 @@ mod tests {
 
     /// A payment reversed while money is still owed says so, beside the code.
     #[test]
-    fn tiny_says_a_reversed_payment_doesnt_count_while_money_is_owed() {
+    fn a_reversed_payment_is_said_not_to_count_while_money_is_owed() {
         let mut data = test_checkout_view_model(false);
-        data.layout = Layout::Tiny;
         data.status = OrderStatus::Partial;
         data.double_spend_detected_at = Some(1);
-        let mut showing = Vec::new();
-        let ids: Vec<String> = live_updates(data.layout.template(), &data, &mut showing)
-            .into_iter()
-            .map(|(id, _)| id)
-            .filter(|id| !id.starts_with("mk-if"))
-            .collect();
-        assert_eq!(
-            ids,
-            [
-                "live-status",
-                "live-amount",
-                "live-fiat",
-                "live-message",
-                "live-qr",
-                "live-address"
-            ]
+        assert!(
+            live_message(&data)
+                .into_string()
+                .contains("A payment was reversed. It doesn&#39;t count.")
+                || live_message(&data)
+                    .into_string()
+                    .contains("A payment was reversed. It doesn't count.")
         );
-        assert!(live_message(&data)
-            .into_string()
-            .contains("A payment was reversed. It doesn't count."));
     }
 
-    /// Whatever a template does, a spent address has nothing to copy it with.
+    /// The address can be copied in every state, muted once it shouldn't be paid.
     #[test]
-    fn a_short_address_stops_offering_copy_once_it_shouldnt_be_paid() {
+    fn a_short_address_keeps_its_copy_and_mutes_once_it_shouldnt_be_paid() {
         let mut data = test_checkout_view_model(false);
         let copy = "Copy the full address";
-        assert!(live_address_short(&data).into_string().contains(copy));
+        let open = live_address_short(&data).into_string();
+        assert!(open.contains(copy) && !open.contains("is-spent"), "{open}");
         data.status = OrderStatus::Paid;
-        assert!(!live_address_short(&data).into_string().contains(copy));
+        let spent = live_address_short(&data).into_string();
+        assert!(
+            spent.contains(copy) && spent.contains("is-spent"),
+            "{spent}"
+        );
     }
 }

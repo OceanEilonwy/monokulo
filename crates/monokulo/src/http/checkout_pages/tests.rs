@@ -226,7 +226,7 @@ async fn a_draft_is_saved_and_previewed_and_what_is_wrong_is_said_with_nothing_s
     let (status, html) = wizard.get(&wizard.page()).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        html.contains("{{merchant}}"),
+        html.contains("{{address short}}"),
         "starts from a stock layout: {html}"
     );
 

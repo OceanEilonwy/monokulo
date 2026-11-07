@@ -30,7 +30,7 @@ test('a custom page is refused, fixed and previewed in every state, in a sandbox
 
   await page.goto(fixture.base_url + page_);
   // Starts from a stock layout, which is a template too.
-  await expect(page.locator('#template')).toHaveValue(/\{\{merchant\}\}/);
+  await expect(page.locator('#template')).toHaveValue(/\{\{amount bare\}\}/);
 
   // Everything wrong at once, keeping what was typed.
   await page.locator('#template').fill('{{status}}\n<p>{{countdown}}</p>');

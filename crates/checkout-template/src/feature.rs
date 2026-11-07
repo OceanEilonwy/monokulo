@@ -76,7 +76,10 @@ impl Feature {
             Feature::Amount => &["bare"],
             Feature::Qr => &["small", "medium", "large"],
             Feature::Address => &["short"],
-            Feature::Status => &["icon"],
+            Feature::Status => &["icon", "label", "track"],
+            Feature::Message => &["full"],
+            Feature::Progress => &["text"],
+            Feature::Payments => &["folded"],
             _ => &[],
         }
     }

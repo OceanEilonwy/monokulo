@@ -342,10 +342,11 @@
     iframe.style.border = "none";
     // The size each layout needs, when one was asked for. A store's own choice
     // isn't known here: an embed using a small one passes its `height`.
-    var size = { tiny: ["280px", "380px"], compact: ["420px", "680px"] }[options.view] || ["420px", "900px"];
+    var size = { tiny: ["280px", "152px"], compact: ["280px", "380px"] }[options.view] || ["420px", "880px"];
     iframe.style.width = options.width || size[0];
-    // 900px: the checkout page's amount, QR, address card, progress bar and
-    // refund-address form need about that at this default 420px width.
+    // 880px: everything on the way to Paid fits at this default 420px width,
+    // with a verified domain and an order description too. What only shows when
+    // something's gone wrong, or a payments table opened, scrolls in the frame.
     // Auto-sizing to the framed page's content isn't available here: the
     // frame is cross-origin to the caller's page, so its content height
     // can't be read. A caller who wants a

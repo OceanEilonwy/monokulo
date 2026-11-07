@@ -196,6 +196,14 @@
   --state-double-spend-bg: #ffe6e9; --state-double-spend-border: #b00020; --state-double-spend-ink: #870019;
   --state-cancelled-bg: #e7e7e7; --state-cancelled-border: #616161; --state-cancelled-ink: #404040;
 
+  /* The symbol over a code that shouldn't be paid (`.qr-mark`): the same in
+     both themes, as the code it sits on is. */
+  --qr-mark-confirming: #5556a4; --qr-mark-confirming-bg: #e7e8ff;
+  --qr-mark-paid: #1a7f37; --qr-mark-paid-bg: #e3f4e7;
+  --qr-mark-overpaid: #b54016; --qr-mark-overpaid-bg: #ffe6d9;
+  --qr-mark-over: #625b52; --qr-mark-over-bg: #ece9e3;
+  --qr-mark-reversed: #b00020; --qr-mark-reversed-bg: #ffe6e9;
+
   /* ---- shape and type (the same in both themes) ----
      Monero classic, tuned: 1x density, 10% roundedness, 0% elevation. Space
      and radius are px so control chrome keeps one rhythm whatever the text
