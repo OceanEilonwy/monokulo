@@ -34,3 +34,28 @@ test('order creation, Back and changed or unchanged resubmission work', async ({
   await page.getByRole('button', { name: 'Create order', exact: true }).click();
   await expect(page).toHaveURL(/\/orders\/order_/);
 });
+
+test("the first activity row sits as close to the heading's rule as the others to theirs", async ({ page, context, request }) => {
+  await login(context);
+  await page.goto(fixture.base_url + store + '/orders/new');
+  await page.locator('#amount').fill('0.01');
+  await page.locator('#currency').selectOption('XMR');
+  await page.getByRole('button', { name: 'Create order', exact: true }).click();
+  await expect(page).toHaveURL(/\/orders\/order_/);
+  const orderId = page.url().split('?')[0].split('/').pop();
+  for (let sent = 0; sent < 2; sent++) {
+    const payment = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/payment?fraction=0.25`);
+    expect(payment.status()).toBe(204);
+  }
+  await page.reload();
+  await expect(page.locator('#order-live .timeline li').nth(1)).toBeVisible();
+  const gaps = await page.locator('#order-live').evaluate((live) => {
+    const [first, second] = live.querySelectorAll('.timeline li');
+    const textTop = (row) => row.querySelector(':scope > span').getBoundingClientRect().top;
+    return {
+      first: textTop(first) - live.querySelector('.timeline').previousElementSibling.getBoundingClientRect().bottom,
+      second: textTop(second) - second.getBoundingClientRect().top - second.clientTop,
+    };
+  });
+  expect(gaps.first).toBeCloseTo(gaps.second, 0);
+});
