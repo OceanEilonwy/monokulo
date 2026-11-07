@@ -353,6 +353,32 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   await expect(site.locator('#mount')).toHaveAttribute('data-status', 'paid');
 });
 
+test('real checkout tells the page framing it the status on load and at each change', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  await page.goto(`${fixture.base_url}/__coverage/ready`);
+  await page.setContent('<iframe id="pay" style="width:100%"></iframe>');
+  await page.evaluate(src => {
+    window.statuses = [];
+    const frame = document.getElementById('pay');
+    window.addEventListener('message', event => {
+      if (event.source === frame.contentWindow && event.data.type === 'monokulo:status') window.statuses.push(event.data);
+    });
+    frame.src = src;
+  }, url);
+  const statuses = () => page.evaluate(() => window.statuses);
+  await expect.poll(statuses, 'the status on load').toEqual([{ type: 'monokulo:status', status: 'pending' }]);
+  const checkout = page.frameLocator('#pay');
+  await expect(checkout.locator('#checkout-stream')).toBeAttached();
+  const paid = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
+  expect(paid.status()).toBe(204);
+  await expect(checkout.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
+  await expect.poll(statuses, 'the new status, and only once').toEqual([
+    { type: 'monokulo:status', status: 'pending' },
+    { type: 'monokulo:status', status: 'paid' },
+  ]);
+});
+
 test('real checkout saves the address the customer ends with when they change it mid-save', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   const [first, second] = [address, otherAddress];
