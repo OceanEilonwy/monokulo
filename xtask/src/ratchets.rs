@@ -70,7 +70,12 @@ const MARKUP_ALLOWED: [(&str, &str); 7] = [
 
 /// Style and geometry reads that are what a spec tests, by file and rule,
 /// and why.
-const STYLE_ALLOWED: [(&str, &str, &str); 3] = [
+const STYLE_ALLOWED: [(&str, &str, &str); 4] = [
+    (
+        "e2e/browser/tests/checkout-layout.spec.js",
+        "boundingBox",
+        "where the checkout's parts sit in a frame is what it tests",
+    ),
     (
         "e2e/browser/tests/store-settings.spec.js",
         "colour",
