@@ -1435,7 +1435,9 @@ mod tests {
             "auto refresh off must drop the meta refresh, got: {html}"
         );
         assert!(
-            html.contains(r#"<a href="/api/v1/checkout/pay_abc123?view=compact">Auto Refresh: OFF</a>"#),
+            html.contains(
+                r#"<a href="/api/v1/checkout/pay_abc123?view=compact">Auto Refresh: OFF</a>"#
+            ),
             "got: {html}"
         );
         assert!(

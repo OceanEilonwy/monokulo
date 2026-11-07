@@ -678,7 +678,10 @@ mod tests {
             ),
             (post("/apps/connect", "203.0.113.2:1"), "203.0.113.2:1"),
             (post("/telemetry/client", "203.0.113.3:1"), "203.0.113.3:1"),
-            (get("/api/v1/checkout/o1/events", "203.0.113.4:1"), "203.0.113.4:1"),
+            (
+                get("/api/v1/checkout/o1/events", "203.0.113.4:1"),
+                "203.0.113.4:1",
+            ),
             (get("/api/v1/orders/o1", "203.0.113.5:1"), "203.0.113.5:1"),
         ];
         for (request, peer) in routes {
@@ -744,9 +747,8 @@ mod tests {
         assert!(html.contains("Checking your connection"), "{html}");
         let challenge = attribute(&html, "data-challenge");
         assert_eq!(attribute(&html, "data-continue"), page);
-        assert!(
-            attribute(&html, "data-wait").starts_with("/api/v1/checkout/o1?view=compact&monokulo_wait=")
-        );
+        assert!(attribute(&html, "data-wait")
+            .starts_with("/api/v1/checkout/o1?view=compact&monokulo_wait="));
 
         // A wait token used straight away is too early: the interstitial again, saying so.
         let wait = attribute(&html, "data-wait");
@@ -1057,7 +1059,11 @@ mod tests {
             (Method::GET, "/api/v1/checkout/{order_id}", Page),
             (Method::GET, "/api/v1/checkout/{order_id}/share", Page),
             (Method::GET, "/api/v1/checkout/{order_id}/events", Stream),
-            (Method::POST, "/api/v1/checkout/{order_id}/refund-address", Other),
+            (
+                Method::POST,
+                "/api/v1/checkout/{order_id}/refund-address",
+                Other,
+            ),
         ] {
             assert_eq!(
                 super::api_and_checkout_route_class(&method, route),
