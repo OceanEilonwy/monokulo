@@ -38,6 +38,8 @@ h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
 .notice[data-slow-block] { background: var(--tint-warning); border-color: var(--warning); }
 h1 { font-size: var(--text-xl); border-bottom: 2px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
 h2 { font-size: var(--text-lg); border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
+/* The heading's rule stands in for the first row's: same gap as the rest. */
+h2:has(+ .timeline) { margin-bottom: 0; }
 p { margin: 0.6em 0; }
 /* Code/addresses/txids stay monospace regardless of the UI font choice -
    a legibility need (character-width alignment, telling 0/O and 1/l/I
