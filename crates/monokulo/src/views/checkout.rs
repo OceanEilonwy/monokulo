@@ -295,10 +295,10 @@ fn render_part(data: &CheckoutViewModel, part: &Part) -> Markup {
         Feature::Message => live_message(data),
         Feature::Amount => live_amount(data, part.option == Some("bare")),
         Feature::Fiat => live_fiat(data),
-        Feature::Countdown => live_countdown(data),
+        Feature::Countdown => live_countdown(data, part.option == Some("inline")),
         Feature::Qr => live_qr(data, part.option),
         Feature::Address if part.option == Some("short") => live_address_short(data),
-        Feature::Address => live_address(data),
+        Feature::Address => live_address(data, part.option == Some("plain")),
         Feature::Progress => live_progress(data, part.option != Some("text")),
         Feature::Refund => refund_part(data),
         Feature::Payments => live_payments(data, part.option == Some("folded")),
@@ -541,7 +541,7 @@ pub fn live_fragment(data: &CheckoutViewModel) -> Markup {
     html! {
         (live_status(data))
         (live_pay(data))
-        (live_address(data))
+        (live_address(data, false))
         (live_progress(data, true))
         (live_payments(data, false))
     }
@@ -553,7 +553,7 @@ pub fn live_parts(data: &CheckoutViewModel) -> [(&'static str, Markup); 5] {
     [
         ("live-status", live_status(data)),
         ("live-pay", live_pay(data)),
-        ("live-address", live_address(data)),
+        ("live-address", live_address(data, false)),
         ("live-progress", live_progress(data, true)),
         ("live-payments", live_payments(data, false)),
     ]
@@ -725,31 +725,39 @@ fn track_fills(data: &CheckoutViewModel) -> [u8; 3] {
     }
 }
 
-/// The track alone, each step a bar filled by how much of it is done. What's
-/// gone wrong is `{{message full}}`'s.
-/// The fill is an SVG's own attribute: the page's policy allows no `style`.
-fn live_track(data: &CheckoutViewModel) -> Markup {
+/// The track's steps, each filled by how much of it is done, with the count in
+/// Confirm's name so nothing moves as a payment confirms. The fill is an SVG's own
+/// attribute: the page's policy allows no `style`.
+fn track_steps(data: &CheckoutViewModel) -> Vec<ui::ProgressStep> {
     let [send, confirm, paid] = track_fills(data);
     let fills = if data.confirmations_required == 0 {
         vec![send, paid]
     } else {
         vec![send, confirm, paid]
     };
-    // In the step's name, so nothing moves as a payment confirms.
     let reversed = reversed_at(data.status, data.double_spend_detected_at).is_some();
     let counting = data.status == OrderStatus::Confirming && !reversed;
-    let steps: Vec<_> = stage_steps(data)
+    stage_steps(data)
         .into_iter()
         .zip(fills)
         .map(|(mut step, fill)| {
             if counting && step.label == "Confirm" {
-                step.label = format!("Confirm ({}/{})", data.confirmations, data.confirmations_required);
+                step.label = format!(
+                    "Confirm ({}/{})",
+                    data.confirmations, data.confirmations_required
+                );
             }
             step.icon(html! {
-                svg class="track-fill" width="100%" height="100%" aria-hidden="true" { rect width=(format!("{fill}%")) height="100%" {} }
+                svg class="mk-track-fill" width="100%" height="100%" aria-hidden="true" { rect width=(format!("{fill}%")) height="100%" {} }
             })
         })
-        .collect();
+        .collect()
+}
+
+/// The track alone, each step a bar filled by how much of it is done. What's
+/// gone wrong is `{{message full}}`'s.
+fn live_track(data: &CheckoutViewModel) -> Markup {
+    let reversed = reversed_at(data.status, data.double_spend_detected_at).is_some();
     let shown = super::order_state(data.status).1;
     let state = if reversed {
         ui::OrderState::DoubleSpend
@@ -759,7 +767,7 @@ fn live_track(data: &CheckoutViewModel) -> Markup {
     html! {
         div id="live-status" class="stage-slot" data-live data-part="status" {
             span id="status-badge" class=(format!("sr-only state-{shown}")) { (data.status_label) }
-            (ui::ProgressSteps::new("Payment progress", steps).state(state).plain(true))
+            (ui::ProgressSteps::new("Payment progress", track_steps(data)).state(state).plain(true).bars(true))
         }
     }
 }
@@ -973,11 +981,11 @@ fn live_fiat(data: &CheckoutViewModel) -> Markup {
 }
 
 /// The time left to pay, while money is owed.
-fn live_countdown(data: &CheckoutViewModel) -> Markup {
+fn live_countdown(data: &CheckoutViewModel, inline: bool) -> Markup {
     html! {
         div id="live-countdown" data-live data-part="countdown" {
             @if awaiting_payment(data) {
-                div class="countdown-slot" { (countdown(data)) }
+                div class="countdown-slot" { (countdown(data).inline(inline)) }
             }
         }
     }
@@ -1014,15 +1022,20 @@ fn live_qr(data: &CheckoutViewModel, size: Option<&str>) -> Markup {
 
 /// Over a code that shouldn't be paid, why: a tick once the payment is in, a
 /// cross once the order is over, an exclamation mark if a payment was reversed.
-fn spent_mark(data: &CheckoutViewModel) -> Markup {
+fn spent_mark_kind(data: &CheckoutViewModel) -> (&'static str, &'static str) {
     let reversed = reversed_at(data.status, data.double_spend_detected_at).is_some();
-    let (kind, symbol) = match data.status {
+    match data.status {
         _ if reversed => ("reversed", "M12 6v8M12 18v.5"),
         OrderStatus::Expired | OrderStatus::Cancelled => ("over", "M7 7l10 10M17 7 7 17"),
         OrderStatus::Unconfirmed | OrderStatus::Confirming => ("confirming", "m4.5 12.5 5 5 10-11"),
         OrderStatus::Overpaid => ("overpaid", "m4.5 12.5 5 5 10-11"),
         _ => ("paid", "m4.5 12.5 5 5 10-11"),
-    };
+    }
+}
+
+/// The mark itself: [`spent_mark_kind`] in its circle.
+fn spent_mark(data: &CheckoutViewModel) -> Markup {
+    let (kind, symbol) = spent_mark_kind(data);
     html! {
         span class="qr-mark" data-mark=(kind) aria-hidden="true" {
             svg viewBox="0 0 24 24" { path d=(symbol) {} }
@@ -1037,7 +1050,7 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
         div id="live-pay" data-live {
             (live_amount(data, false))
             (live_fiat(data))
-            (live_countdown(data))
+            (live_countdown(data, false))
             (live_qr(data, None))
         }
     }
@@ -1077,10 +1090,12 @@ fn countdown(data: &CheckoutViewModel) -> ui::Countdown {
 /// The address, whole, in groups to check by eye, under what to send to
 /// it. Muted once it shouldn't be paid, still with its Copy button: a live
 /// part, so that follows the order.
-fn live_address(data: &CheckoutViewModel) -> Markup {
+fn live_address(data: &CheckoutViewModel, plain: bool) -> Markup {
     const GROUP: usize = 6;
     let open = awaiting_payment(data);
-    let mut address = ui::GroupedValue::of(data.address.as_str(), GROUP).copy_label("Copy address");
+    let mut address = ui::GroupedValue::of(data.address.as_str(), GROUP)
+        .copy_label("Copy address")
+        .plain(plain);
     if !open {
         address = address.attr("data-spent", "");
     }
@@ -1615,20 +1630,18 @@ mod tests {
         data.xmr_amount = "1.000000000000".to_string();
         data.amount_received_xmr = "0.250000000000".to_string();
         data.status = OrderStatus::Partial;
-        let html = live_track(&data).into_string();
-        assert!(html.contains(r#"<rect width="25%""#), "{html}");
-        assert!(html.contains(r#"<rect width="0%""#), "{html}");
+        assert_eq!(track_fills(&data), [25, 0, 0]);
 
         data.status = OrderStatus::Confirming;
         data.confirmations = 2;
         data.confirmations_required = 10;
         data.progress_percent = 20;
-        let html = live_track(&data).into_string();
-        assert!(html.contains(r#"<rect width="20%""#), "{html}");
-        assert!(html.contains("Confirm (2/10)"), "{html}");
+        assert_eq!(track_fills(&data), [100, 20, 0]);
+        let labels: Vec<String> = track_steps(&data).into_iter().map(|s| s.label).collect();
+        assert_eq!(labels, ["Send", "Confirm (2/10)", "Paid"]);
 
-        // Nothing in a `style`, which the page's policy would drop.
-        assert!(!html.contains("style="), "{html}");
+        data.status = OrderStatus::Paid;
+        assert_eq!(track_fills(&data), [100, 100, 100]);
     }
 
     #[test]
@@ -1648,24 +1661,18 @@ mod tests {
     fn an_overpaid_order_marks_its_code_apart_from_a_paid_one() {
         let mut data = test_checkout_view_model(true);
         data.status = OrderStatus::Overpaid;
-        assert!(spent_mark(&data)
-            .into_string()
-            .contains(r#"data-mark="overpaid""#));
+        assert_eq!(spent_mark_kind(&data).0, "overpaid");
         data.status = OrderStatus::Paid;
-        assert!(spent_mark(&data)
-            .into_string()
-            .contains(r#"data-mark="paid""#));
+        assert_eq!(spent_mark_kind(&data).0, "paid");
     }
 
     #[test]
     fn the_full_message_says_nothing_until_something_has_gone_wrong() {
         let mut data = test_checkout_view_model(false);
         data.status = OrderStatus::Confirming;
-        assert!(!live_message_full(&data).into_string().contains("<p"));
+        assert!(stage_message(&data).is_none());
         data.status = OrderStatus::Expired;
-        assert!(live_message_full(&data)
-            .into_string()
-            .contains("This payment expired."));
+        assert_eq!(stage_message(&data).unwrap().0, "This payment expired");
     }
 
     #[test]
@@ -1868,7 +1875,7 @@ mod tests {
         let label = |status| {
             let mut data = test_checkout_view_model(false);
             data.status = status;
-            let html = live_address(&data).into_string();
+            let html = live_address(&data, false).into_string();
             let start = html.find("id=\"address-label\">").unwrap() + 19;
             html[start..start + html[start..].find('<').unwrap()].to_string()
         };

@@ -90,3 +90,19 @@
 .mk-scale-step:nth-child(n + 6) { --scale-strength: 62%; }
 .mk-scale-from, .mk-scale-end { overflow: hidden; padding-top: 2px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; }
 .mk-scale-end { position: absolute; inset-inline-end: 0; bottom: 0; padding-inline-start: var(--space-sm); background: var(--card-bg, var(--paper-raised)); }
+
+/* The steps as flat bars over their names, filled by `.mk-track-fill`. */
+.mk-stage[data-bars] .mk-track { gap: var(--space-xs); margin-bottom: 0; }
+.mk-stage[data-bars] .mk-track::before { display: none; }
+.mk-stage[data-bars] .mk-track > li { justify-items: stretch; text-align: center; color: var(--muted); }
+.mk-stage[data-bars] .mk-track > li .mk-track-dot { display: block; width: auto; height: 4px; border: 0; border-radius: 2px; background: var(--line); box-shadow: none; overflow: hidden; }
+.mk-stage[data-bars] .mk-track > .step-part .mk-track-dot::before { display: none; }
+.mk-stage[data-bars] .mk-track-dot > .mk-track-fill { display: block; width: 100%; height: 100%; fill: var(--state-border, var(--ink)); }
+.mk-stage[data-bars] .mk-track > :is(.step-now, .step-part, .step-fail) { color: var(--state-ink, var(--ink)); }
+.mk-stage[data-bars] .mk-track > .step-done { color: var(--ink); }
+.mk-stage[data-bars] .mk-track > .step-done .mk-track-fill { fill: var(--state-paid-border); }
+
+/* The time alone, in the type around it. */
+.mk-countdown[data-inline] :is(.mk-countdown-bar, .mk-countdown-note) { display: none; }
+.mk-countdown[data-inline] .mk-countdown-line { font-size: inherit; }
+.mk-countdown[data-inline] .mk-countdown-line > span:first-child { font-weight: 700; }

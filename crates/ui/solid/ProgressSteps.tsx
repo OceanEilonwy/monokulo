@@ -14,7 +14,7 @@ import type { OrderState, ProgressStep } from './types';
  * upright (`vertical`), each step can say more under its name and
  * carry its own state and symbol: an order's life, start to finish.
  */
-export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "compact" | "data-plain" | "data-size" | "label" | "message" | "plain" | "state" | "steps" | "style" | "title" | "vertical"> {
+export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "bars" | "class" | "classList" | "compact" | "data-bars" | "data-plain" | "data-size" | "label" | "message" | "plain" | "state" | "steps" | "style" | "title" | "vertical"> {
   /**
    * What the steps are of ("Payment progress").
    */
@@ -49,6 +49,12 @@ export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "
    * @default false
    */
   plain?: boolean;
+  /**
+   * Each step a flat bar over its name, not a dot. A step's `icon`
+   * fills its bar: an SVG of class `mk-track-fill`.
+   * @default false
+   */
+  bars?: boolean;
 }
 
 /**
@@ -60,9 +66,9 @@ export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "
  * carry its own state and symbol: an order's life, start to finish.
  */
 export function ProgressSteps(props: ProgressStepsProps): JSX.Element {
-  const rest = omit(props, "label", "steps", "title", "message", "state", "compact", "vertical", "plain");
+  const rest = omit(props, "label", "steps", "title", "message", "state", "compact", "vertical", "plain", "bars");
   return (
-    <div class={tokens(`mk-stage`, props.state != null && `state-${props.state}`)} data-size={(props.compact ?? false) ? `compact` : undefined} data-plain={(props.plain ?? false) ? `` : undefined} {...rest}>
+    <div class={tokens(`mk-stage`, props.state != null && `state-${props.state}`)} data-size={(props.compact ?? false) ? `compact` : undefined} data-plain={(props.plain ?? false) ? `` : undefined} data-bars={(props.bars ?? false) ? `` : undefined} {...rest}>
       <ol class="mk-track" data-orientation={(props.vertical ?? false) ? `vertical` : undefined} aria-label={props.label}>
         <For each={props.steps}>
           {(step) => (

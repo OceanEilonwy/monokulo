@@ -18,7 +18,7 @@ import { setup } from '../web/components/grouped-value.behaviour';
  * selects all of it; once its island attaches, the button copies it
  * and says so, and the value stays on screen as it was.
  */
-export interface GroupedValueProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "copy_label" | "data-void" | "groups" | "hint" | "style" | "value" | "void"> {
+export interface GroupedValueProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "copy_label" | "data-plain" | "data-void" | "groups" | "hint" | "plain" | "style" | "value" | "void"> {
   /**
    * The whole value: what is copied, and what a screen reader hears.
    */
@@ -45,6 +45,11 @@ export interface GroupedValueProps extends Omit<JSX.IntrinsicElements["div"], "c
    */
   void?: boolean;
   /**
+   * With no box around it, and its two ends padded evenly all round.
+   * @default false
+   */
+  plain?: boolean;
+  /**
    * `false` renders the server's markup, without the behaviour's (tests).
    * @default true
    */
@@ -62,12 +67,12 @@ export interface GroupedValueProps extends Omit<JSX.IntrinsicElements["div"], "c
  * and says so, and the value stays on screen as it was.
  */
 export function GroupedValue(props: GroupedValueProps): JSX.Element {
-  const rest = omit(props, "value", "groups", "copy_label", "hint", "void", "enhanced");
+  const rest = omit(props, "value", "groups", "copy_label", "hint", "void", "plain", "enhanced");
   const enhanced = props.enhanced ?? true;
   const b = setup(props);
   const owner = getOwner();
   return (
-    <div class="mk-grouped" data-void={(props.void ?? false) ? `` : undefined} {...rest}>
+    <div class="mk-grouped" data-void={(props.void ?? false) ? `` : undefined} data-plain={(props.plain ?? false) ? `` : undefined} {...rest}>
       <span class="visually-hidden">
         {props.value}
       </span>

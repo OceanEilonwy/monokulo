@@ -149,3 +149,12 @@ table.mk-dns-record td { vertical-align: middle; }
 .mk-grouped > .mk-btn[data-copied] { background: var(--tint-success); border-color: var(--success); }
 .mk-grouped-hint { margin: 0; color: var(--muted); font-size: var(--text-sm); }
 .mk-grouped[data-void] > .mk-grouped-value { opacity: .6; }
+
+/* A copy symbol right beside the value, with nothing around it. */
+.mk-copy[data-icon] { grid-template-columns: minmax(0, max-content) auto; justify-content: start; gap: 2px; }
+.mk-copy[data-icon] .mk-btn { min-height: 2rem; padding: var(--space-xs); border: 0; background: none; }
+.mk-copy[data-icon] .mk-copy-status:not(:empty) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+/* The address with no box around it, its two ends padded evenly all round. */
+.mk-grouped[data-plain] { padding: 0; border: 0; background: none; }
+.mk-grouped[data-plain] .mk-grouped-value > span:is(:first-child, :last-child) { padding-inline: .7ch; }
