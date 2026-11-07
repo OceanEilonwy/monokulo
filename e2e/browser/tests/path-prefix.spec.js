@@ -106,19 +106,19 @@ test('a store is set up, an order made from its page with its checkout following
   // The order page follows the order live (fixi's stream).
   await expect.poll(() => seen.some((path) => /\/orders\/order_[^/]+\/events$/.test(path))).toBe(true);
   const payment = await page.locator('#share-payment-link').getAttribute('href');
-  expect(payment?.startsWith(`${base}/checkout/order_`)).toBe(true);
+  expect(payment?.startsWith(`${base}/api/v1/checkout/order_`)).toBe(true);
 
   // The checkout, in a tab of its own, following the order on its stream.
   const checkout = await context.newPage();
   const checkoutSeen = watchRequests(checkout);
-  const stream = checkout.waitForResponse((response) => /\/checkout\/order_[^/]+\/events/.test(response.url()));
+  const stream = checkout.waitForResponse((response) => /\/api\/v1\/checkout\/order_[^/]+\/events/.test(response.url()));
   await checkout.goto(payment || '');
   const opened = await stream;
   expect(opened.status()).toBe(200);
   expect(opened.headers()['content-type']).toContain('text/event-stream');
-  expect(new URL(opened.url()).pathname.startsWith(`${PREFIX}/checkout/`)).toBe(true);
+  expect(new URL(opened.url()).pathname.startsWith(`${PREFIX}/api/v1/checkout/`)).toBe(true);
   // The share page frames the checkout, under the prefix too.
-  await expect(checkout.locator('#checkout-frame')).toHaveAttribute('src', new RegExp(`^${PREFIX}/checkout/order_`));
+  await expect(checkout.locator('#checkout-frame')).toHaveAttribute('src', new RegExp(`^${PREFIX}/api/v1/checkout/order_`));
   await expect(checkout.frameLocator('#checkout-frame').locator('body')).toContainText('Send exactly this amount to');
 
   // The POS charges an order and cancels it: its fetches, and the stream

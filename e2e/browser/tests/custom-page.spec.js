@@ -114,7 +114,7 @@ async function checkout(page, request, writtenCss = '') {
   const { order_id } = await made.json();
   await page.route(`${site}/**`, (route) => route.fulfill({
     contentType: 'text/html',
-    body: `<!doctype html><iframe id="pay" referrerpolicy="unsafe-url" src="${fixture.base_url}/checkout/${order_id}" style="width:420px;height:700px"></iframe>`,
+    body: `<!doctype html><iframe id="pay" referrerpolicy="unsafe-url" src="${fixture.base_url}/api/v1/checkout/${order_id}" style="width:420px;height:700px"></iframe>`,
   }));
   await page.goto(`${site}/cart`);
   return { order_id, frame: page.frameLocator('#pay') };
@@ -129,7 +129,7 @@ test('a customer sees the page on the shop, it follows the order live, and a dir
   await expect(frame.locator('.done')).toHaveText('All done');
   await expect(frame.locator('[data-part="qr"]')).toHaveCount(0);
 
-  await page.goto(`${fixture.base_url}/checkout/${order_id}`);
+  await page.goto(`${fixture.base_url}/api/v1/checkout/${order_id}`);
   await expect(page.locator('#checkout-root')).toBeVisible();
   await expect(page.locator('h1', { hasText: 'Fern and Wire' })).toHaveCount(0);
 });
@@ -160,7 +160,7 @@ test('another site can\'t frame it, and loading from elsewhere is refused by the
   const other = 'https://other-site.example';
   await page.route(`${other}/**`, (route) => route.fulfill({
     contentType: 'text/html',
-    body: `<!doctype html><iframe id="pay" referrerpolicy="unsafe-url" src="${fixture.base_url}/checkout/${order_id}"></iframe>`,
+    body: `<!doctype html><iframe id="pay" referrerpolicy="unsafe-url" src="${fixture.base_url}/api/v1/checkout/${order_id}"></iframe>`,
   }));
   await page.goto(`${other}/cart`);
   // A site it isn't approved for still takes the payment, on the store's layout.

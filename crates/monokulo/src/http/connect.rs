@@ -1176,13 +1176,13 @@ mod tests {
             let links = &order["_links"];
             assert_eq!(
                 links["mk:onion-checkout"]["href"],
-                format!("{ONION}/checkout/{order_id}"),
+                format!("{ONION}/api/v1/checkout/{order_id}"),
                 "{order}"
             );
             assert_eq!(links["mk:onion-checkout"]["type"], "text/html");
             assert_eq!(
                 links["mk:checkout"]["href"],
-                format!("/checkout/{order_id}")
+                format!("/api/v1/checkout/{order_id}")
             );
         }
     }

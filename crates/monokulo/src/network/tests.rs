@@ -158,10 +158,10 @@ fn each_visitor_gets_links_on_the_address_they_used() {
         &headers,
         &Extensions::new(),
     );
-    assert_eq!(web.link("/checkout/x"), format!("{WEB}/checkout/x"));
+    assert_eq!(web.link("/api/v1/checkout/x"), format!("{WEB}/api/v1/checkout/x"));
     assert_eq!(
-        onion.link("/checkout/x"),
-        format!("http://{ONION}/checkout/x")
+        onion.link("/api/v1/checkout/x"),
+        format!("http://{ONION}/api/v1/checkout/x")
     );
     assert!(web.may_load_external);
     assert!(!onion.may_load_external);

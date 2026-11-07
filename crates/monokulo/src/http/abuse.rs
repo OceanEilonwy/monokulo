@@ -5,7 +5,7 @@
 //! Two middlewares share [`guard`]:
 //!
 //! - [`api_and_checkout_middleware`] on the public routes, the machine API (`/api/v1`)
-//!   and the payer's pages (`/checkout/{order_id}`), inside their CORS
+//!   and the payer's pages (`/api/v1/checkout/{order_id}`), inside their CORS
 //!   layer, so a `429` is still readable cross-origin. It also finds the
 //!   store the request is about ([`super::store_key::RequestStore`]): on
 //!   the API the key's (`super::store_key`), on a checkout the order's. The
@@ -678,7 +678,7 @@ mod tests {
             ),
             (post("/apps/connect", "203.0.113.2:1"), "203.0.113.2:1"),
             (post("/telemetry/client", "203.0.113.3:1"), "203.0.113.3:1"),
-            (get("/checkout/o1/events", "203.0.113.4:1"), "203.0.113.4:1"),
+            (get("/api/v1/checkout/o1/events", "203.0.113.4:1"), "203.0.113.4:1"),
             (get("/api/v1/orders/o1", "203.0.113.5:1"), "203.0.113.5:1"),
         ];
         for (request, peer) in routes {
@@ -725,7 +725,7 @@ mod tests {
     #[tokio::test]
     async fn past_the_soft_limit_a_page_gets_the_interstitial_and_a_solved_proof_continues() {
         let router = build_router(state(low_limits()));
-        let page = "/checkout/o1?view=compact";
+        let page = "/api/v1/checkout/o1?view=compact";
         let peer = "198.51.100.1:1";
         assert_eq!(
             router
@@ -745,7 +745,7 @@ mod tests {
         let challenge = attribute(&html, "data-challenge");
         assert_eq!(attribute(&html, "data-continue"), page);
         assert!(
-            attribute(&html, "data-wait").starts_with("/checkout/o1?view=compact&monokulo_wait=")
+            attribute(&html, "data-wait").starts_with("/api/v1/checkout/o1?view=compact&monokulo_wait=")
         );
 
         // A wait token used straight away is too early: the interstitial again, saying so.
@@ -884,7 +884,7 @@ mod tests {
         assert!(body["retry_after"].as_u64().is_some(), "{body}");
         let page = router
             .clone()
-            .oneshot(get("/checkout/o1", peer))
+            .oneshot(get("/api/v1/checkout/o1", peer))
             .await
             .unwrap();
         assert_eq!(page.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -892,7 +892,7 @@ mod tests {
         assert!(text(page).await.contains("Too many requests"));
         let stream = router
             .clone()
-            .oneshot(get("/checkout/o1/events", peer))
+            .oneshot(get("/api/v1/checkout/o1/events", peer))
             .await
             .unwrap();
         assert_eq!(stream.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -1054,10 +1054,10 @@ mod tests {
             (Method::DELETE, "/api/v1/app", Api),
             (Method::GET, "/api/v1/events", Stream),
             (Method::GET, "/api/v1/orders/{order_id}/events", Stream),
-            (Method::GET, "/checkout/{order_id}", Page),
-            (Method::GET, "/checkout/{order_id}/share", Page),
-            (Method::GET, "/checkout/{order_id}/events", Stream),
-            (Method::POST, "/checkout/{order_id}/refund-address", Other),
+            (Method::GET, "/api/v1/checkout/{order_id}", Page),
+            (Method::GET, "/api/v1/checkout/{order_id}/share", Page),
+            (Method::GET, "/api/v1/checkout/{order_id}/events", Stream),
+            (Method::POST, "/api/v1/checkout/{order_id}/refund-address", Other),
         ] {
             assert_eq!(
                 super::api_and_checkout_route_class(&method, route),
@@ -1078,7 +1078,7 @@ mod tests {
         let html = text(
             router
                 .clone()
-                .oneshot(get("/checkout/o1", peer))
+                .oneshot(get("/api/v1/checkout/o1", peer))
                 .await
                 .unwrap(),
         )
@@ -1088,7 +1088,7 @@ mod tests {
         assert!(api.headers().contains_key("monokulo-challenge"));
         let stream = router
             .clone()
-            .oneshot(get("/checkout/o1/events", peer))
+            .oneshot(get("/api/v1/checkout/o1/events", peer))
             .await
             .unwrap();
         assert_eq!(

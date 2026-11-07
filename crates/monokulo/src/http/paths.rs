@@ -11,32 +11,35 @@ use crate::db::OrderId;
 
 /// The checkout inside monokulo's own page, to share with a payer.
 #[derive(TypedPath, Deserialize, Clone, Debug)]
-#[typed_path("/checkout/{order_id}/share")]
+#[typed_path("/api/v1/checkout/{order_id}/share")]
 pub struct CheckoutSharePath {
     pub order_id: OrderId,
 }
 
 /// The checkout's live updates, as server-sent events.
 #[derive(TypedPath, Deserialize, Clone, Debug)]
-#[typed_path("/checkout/{order_id}/events")]
+#[typed_path("/api/v1/checkout/{order_id}/events")]
 pub struct CheckoutEventsPath {
     pub order_id: OrderId,
 }
 
 /// Where the checkout's refund address form posts.
 #[derive(TypedPath, Deserialize, Clone, Debug)]
-#[typed_path("/checkout/{order_id}/refund-address")]
+#[typed_path("/api/v1/checkout/{order_id}/refund-address")]
 pub struct RefundAddressPath {
     pub order_id: OrderId,
 }
 
-/// Whether `path` is the API's (`crate::api`).
+/// Whether `path` is the machine API's (`crate::api`): under `/api/v1`, but
+/// not the payer's pages ([`checkout_order`]), which live there too and are
+/// for people: no key, a browser's identity and the order's own store.
 pub fn is_api(path: &str) -> bool {
     path.strip_prefix(crate::api::v1::root::Path::TEMPLATE)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        && checkout_order(path).is_none()
 }
 
-/// The order a `/checkout/{order_id}/...` path is for.
+/// The order a `/api/v1/checkout/{order_id}/...` path is for.
 pub fn checkout_order(path: &str) -> Option<OrderId> {
     let template = crate::api::checkout::Path::TEMPLATE;
     let prefix = template.strip_suffix("{order_id}").unwrap_or(template);
@@ -61,25 +64,25 @@ mod tests {
                 order_id: order_id.clone()
             }
             .to_string(),
-            "/checkout/order_1"
+            "/api/v1/checkout/order_1"
         );
         assert_eq!(
             CheckoutSharePath { order_id }.to_string(),
-            "/checkout/order_1/share"
+            "/api/v1/checkout/order_1/share"
         );
     }
 
     #[test]
     fn a_checkout_path_names_its_order() {
         assert_eq!(
-            checkout_order("/checkout/order_1/events"),
+            checkout_order("/api/v1/checkout/order_1/events"),
             Some(OrderId::new("order_1"))
         );
         assert_eq!(
-            checkout_order("/checkout/order_1"),
+            checkout_order("/api/v1/checkout/order_1"),
             Some(OrderId::new("order_1"))
         );
-        assert_eq!(checkout_order("/checkout/"), None);
+        assert_eq!(checkout_order("/api/v1/checkout/"), None);
         assert_eq!(checkout_order("/api/v1/orders/order_1"), None);
     }
 
@@ -88,6 +91,6 @@ mod tests {
         assert!(is_api("/api/v1"));
         assert!(is_api("/api/v1/orders"));
         assert!(!is_api("/api/v10"));
-        assert!(!is_api("/checkout/order_1"));
+        assert!(!is_api("/api/v1/checkout/order_1"));
     }
 }

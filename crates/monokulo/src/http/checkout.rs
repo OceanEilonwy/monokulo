@@ -1,4 +1,4 @@
-//! The public checkout/payment page, `/checkout/{order_id}`. Every
+//! The public checkout/payment page, `/api/v1/checkout/{order_id}`. Every
 //! engine call it makes goes through the engine's *admin* API with the
 //! connection's own decrypted `sk_...`, entirely server-side (the browser
 //! never sees it): `EngineClient::get_order_detail` (the same call the
@@ -206,7 +206,7 @@ async fn load_order_with(
     }
 }
 
-/// `GET /checkout/{order_id}` - the full checkout page.
+/// `GET /api/v1/checkout/{order_id}` - the full checkout page.
 #[derive(Clone, Default, Deserialize)]
 pub struct CheckoutOptions {
     view: Option<String>,
@@ -757,7 +757,7 @@ pub struct SetRefundAddressForm {
     pub refund_address: String,
 }
 
-/// `POST /checkout/{order_id}/refund-address` - the checkout
+/// `POST /api/v1/checkout/{order_id}/refund-address` - the checkout
 /// page's own plain HTML form for a customer to record where a refund
 /// should go, forwarding to the engine's admin API with the store's `sk_`
 /// (`EngineClient::set_refund_address`) - monokulo stores nothing of
@@ -914,7 +914,7 @@ fn gone() -> crate::live::LiveSnapshot {
     }
 }
 
-/// `GET /checkout/{order_id}/events` - the order's status as a
+/// `GET /api/v1/checkout/{order_id}/events` - the order's status as a
 /// Server-Sent Events stream that sends it again
 /// only when it changes (`crate::live`) and ends once the order is terminal.
 ///
@@ -1187,7 +1187,7 @@ pub async fn stylesheet(
     }
 }
 
-/// `GET /checkout/{order_id}/share` - the payment link the order page
+/// `GET /api/v1/checkout/{order_id}/share` - the payment link the order page
 /// offers, to share with someone who needs to pay for the order.
 /// `checkout_page` above is deliberately bare (no nav, no
 /// site branding at all - see this module's own doc comment) since it's
@@ -1623,7 +1623,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/checkout/{order_id}"))
+                    .uri(format!("/api/v1/checkout/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1662,7 +1662,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/checkout/{order_id}?view=compact&refund=false"))
+                    .uri(format!("/api/v1/checkout/{order_id}?view=compact&refund=false"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1698,7 +1698,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/checkout/{order_id}"))
+                    .uri(format!("/api/v1/checkout/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1715,7 +1715,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/checkout/{order_id}/refund-address?view=detailed"))
+                    .uri(format!("/api/v1/checkout/{order_id}/refund-address?view=detailed"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("refund_address=not-an-address"))
                     .unwrap(),
@@ -1732,7 +1732,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/checkout/{order_id}/refund-address"))
+                    .uri(format!("/api/v1/checkout/{order_id}/refund-address"))
                     .header("accept", "application/json")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("refund_address=not-an-address"))
@@ -1751,7 +1751,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/checkout/{order_id}/refund-address"))
+                    .uri(format!("/api/v1/checkout/{order_id}/refund-address"))
                     .header("accept", "application/json")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from(format!("refund_address={refund_address}")))
@@ -1766,7 +1766,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/checkout/{order_id}/refund-address"))
+                    .uri(format!("/api/v1/checkout/{order_id}/refund-address"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from(format!("refund_address={refund_address}")))
                     .unwrap(),
@@ -1783,7 +1783,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/checkout/{order_id}"))
+                    .uri(format!("/api/v1/checkout/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1819,7 +1819,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/checkout/{order_id}/refund-address"))
+                    .uri(format!("/api/v1/checkout/{order_id}/refund-address"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("refund_address="))
                     .unwrap(),
@@ -1900,7 +1900,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/checkout/{order_id}/events?fragments=true"))
+                    .uri(format!("/api/v1/checkout/{order_id}/events?fragments=true"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2013,7 +2013,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/checkout/{order_id}"))
+                    .uri(format!("/api/v1/checkout/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2029,7 +2029,7 @@ mod tests {
         )
         .unwrap();
         let events_url =
-            format!("/checkout/{order_id}/events?routed=true&parts=2&layout=detailed&r=");
+            format!("/api/v1/checkout/{order_id}/events?routed=true&parts=2&layout=detailed&r=");
         assert!(
             html.contains(&format!(
                 r#"id="checkout-stream" hidden fx-action="{}" fx-trigger="fx:inited""#,
@@ -2090,7 +2090,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/checkout/{order_id}/events?routed=true"))
+                    .uri(format!("/api/v1/checkout/{order_id}/events?routed=true"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2197,7 +2197,7 @@ mod tests {
         let order = create_order(&router, &pk, "10.00").await;
         let page = |query: &str| {
             Request::builder()
-                .uri(format!("/checkout/{order}{query}"))
+                .uri(format!("/api/v1/checkout/{order}{query}"))
                 .body(Body::empty())
                 .unwrap()
         };
@@ -2250,7 +2250,7 @@ mod tests {
                     .clone()
                     .oneshot(
                         Request::builder()
-                            .uri(format!("/checkout/{order}"))
+                            .uri(format!("/api/v1/checkout/{order}"))
                             .body(Body::empty())
                             .unwrap(),
                     )
@@ -2385,7 +2385,7 @@ mod tests {
         let order_id = create_order(&router, &pk, "10.00").await;
         let open = |ip: [u8; 4]| {
             let mut request = Request::builder()
-                .uri(format!("/checkout/{order_id}/events"))
+                .uri(format!("/api/v1/checkout/{order_id}/events"))
                 .body(Body::empty())
                 .unwrap();
             request.extensions_mut().insert(axum::extract::ConnectInfo(
@@ -2418,7 +2418,7 @@ mod tests {
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/checkout/pay_missing/events")
+                    .uri("/api/v1/checkout/pay_missing/events")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2433,7 +2433,7 @@ mod tests {
         let router = build_router(state);
 
         // The checkout and the payment link that frames it.
-        for uri in ["/checkout/nonexistent", "/checkout/nonexistent/share"] {
+        for uri in ["/api/v1/checkout/nonexistent", "/api/v1/checkout/nonexistent/share"] {
             let response = router
                 .clone()
                 .oneshot(

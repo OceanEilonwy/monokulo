@@ -36,7 +36,7 @@ test('a Monokulo served under a path is called, and framed, under it', async ({ 
     }
     calls.push(`${request.method()} ${request.url()}`);
     if (url.pathname === '/monokulo/api/v1/orders' && request.method() === 'POST') {
-      const links = { self: { href: '/monokulo/api/v1/orders/order_1' }, 'mk:checkout': { href: '/monokulo/checkout/order_1' } };
+      const links = { self: { href: '/monokulo/api/v1/orders/order_1' }, 'mk:checkout': { href: '/monokulo/api/v1/checkout/order_1' } };
       return route.fulfill({
         status: 201, contentType: 'application/prs.hal-forms+json', headers: { ...CORS, location: '/monokulo/api/v1/orders/order_1' },
         body: JSON.stringify({ order_id: 'order_1', address: '8addr', xmr_amount_piconero: 1, amount: '1', currency: 'XMR', expires_at: 0, _links: links }),
@@ -45,7 +45,7 @@ test('a Monokulo served under a path is called, and framed, under it', async ({ 
     if (url.pathname.endsWith('/events')) {
       return route.fulfill({ contentType: 'text/event-stream', headers: CORS, body: 'retry: 60000\n\nevent: status\ndata: {"status":"pending"}\n\n' });
     }
-    if (url.pathname.startsWith('/monokulo/checkout/')) {
+    if (url.pathname.startsWith('/monokulo/api/v1/checkout/')) {
       return route.fulfill({ contentType: 'text/html', body: '<!doctype html><h1>Checkout</h1>' });
     }
     return route.fulfill({ status: 404, headers: CORS, body: '' });
@@ -58,9 +58,9 @@ test('a Monokulo served under a path is called, and framed, under it', async ({ 
     return created;
   });
   expect(order.monokulo).toBe(MONOKULO);
-  expect(order.checkoutUrl).toBe(`${MONOKULO}/checkout/order_1`);
+  expect(order.checkoutUrl).toBe(`${MONOKULO}/api/v1/checkout/order_1`);
   expect(order.orderUrl).toBe(`${MONOKULO}/api/v1/orders/order_1`);
   expect(calls[0]).toBe(`POST ${MONOKULO}/api/v1/orders`);
-  await expect(page.locator('#pay iframe')).toHaveAttribute('src', new RegExp(`^${MONOKULO}/checkout/order_1`));
+  await expect(page.locator('#pay iframe')).toHaveAttribute('src', new RegExp(`^${MONOKULO}/api/v1/checkout/order_1`));
   expect(calls.every(call => call.includes('/monokulo/'))).toBe(true);
 });

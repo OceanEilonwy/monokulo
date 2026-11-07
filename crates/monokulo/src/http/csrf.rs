@@ -14,7 +14,7 @@
 //! browser's same-site form) is let through: neither header is how a
 //! cross-site browser request arrives.
 //!
-//! Not for the machine API (`/api/v1`) or the checkout (`/checkout/…`):
+//! Not for the machine API (`/api/v1`) or the checkout (`/api/v1/checkout/…`):
 //! those are called from merchants' sites by design, under their own CORS
 //! and embed policy.
 

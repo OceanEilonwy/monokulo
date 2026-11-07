@@ -40,7 +40,7 @@ test('merchant site creates an order, mounts the checkout, and is told once when
   }, fixture.public_key);
   expect(order.monokulo).toBe(fixture.base_url);
   // The order's own links, resolved against where it was made.
-  expect(order.checkoutUrl).toBe(`${fixture.base_url}/checkout/${order.orderId}`);
+  expect(order.checkoutUrl).toBe(`${fixture.base_url}/api/v1/checkout/${order.orderId}`);
   expect(order.orderUrl).toBe(`${fixture.base_url}/api/v1/orders/${order.orderId}`);
   await expect(page.locator('#pay iframe')).toHaveAttribute('src', order.checkoutUrl);
   expect(order.merchantOrderId).toBe('cart-1042');
@@ -111,7 +111,7 @@ test('merchant site keeps following an order through a status outage when its st
   const polled = async () => (await fetches(page)).filter(call => /\/api\/v1\/orders\/[^/?]+$/.test(call.url));
   await openShop(page);
   let polls = 0;
-  await page.route(`${fixture.base_url}/checkout/*/events`, route => route.fulfill({ status: 503, body: '' }));
+  await page.route(`${fixture.base_url}/api/v1/checkout/*/events`, route => route.fulfill({ status: 503, body: '' }));
   await page.route(`${fixture.base_url}/api/v1/orders/*`, route => {
     polls++;
     // The first poll lands during a server hiccup.
@@ -195,7 +195,7 @@ test('a merchant wiring up the library wrongly gets an error saying what to fix'
   expect(problems.missing).toBe('Monokulo.mount: target element not found: #paymnet');
   expect(problems.noOrder).toBe('Monokulo.mount: could not resolve orderId or the Monokulo address - pass an order object from createOrder(), or {monokulo} (the Monokulo address) in options for an orderId from a previous visit');
   expect(problems.lastVisit).toBe('mounted');
-  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${fixture.base_url}/checkout/order_from_last_visit`);
+  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${fixture.base_url}/api/v1/checkout/order_from_last_visit`);
 
   // An order that can't be created says why: the server's reason, or what
   // the call left out.

@@ -125,9 +125,11 @@ fn visit_key(path: &str) -> String {
 
 /// Whether the walk should visit `path`: a page, a stream, a frame or a
 /// file a page links. Not the API, which answers keys rather than
-/// sessions, and not the handshakes, which need their parameters.
+/// sessions (but the payer's checkout, which is under `/api/v1` too and is
+/// a page), and not the handshakes, which need their parameters.
 fn worth_visiting(path: &str) -> bool {
-    !path.starts_with("/api/") && !path.starts_with("/plugins/connect")
+    (path.starts_with("/api/v1/checkout/") || !path.starts_with("/api/"))
+        && !path.starts_with("/plugins/connect")
 }
 
 struct Walk {
@@ -367,9 +369,9 @@ fn landings(store: &str, order: &str) -> Vec<String> {
         format!("/stores/{store}"),
         format!("/stores/{store}/pos"),
         format!("/stores/{store}/orders/{order}"),
-        format!("/checkout/{order}"),
-        format!("/checkout/{order}/share"),
-        format!("/checkout/{order}/events?fragments=true"),
+        format!("/api/v1/checkout/{order}"),
+        format!("/api/v1/checkout/{order}/share"),
+        format!("/api/v1/checkout/{order}/events?fragments=true"),
     ]
 }
 

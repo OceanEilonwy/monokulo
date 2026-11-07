@@ -233,7 +233,7 @@ function PaymentCard(props: { order: Order }) {
     if (!looksLikeAddress(value) || value === saved()) return;
     setRefundState('saving'); setRefundMessage('');
     try {
-      const response = await fetch(siteUrl(`/checkout/${encodeURIComponent(props.order.order_id)}/refund-address`), {
+      const response = await fetch(siteUrl(`/api/v1/checkout/${encodeURIComponent(props.order.order_id)}/refund-address`), {
         method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ refund_address: value }),
       });

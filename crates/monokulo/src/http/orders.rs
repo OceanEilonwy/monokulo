@@ -2038,7 +2038,7 @@ mod tests {
             "a point-in-time page without JS, never a meta refresh: {html}"
         );
         assert!(
-            html.contains(&format!("http://test.example/checkout/{order_id}/share")),
+            html.contains(&format!("http://test.example/api/v1/checkout/{order_id}/share")),
             "expected a real absolute payment link, got: {html}"
         );
     }
@@ -5314,7 +5314,7 @@ mod tests {
             expires_at: 2000,
             updated_at: 1000,
             payments: vec![],
-            payment_link: "http://127.0.0.1:8081/checkout/pay_abc123/share".to_string(),
+            payment_link: "http://127.0.0.1:8081/api/v1/checkout/pay_abc123/share".to_string(),
             scan_range_display: crate::templates::display_scan_range(Some(100), Some(250), false),
         };
         let data = OrderDetailViewModel {

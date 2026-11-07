@@ -1663,7 +1663,7 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
     // Error responses carry it too, so a caller can read why it failed.
     for (uri, allowed) in [
         ("/api/v1/orders/order_x", "https://shop.example"),
-        ("/checkout/order_x/events", "https://shop.example"),
+        ("/api/v1/checkout/order_x/events", "https://shop.example"),
         ("/static/monokulo-client.js", "*"),
     ] {
         let response = router
@@ -1750,7 +1750,7 @@ async fn the_api_preflight_allows_delete_and_the_checkout_and_library_ones_do_no
         .contains("authorization"));
     assert!(!headers.contains_key("access-control-allow-credentials"));
 
-    for uri in ["/checkout/order_x", "/static/monokulo-client.js"] {
+    for uri in ["/api/v1/checkout/order_x", "/static/monokulo-client.js"] {
         let methods = preflight(uri).await["access-control-allow-methods"]
             .to_str()
             .unwrap()
