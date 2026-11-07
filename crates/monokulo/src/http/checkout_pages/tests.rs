@@ -697,7 +697,7 @@ async fn a_custom_page_shows_only_in_a_frame_of_another_site() {
     let wizard = wizard("serving@example.com", true).await;
     wizard.publish().await;
     let order = wizard.order().await;
-    let uri = format!("/checkout/{order}");
+    let uri = format!("/api/v1/checkout/{order}");
     for (dest, site, shown) in [
         (Some("iframe"), Some("cross-site"), true),
         (Some("iframe"), Some("same-site"), true),
@@ -843,7 +843,7 @@ async fn a_page_stops_showing_when_its_domain_stops_counting() {
     let wizard = wizard("lapsed@example.com", true).await;
     wizard.publish().await;
     let order = wizard.order().await;
-    let uri = format!("/checkout/{order}");
+    let uri = format!("/api/v1/checkout/{order}");
     let shown = |html: String| html.contains(CUSTOM);
     assert!(shown(
         body_text(wizard.visit(&uri, Some("iframe"), Some("cross-site")).await).await
@@ -917,7 +917,7 @@ async fn an_operator_can_turn_a_page_off_and_only_they_can_turn_it_back_on() {
     let wizard = wizard("turned-off@example.com", true).await;
     wizard.publish().await;
     let order = wizard.order().await;
-    let uri = format!("/checkout/{order}");
+    let uri = format!("/api/v1/checkout/{order}");
     let shown = async || {
         body_text(wizard.visit(&uri, Some("iframe"), Some("cross-site")).await)
             .await
@@ -1063,7 +1063,7 @@ async fn a_stream_on_an_old_version_tells_the_page_to_load_again() {
     let wizard = wizard("reload@example.com", true).await;
     let token = wizard.publish().await;
     let order = wizard.order().await;
-    let events = format!("/checkout/{order}/events?routed=true&parts=2&page={token}");
+    let events = format!("/api/v1/checkout/{order}/events?routed=true&parts=2&page={token}");
     let first_event = |response: axum::response::Response| async move {
         let mut body = response.into_body();
         let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
@@ -1074,7 +1074,7 @@ async fn a_stream_on_an_old_version_tells_the_page_to_load_again() {
     };
     let current = first_event(wizard.visit(&events, None, None).await).await;
     assert_ne!(current, "reload");
-    let stale = format!("/checkout/{order}/events?routed=true&parts=2&page=an-old-version");
+    let stale = format!("/api/v1/checkout/{order}/events?routed=true&parts=2&page=an-old-version");
     assert_eq!(
         first_event(wizard.visit(&stale, None, None).await).await,
         "reload"

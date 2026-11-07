@@ -681,7 +681,7 @@ mod tests {
             expires_at: 2000,
             updated_at: 1000,
             payments: vec![],
-            payment_link: "http://127.0.0.1:8081/checkout/pay_abc123/share".to_string(),
+            payment_link: "http://127.0.0.1:8081/api/v1/checkout/pay_abc123/share".to_string(),
             scan_range_display: maud::html! { span class="muted" { "-" } },
         }
     }

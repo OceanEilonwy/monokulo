@@ -3,7 +3,7 @@
 //! check), checking and removing a store's domains and turning the
 //! restriction on or off on its settings page, and the warnings its store
 //! page shows - plus [`embed_policy_middleware`], which enforces the
-//! restriction on the public routes (`/api/v1`, `/checkout/{order_id}`).
+//! restriction on the public routes (`/api/v1`, `/api/v1/checkout/{order_id}`).
 
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
@@ -1206,7 +1206,7 @@ mod tests {
             create_order_as(&router, &pk, Some("https://store-home.example"), None).await;
         let (_, keyed_order) = create_order_as(&router, &pk, None, Some(&key)).await;
         let checkout = |order: &serde_json::Value| {
-            format!("/checkout/{}", order["order_id"].as_str().unwrap())
+            format!("/api/v1/checkout/{}", order["order_id"].as_str().unwrap())
         };
 
         // Unrestricted: every order opens as a full page.
@@ -1325,7 +1325,7 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        let checkout = format!("/checkout/{order_id}");
+        let checkout = format!("/api/v1/checkout/{order_id}");
         let checkout_html = || async {
             let page = router
                 .clone()
@@ -1445,7 +1445,7 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        let checkout = format!("/checkout/{order_id}");
+        let checkout = format!("/api/v1/checkout/{order_id}");
         let page = router
             .clone()
             .oneshot(

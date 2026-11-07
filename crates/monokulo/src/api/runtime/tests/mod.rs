@@ -478,11 +478,11 @@ async fn links_carry_the_path_monokulo_is_served_under() {
     assert!(checked > 15, "only {checked} links");
     assert_eq!(
         read["_links"]["mk:checkout"]["href"],
-        format!("/monokulo/checkout/{order_id}")
+        format!("/monokulo/api/v1/checkout/{order_id}")
     );
     assert_eq!(
         read["_links"]["mk:onion-checkout"]["href"],
-        format!("{ONION_URI}/checkout/{order_id}")
+        format!("{ONION_URI}/api/v1/checkout/{order_id}")
     );
     assert_eq!(
         entry["_links"]["mk:onion-api"]["href"],

@@ -154,7 +154,7 @@ async function expectCancelledCheckout(checkout, { javaScript = true } = {}) {
 
 test('cancelling on the POS reaches the customer\'s checkout live, after a reload, and without JavaScript', async ({ page, context, browser }) => {
   // The customer's checkout, open beside the till.
-  const checkoutUrl = `${fixture.base_url}/checkout/${fixture.order_id}`;
+  const checkoutUrl = `${fixture.base_url}/api/v1/checkout/${fixture.order_id}`;
   const checkout = await context.newPage();
   await checkout.goto(checkoutUrl);
   await expect(checkout.locator('#checkout-root')).toHaveAttribute('data-status', 'pending');

@@ -923,7 +923,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
             show_merchant_order_id: true,
         })
         .unwrap();
-    call("/checkout/o_who", None).await.unwrap();
+    call("/api/v1/checkout/o_who", None).await.unwrap();
 
     let store = s.state.log_store.clone().unwrap();
     let finished = |route: &str| {
@@ -990,7 +990,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         api.attributes["store.id"], "c_who",
         "found from the public key"
     );
-    let checkout = finished("/checkout/{order_id}").await;
+    let checkout = finished("/api/v1/checkout/{order_id}").await;
     assert_eq!(
         checkout.attributes["store.id"], "c_who",
         "found from the order"
@@ -1026,7 +1026,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
     );
     assert!(
         !found.contains("GET /api/v1/orders/{order_id}")
-            && !found.contains("GET /checkout/{order_id}"),
+            && !found.contains("GET /api/v1/checkout/{order_id}"),
         "{found}"
     );
 

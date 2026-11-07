@@ -1,4 +1,4 @@
-//! A cap on how many live-update streams (`/checkout/{order_id}/events`,
+//! A cap on how many live-update streams (`/api/v1/checkout/{order_id}/events`,
 //! `/api/v1/orders/{order_id}/events`, `/api/v1/events`) one client may hold
 //! open at once against one store.
 //!

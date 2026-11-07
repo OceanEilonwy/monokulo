@@ -72,7 +72,7 @@ struct Body {
     dashboard: Link<dashboard_order::Path>,
     /// The order's checkout page on this Monokulo's onion address.
     ///
-    /// An absolute URL, `http://….onion/checkout/{order_id}`, present while
+    /// An absolute URL, `http://….onion/api/v1/checkout/{order_id}`, present while
     /// the Monokulo has an onion address, whichever address the order was
     /// read at; absent otherwise.
     ///

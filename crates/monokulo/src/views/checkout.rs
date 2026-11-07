@@ -1,5 +1,5 @@
 //! `http/checkout.rs` - the real, public checkout/payment page
-//! (`GET /checkout/{order_id}`), its "order not found" fallback,
+//! (`GET /api/v1/checkout/{order_id}`), its "order not found" fallback,
 //! and the nav-bearing `/share` wrapper around it.
 //!
 //! **`checkout_page`/`not_found_page` deliberately carry no site nav at
@@ -1322,7 +1322,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/checkout/pay_abc123")
+        PageChrome::from_user(None, "/api/v1/checkout/pay_abc123")
     }
 
     fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
@@ -1389,7 +1389,7 @@ mod tests {
             );
             assert!(
                 html.contains(
-                    r#"<a href="/checkout/pay_abc123?refresh=false">Auto Refresh: ON</a>"#
+                    r#"<a href="/api/v1/checkout/pay_abc123?refresh=false">Auto Refresh: ON</a>"#
                 ),
                 "{html}"
             );
@@ -1435,12 +1435,12 @@ mod tests {
             "auto refresh off must drop the meta refresh, got: {html}"
         );
         assert!(
-            html.contains(r#"<a href="/checkout/pay_abc123?view=compact">Auto Refresh: OFF</a>"#),
+            html.contains(r#"<a href="/api/v1/checkout/pay_abc123?view=compact">Auto Refresh: OFF</a>"#),
             "got: {html}"
         );
         assert!(
             html.contains(
-                r#"action="/checkout/pay_abc123/refund-address?view=compact&amp;refresh=false""#
+                r#"action="/api/v1/checkout/pay_abc123/refund-address?view=compact&amp;refresh=false""#
             ),
             "saving must keep auto refresh off, got: {html}"
         );

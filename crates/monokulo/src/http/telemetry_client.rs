@@ -167,7 +167,7 @@ mod tests {
         assert!(!page_may_report(&db, "", ""), "a page that can't be placed");
         assert!(!page_may_report(&db, "/stores/c1/settings", ""));
         assert!(!page_may_report(&db, "/stores/c1/pos", ""));
-        assert!(!page_may_report(&db, "/checkout/o1", ""));
+        assert!(!page_may_report(&db, "/api/v1/checkout/o1", ""));
         assert!(
             !page_may_report(&db, "/stores/unknown/orders", ""),
             "no store, no reports"
@@ -177,7 +177,7 @@ mod tests {
         for page in [
             "/stores/c1/settings",
             "/monokulo/stores/c1/settings",
-            "/monokulo/checkout/o1",
+            "/monokulo/api/v1/checkout/o1",
         ] {
             assert!(!page_may_report(&db, page, "/monokulo"), "{page}");
         }
@@ -185,8 +185,8 @@ mod tests {
         db.set_client_logging(&engine_protocol::ids::ConnectionId::new("c1"), true)
             .unwrap();
         assert!(page_may_report(&db, "/stores/c1/settings", ""));
-        assert!(page_may_report(&db, "/checkout/o1", ""));
-        assert!(page_may_report(&db, "/monokulo/checkout/o1", "/monokulo"));
+        assert!(page_may_report(&db, "/api/v1/checkout/o1", ""));
+        assert!(page_may_report(&db, "/monokulo/api/v1/checkout/o1", "/monokulo"));
     }
 
     #[test]

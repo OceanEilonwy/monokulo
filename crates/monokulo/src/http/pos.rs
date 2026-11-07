@@ -1893,7 +1893,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("POST")
-                        .uri(format!("/checkout/{order}/refund-address"))
+                        .uri(format!("/api/v1/checkout/{order}/refund-address"))
                         .header("accept", "application/json")
                         .header("content-type", "application/x-www-form-urlencoded")
                         .body(Body::from(format!("refund_address={refund_address}")))
@@ -1991,13 +1991,13 @@ mod tests {
                 ))
         };
 
-        let page = text(get(format!("/checkout/{order}"), false).await.unwrap()).await;
+        let page = text(get(format!("/api/v1/checkout/{order}"), false).await.unwrap()).await;
         assert!(
             page.contains(r#"id="checkout-refresh""#),
             "refreshes while open"
         );
         assert!(!page.contains("data-void"), "the address can be copied");
-        let mut checkout = get(format!("/checkout/{order}/events?fragments=true"), false)
+        let mut checkout = get(format!("/api/v1/checkout/{order}/events?fragments=true"), false)
             .await
             .unwrap()
             .into_body();
@@ -2041,7 +2041,7 @@ mod tests {
 
         // Reloaded, with no JavaScript: told, nothing to pay, and still
         // refreshing for a late payment.
-        let page = text(get(format!("/checkout/{order}"), false).await.unwrap()).await;
+        let page = text(get(format!("/api/v1/checkout/{order}"), false).await.unwrap()).await;
         assert!(
             page.contains("This order was cancelled"),
             "told on a reload"

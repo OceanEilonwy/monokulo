@@ -23,7 +23,7 @@ async function checkoutUrl(request) {
   const response = await request.post(`${fixture.base_url}/__coverage/orders`);
   expect(response.ok()).toBeTruthy();
   const { order_id } = await response.json();
-  return `${fixture.base_url}/checkout/${order_id}`;
+  return `${fixture.base_url}/api/v1/checkout/${order_id}`;
 }
 
 // An order made as the store's website makes one: the API, with its public key.
@@ -247,7 +247,7 @@ test('real frame-only checkout refuses a top-level navigation', async ({ page, r
   // An order the store's website made with its public key, before the store
   // took orders only from its verified websites.
   const { order_id } = await websiteOrder(request, { amount: '0.001', currency: 'XMR' });
-  const url = `${fixture.base_url}/checkout/${order_id}`;
+  const url = `${fixture.base_url}/api/v1/checkout/${order_id}`;
   const restricted = await request.post(`${fixture.base_url}/__coverage/embed/restricted`);
   expect(restricted.status()).toBe(204);
   const top = await page.goto(url);
@@ -319,7 +319,7 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   const siteOrder = (await checkoutUrl(request)).split('/').pop();
   let polled = 0;
   let pollKey;
-  await site.route(`${fixture.base_url}/checkout/${siteOrder}/events*`, route => {
+  await site.route(`${fixture.base_url}/api/v1/checkout/${siteOrder}/events*`, route => {
     if (route.request().frame() !== site.mainFrame()) return route.continue();
     return route.fulfill({ status: 204, body: '' });
   });
@@ -532,7 +532,7 @@ test('real checkout guides a customer who underpays and then sends too much', as
 
   // Another customer's payment is double spent while they watch.
   const spent = (await checkoutUrl(request)).split('/').pop();
-  await page.goto(`${fixture.base_url}/checkout/${spent}`);
+  await page.goto(`${fixture.base_url}/api/v1/checkout/${spent}`);
   await customerSends(request, spent, 1);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'unconfirmed');
   await request.post(`${fixture.base_url}/__coverage/orders/${spent}/double-spend`);
@@ -545,7 +545,7 @@ test('real checkout guides a customer who underpays and then sends too much', as
 
   // And another walks away: the order expires on screen.
   const late = (await checkoutUrl(request)).split('/').pop();
-  await page.goto(`${fixture.base_url}/checkout/${late}`);
+  await page.goto(`${fixture.base_url}/api/v1/checkout/${late}`);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'pending');
   await request.post(`${fixture.base_url}/__coverage/orders/${late}/expired`);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'expired');

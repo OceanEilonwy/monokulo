@@ -625,7 +625,7 @@ impl Section for LoggingConfig {
 /// a reverse proxy serves this instance under (`https://shop.example/monokulo`,
 /// the proxy stripping it before passing a request on), which the API's
 /// links start with (`base::for_request`). No query, fragment or
-/// login, since callers append paths like `/checkout/{order_id}` to it.
+/// login, since callers append paths like `/api/v1/checkout/{order_id}` to it.
 /// Returns it without the trailing `/`. The empty string is not valid here;
 /// an empty setting just means "not set" ([`MonokuloSettings::public_uri`]).
 pub fn validate_public_uri(value: &str) -> Result<String, String> {

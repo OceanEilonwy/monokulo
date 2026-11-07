@@ -733,7 +733,7 @@ async fn create_order(
 }
 
 async fn challenge(State(control): State<Controls>) -> axum::response::Html<String> {
-    let continue_url = format!("/checkout/{}", control.order_id);
+    let continue_url = format!("/api/v1/checkout/{}", control.order_id);
     let view = views::challenge::ChallengePageView {
         // The first valid nonce is 382 at eight bits, so the UI always
         // exercises its second proof batch before continuing.
@@ -1400,7 +1400,7 @@ async fn seed_wallets(
 
 /// Records a fixture order (0.001 XMR, made with the store's key) as
 /// monokulo records the orders it makes: its price, and the store it
-/// belongs to, which is how its checkout page (`/checkout/{order_id}`)
+/// belongs to, which is how its checkout page (`/api/v1/checkout/{order_id}`)
 /// finds the store. `source` names what made it (`pos`, a plugin).
 fn record_order(
     db: &monokulo::db::Db,

@@ -337,7 +337,7 @@ async fn every_static_file_the_pages_reference_is_served_with_its_type() {
             .unwrap(),
     )
     .await;
-    let checkout = format!("/checkout/{}", order["order_id"].as_str().unwrap());
+    let checkout = format!("/api/v1/checkout/{}", order["order_id"].as_str().unwrap());
 
     let mut referenced = std::collections::BTreeSet::new();
     for page in ["/signup", "/login", checkout.as_str()] {
@@ -496,9 +496,9 @@ async fn no_answer_repeats_a_header() {
         ("GET", "/api/v1".into(), Some("sk_0000"), true),
         ("OPTIONS", "/api/v1/orders".into(), None, true),
         ("GET", "/api/v1/openapi.json".into(), None, true),
-        ("GET", format!("/checkout/{order_id}"), None, false),
-        ("GET", format!("/checkout/{order_id}"), None, true),
-        ("GET", format!("/checkout/{order_id}/share"), None, false),
+        ("GET", format!("/api/v1/checkout/{order_id}"), None, false),
+        ("GET", format!("/api/v1/checkout/{order_id}"), None, true),
+        ("GET", format!("/api/v1/checkout/{order_id}/share"), None, false),
         ("GET", "/static/monokulo-client.js".into(), None, true),
         ("GET", script, None, false),
         ("GET", "/".into(), None, false),
@@ -624,7 +624,7 @@ async fn only_the_checkout_refreshes_by_itself() {
         );
     }
     let customer = Request::builder()
-        .uri(format!("/checkout/{order_id}"))
+        .uri(format!("/api/v1/checkout/{order_id}"))
         .body(Body::empty())
         .unwrap();
     let checkout = router.clone().oneshot(customer).await.unwrap();
@@ -2126,7 +2126,7 @@ async fn a_rate_limited_provider_or_an_unreachable_engine_is_a_503_on_every_rout
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/checkout/{order_id}"))
+                .uri(format!("/api/v1/checkout/{order_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )

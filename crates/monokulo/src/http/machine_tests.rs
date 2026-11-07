@@ -208,11 +208,11 @@ async fn every_json_route_answers_its_errors_with_documented_problems() {
         ),
         // The checkout's live updates and refund address, for its script.
         (
-            json("GET", "/checkout/order_nope/events", None, ""),
+            json("GET", "/api/v1/checkout/order_nope/events", None, ""),
             "not-found",
         ),
         (
-            request("POST", "/checkout/order_nope/refund-address")
+            request("POST", "/api/v1/checkout/order_nope/refund-address")
                 .header("accept", "application/json")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from("refund_address=x"))
@@ -220,7 +220,7 @@ async fn every_json_route_answers_its_errors_with_documented_problems() {
             "not-found",
         ),
         (
-            request("POST", &format!("/checkout/{order_id}/refund-address"))
+            request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
                 .header("accept", "application/json")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from("refund_address="))
@@ -228,7 +228,7 @@ async fn every_json_route_answers_its_errors_with_documented_problems() {
             "invalid-refund-address",
         ),
         (
-            request("POST", &format!("/checkout/{order_id}/refund-address"))
+            request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
                 .header("accept", "application/json")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from("refund_address=4notanaddress"))
@@ -236,7 +236,7 @@ async fn every_json_route_answers_its_errors_with_documented_problems() {
             "invalid-refund-address",
         ),
         (
-            request("POST", &format!("/checkout/{order_id}/refund-address"))
+            request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
                 .header("accept", "application/json")
                 .body(Body::from("refund_address=x"))
                 .unwrap(),
@@ -262,7 +262,7 @@ async fn every_json_route_answers_its_errors_with_documented_problems() {
     // The same refund address form without JavaScript still gets the page.
     let page = send(
         &router,
-        request("POST", &format!("/checkout/{order_id}/refund-address"))
+        request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
             .header("content-type", "application/x-www-form-urlencoded")
             .body(Body::from("refund_address="))
             .unwrap(),
@@ -275,7 +275,7 @@ async fn every_json_route_answers_its_errors_with_documented_problems() {
     // And with JavaScript a good address is saved.
     let saved = send(
         &router,
-        request("POST", &format!("/checkout/{order_id}/refund-address"))
+        request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
             .header("accept", "application/json")
             .header("content-type", "application/x-www-form-urlencoded")
             .body(Body::from(format!("refund_address={REFUND_ADDRESS}")))
@@ -323,7 +323,7 @@ async fn without_an_onion_address_there_are_no_onion_links() {
     }
     assert_eq!(
         created["_links"]["mk:checkout"]["href"],
-        format!("/checkout/{order_id}")
+        format!("/api/v1/checkout/{order_id}")
     );
 }
 
@@ -380,11 +380,11 @@ async fn nothing_served_over_tor_names_the_web_address() {
     assert!(!made.contains(WEB_HOST), "{made}");
     let order_id = location.rsplit('/').next().unwrap().to_owned();
     assert!(
-        made.contains(&format!("{ONION}/checkout/{order_id}")),
+        made.contains(&format!("{ONION}/api/v1/checkout/{order_id}")),
         "{made}"
     );
 
-    let checkout = format!("/checkout/{order_id}");
+    let checkout = format!("/api/v1/checkout/{order_id}");
     let reads: Vec<Request<Body>> = vec![
         api_request("GET", "/api/v1", Some(pk), None),
         api_request("GET", "/api/v1", None, None),
@@ -408,7 +408,7 @@ async fn nothing_served_over_tor_names_the_web_address() {
             .header("content-type", "application/x-www-form-urlencoded")
             .body(Body::from(format!("refund_address={REFUND_ADDRESS}")))
             .unwrap(),
-        request("GET", "/checkout/order_nope")
+        request("GET", "/api/v1/checkout/order_nope")
             .body(Body::empty())
             .unwrap(),
         signed_in("GET", &format!("/stores/{}/settings", store.id), ""),

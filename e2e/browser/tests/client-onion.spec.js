@@ -46,8 +46,8 @@ async function monokulo(page, { onion = true } = {}) {
       return route.fulfill({ contentType: 'application/prs.hal-forms+json', headers: CORS, body: JSON.stringify({ _links: links }) });
     }
     if (url.pathname === '/api/v1/orders' && request.method() === 'POST') {
-      const links = { self: { href: '/api/v1/orders/order_1' }, 'mk:checkout': { href: '/checkout/order_1' } };
-      if (onion) links['mk:onion-checkout'] = { href: `${MONOKULO_ONION}/checkout/order_1` };
+      const links = { self: { href: '/api/v1/orders/order_1' }, 'mk:checkout': { href: '/api/v1/checkout/order_1' } };
+      if (onion) links['mk:onion-checkout'] = { href: `${MONOKULO_ONION}/api/v1/checkout/order_1` };
       return route.fulfill({
         status: 201, contentType: 'application/prs.hal-forms+json', headers: { ...CORS, location: '/api/v1/orders/order_1' },
         body: JSON.stringify({ order_id: 'order_1', address: '8addr', xmr_amount_piconero: 1, amount: '1', currency: 'XMR', expires_at: 0, _links: links }),
@@ -56,7 +56,7 @@ async function monokulo(page, { onion = true } = {}) {
     if (url.pathname.endsWith('/events')) {
       return route.fulfill({ contentType: 'text/event-stream', headers: CORS, body: 'retry: 60000\n\nevent: status\ndata: {"status":"pending"}\n\n' });
     }
-    if (url.pathname.startsWith('/checkout/')) {
+    if (url.pathname.startsWith('/api/v1/checkout/')) {
       return route.fulfill({ contentType: 'text/html', body: '<!doctype html><h1>Checkout</h1>' });
     }
     return route.fulfill({ status: 404, headers: CORS, body: '' });
@@ -78,10 +78,10 @@ test('a shop on Tor makes the order and shows the checkout on Monokulo\'s onion 
     return created;
   });
   expect(order.monokulo).toBe(MONOKULO_ONION);
-  expect(order.checkoutUrl).toBe(`${MONOKULO_ONION}/checkout/order_1`);
+  expect(order.checkoutUrl).toBe(`${MONOKULO_ONION}/api/v1/checkout/order_1`);
   expect(order.orderUrl).toBe(`${MONOKULO_ONION}/api/v1/orders/order_1`);
-  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${MONOKULO_ONION}/checkout/order_1`);
-  await expect.poll(() => calls.some(call => call === `GET ${MONOKULO_ONION}/checkout/order_1/events`)).toBe(true);
+  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${MONOKULO_ONION}/api/v1/checkout/order_1`);
+  await expect.poll(() => calls.some(call => call === `GET ${MONOKULO_ONION}/api/v1/checkout/order_1/events`)).toBe(true);
   // The web address was asked only where the onion one is.
   expect(calls.filter(call => call.includes(WEB))).toEqual([`GET ${WEB}/api/v1`]);
   expect(calls).toContain(`POST ${MONOKULO_ONION}/api/v1/orders`);
@@ -91,8 +91,8 @@ test('a shop on Tor showing an order from an earlier visit frames it on the onio
   const calls = await monokulo(page);
   await openShop(page, SHOP_ONION);
   await page.evaluate(() => { window.Monokulo.mount('#pay', 'order_7'); });
-  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${MONOKULO_ONION}/checkout/order_7`);
-  await expect.poll(() => calls.some(call => call === `GET ${MONOKULO_ONION}/checkout/order_7/events`)).toBe(true);
+  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${MONOKULO_ONION}/api/v1/checkout/order_7`);
+  await expect.poll(() => calls.some(call => call === `GET ${MONOKULO_ONION}/api/v1/checkout/order_7/events`)).toBe(true);
   expect(calls.filter(call => call.includes(WEB))).toEqual([`GET ${WEB}/api/v1`]);
 });
 
@@ -100,7 +100,7 @@ test('a shop on the web never looks for the onion address', async ({ page }) => 
   const calls = await monokulo(page);
   await openShop(page, SHOP_WEB);
   const order = await page.evaluate(() => window.Monokulo.createOrder({ publicKey: 'pk_test', amount: '1', currency: 'XMR' }));
-  expect(order.checkoutUrl).toBe(`${WEB}/checkout/order_1`);
+  expect(order.checkoutUrl).toBe(`${WEB}/api/v1/checkout/order_1`);
   expect(calls).toEqual([`POST ${WEB}/api/v1/orders`]);
 });
 
@@ -109,6 +109,6 @@ test('a shop on Tor whose Monokulo has no onion address uses its web address', a
   await openShop(page, SHOP_ONION);
   const order = await page.evaluate(() => window.Monokulo.createOrder({ publicKey: 'pk_test', amount: '1', currency: 'XMR' }));
   expect(order.monokulo).toBe(WEB);
-  expect(order.checkoutUrl).toBe(`${WEB}/checkout/order_1`);
+  expect(order.checkoutUrl).toBe(`${WEB}/api/v1/checkout/order_1`);
   expect(calls).toEqual([`GET ${WEB}/api/v1`, `POST ${WEB}/api/v1/orders`]);
 });

@@ -44,7 +44,7 @@ function challengeServer({ difficulty = 8 } = {}) {
         res.writeHead(201, { 'content-type': 'application/json', location: '/api/v1/orders/order-9', ...cors });
         return res.end(JSON.stringify({
           order_id: 'order-9', address: '8addr', xmr_amount_piconero: 1, amount: '1', currency: 'XMR', expires_at: 0,
-          _links: { self: { href: '/api/v1/orders/order-9' }, 'mk:checkout': { href: '/checkout/order-9' } },
+          _links: { self: { href: '/api/v1/orders/order-9' }, 'mk:checkout': { href: '/api/v1/checkout/order-9' } },
         }));
       }
       res.writeHead(429, { 'content-type': 'application/problem+json', 'monokulo-challenge': `${challenge}; difficulty=${difficulty}`, ...cors });
@@ -67,7 +67,7 @@ test('monokulo-client.js solves an order-creation challenge on its own', async (
       monokulo: `http://checkout.localhost:${port}`, publicKey: 'pk', amount: 1, currency: 'XMR',
     }), port);
     expect(order.orderId).toBe('order-9');
-    expect(order.checkoutUrl).toBe(`http://checkout.localhost:${port}/checkout/order-9`);
+    expect(order.checkoutUrl).toBe(`http://checkout.localhost:${port}/api/v1/checkout/order-9`);
     expect(state.orderKeys).toEqual(['Bearer pk', 'Bearer pk']);
     expect(state.orderAttempts.length).toBe(2);
     expect(state.orderAttempts[0]).toBeNull();

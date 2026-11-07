@@ -299,7 +299,7 @@ async fn spawn_webhook_receiver() -> Result<WebhookReceiver, ConnectFlowError> {
 
 /// The result of [`create_order`]: a real order seeded through monokulo,
 /// plus the checkout URL a WooCommerce customer would be redirected to next
-/// (the order's `mk:checkout` link, `/checkout/{order_id}` - monokulo's own
+/// (the order's `mk:checkout` link, `/api/v1/checkout/{order_id}` - monokulo's own
 /// checkout page, `monokulo/src/http/checkout.rs::checkout_page` - see
 /// [`create_order`]'s own doc comment for why this is monokulo's URL, not
 /// the engine's).
@@ -1515,7 +1515,7 @@ mod tests {
         assert_eq!(order.xmr_amount_piconero, 500_000_000_000);
         assert_eq!(
             order.checkout_url,
-            format!("{monokulo_base_url}/checkout/{}", order.order_id),
+            format!("{monokulo_base_url}/api/v1/checkout/{}", order.order_id),
             "checkout_url is the order's mk:checkout link, resolved against where the plugin called"
         );
         assert_eq!(

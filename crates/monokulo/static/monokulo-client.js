@@ -2,7 +2,7 @@
  * monokulo-client.js - the thin embed library for a static merchant site.
  * It talks to monokulo's own API (`POST /api/v1/orders`, with the store's
  * public key as `Authorization: Bearer pk_...`), never the engine, and
- * frames the order's checkout page (`/checkout/{order_id}`). Deliberately
+ * frames the order's checkout page (`/api/v1/checkout/{order_id}`). Deliberately
  * dependency-free, no build step, ES5-ish syntax: it has to run unmodified
  * on an arbitrary third-party page (a GitHub Pages site, most plausibly)
  * that whoever maintains this project does not control the toolchain of.
@@ -321,7 +321,7 @@
     }
 
     try {
-      new URL(monokulo + "/checkout/", global.location.href);
+      new URL(monokulo + "/api/v1/checkout/", global.location.href);
     } catch (e) {
       throw new Error("Monokulo.mount: monokulo (the Monokulo address) is not a valid URL: " + monokulo);
     }
@@ -445,7 +445,7 @@
     // `monokulo`: the address this page calls Monokulo at (`reach`).
     function start(monokulo) {
       if (destroyed) return;
-      checkoutUrl = known.checkoutUrl || monokulo + "/checkout/" + encodeURIComponent(orderId);
+      checkoutUrl = known.checkoutUrl || monokulo + "/api/v1/checkout/" + encodeURIComponent(orderId);
       orderUrl = known.orderUrl || monokulo + "/api/v1/orders/" + encodeURIComponent(orderId);
       iframe.src = checkoutUrl + (query.length ? "?" + query.join("&") : "");
       if (typeof EventSource === "function") {

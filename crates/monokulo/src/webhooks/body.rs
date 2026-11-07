@@ -401,11 +401,11 @@ mod tests {
             assert_eq!(links["mk:dashboard-order"]["type"], "text/html");
             assert_eq!(
                 links["mk:checkout"]["href"],
-                "https://pay.example/monokulo/checkout/5f01c9a7"
+                "https://pay.example/monokulo/api/v1/checkout/5f01c9a7"
             );
             assert_eq!(
                 links["mk:onion-checkout"]["href"],
-                "http://abc.onion/checkout/5f01c9a7"
+                "http://abc.onion/api/v1/checkout/5f01c9a7"
             );
         }
         let web_only: serde_json::Value = serde_json::from_str(&body_v2(
@@ -421,7 +421,7 @@ mod tests {
         assert!(web_only["_links"]["mk:onion-checkout"].is_null());
         assert_eq!(
             web_only["_links"]["mk:checkout"]["href"],
-            "https://pay.example/checkout/5f01c9a7"
+            "https://pay.example/api/v1/checkout/5f01c9a7"
         );
         let neither: serde_json::Value = serde_json::from_str(&body_v2(
             &event("order.paid"),
