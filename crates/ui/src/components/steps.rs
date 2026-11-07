@@ -202,10 +202,14 @@ component! {
         /// Just the track and its line, with no box around them.
         #[default(false)]
         plain: bool,
+        /// Each step a flat bar over its name, not a dot. A step's `icon`
+        /// fills its bar: an SVG of class `mk-track-fill`.
+        #[default(false)]
+        bars: bool,
         rest: Attrs,
     }
     html {
-        div class=join["mk-stage", { "state-" (state) } if state] data-size="compact" if compact data-plain="" if plain ..rest {
+        div class=join["mk-stage", { "state-" (state) } if state] data-size="compact" if compact data-plain="" if plain data-bars="" if bars ..rest {
             ol class="mk-track" data-orientation="vertical" if vertical aria-label=(label) {
                 @for step in steps {
                     li class=join[{ "step-" (step.progress) }, { "state-" (step.state) } if step.state] {
@@ -432,6 +436,9 @@ component! {
         /// POS): smaller type, the same shape.
         #[default(false)]
         compact: bool,
+        /// Just the time, in the type around it: no bar and no note.
+        #[default(false)]
+        inline: bool,
         rest: Attrs,
     }
     behaviour "countdown.behaviour.ts" {
@@ -448,7 +455,7 @@ component! {
         ref root,
     }
     html {
-        div class="mk-countdown" data-tone=(tone) data-tone=(b.now) data-size="compact" if compact ..rest ref=root {
+        div class="mk-countdown" data-tone=(tone) data-tone=(b.now) data-size="compact" if compact data-inline="" if inline ..rest ref=root {
             p class="mk-countdown-line" {
                 span {
                     strong hidden="" if enhanced { (left) }

@@ -75,7 +75,8 @@ impl Feature {
         match self {
             Feature::Amount => &["bare"],
             Feature::Qr => &["small", "medium", "large"],
-            Feature::Address => &["short"],
+            Feature::Address => &["short", "plain"],
+            Feature::Countdown => &["inline"],
             Feature::Status => &["icon", "label", "track"],
             Feature::Message => &["full"],
             Feature::Progress => &["text"],

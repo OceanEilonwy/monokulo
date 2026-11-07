@@ -21,10 +21,10 @@ const DETAILED: &str = r#"{{merchant}}
 <div class="pay-grid">
   <div class="pay-col-primary">
     {{amount bare}}
-    <div class="pay-sub">{{fiat}}{{countdown}}</div>
+    <div class="pay-sub">{{fiat}}{{countdown inline}}</div>
     {{status track}}
     {{qr}}
-    {{address}}
+    {{address plain}}
     {{message full}}
   </div>
   <div class="pay-col-secondary">

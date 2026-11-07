@@ -321,8 +321,10 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     as a payment confirms. The fill is an SVG's own attribute, as the page's policy allows
     no `style`. Detailed shows no "Payment seen" words; Tiny and Compact keep their line.
 65. **New template options, add-only:** `{{status track}}`, `{{message full}}` (what's gone
-    wrong, under the address), `{{progress text}}` and `{{payments folded}}`. `{{status}}`,
-    `{{progress}}` and `{{payments}}` are as they were for pages already written.
+    wrong, under the address), `{{progress text}}`, `{{payments folded}}`, `{{countdown
+    inline}}` and `{{address plain}}`. What was there is as it was for pages already
+    written. The looks they need are the components' own variants (`bars`, `inline`,
+    `plain`, the copy icon), as the checkout's CSS doesn't restyle a component from outside.
 66. **The wording is short, and asks less of the payer:** "Send the remaining amount",
     "Payment seen", "Payment confirmed (2 of 10)". The "Check your wallet shows..." line is
     gone from every page. The owner's call, with decision 22's concern about a second

@@ -56,7 +56,7 @@ component! {
         ref value,
     }
     html {
-        div class="mk-copy" {
+        div class="mk-copy" data-icon="" if icon {
             span class="mk-copy-value mk-mono" data-copy-value tabindex="0" aria-labelledby=[labelled_by] ref=value { (value) }
             @if enhanced {
                 @if let Some(preview) = b.preview {
@@ -170,6 +170,9 @@ component! {
         /// copy it with.
         #[default(false)]
         void: bool,
+        /// With no box around it, and its two ends padded evenly all round.
+        #[default(false)]
+        plain: bool,
         rest: Attrs,
     }
     behaviour "grouped-value.behaviour.ts" {
@@ -183,7 +186,7 @@ component! {
         ref shown,
     }
     html {
-        div class="mk-grouped" data-void="" if void ..rest {
+        div class="mk-grouped" data-void="" if void data-plain="" if plain ..rest {
             span class="visually-hidden" { (value) }
             span class="mk-grouped-value mk-mono" aria-hidden="true" ref=shown {
                 @for group in groups { span { (group) } }

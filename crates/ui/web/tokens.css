@@ -218,6 +218,7 @@
   --space-3xl: 48px;
   /* Badge and step captions on a touch screen's dense rows. */
   --text-2xs: 0.625rem;
+  --text-compact: 0.6875rem;
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;

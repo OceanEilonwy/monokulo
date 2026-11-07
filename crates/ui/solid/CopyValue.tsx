@@ -73,7 +73,7 @@ export function CopyValue(props: CopyValueProps): JSX.Element {
   const b = setup(props);
   const owner = getOwner();
   return (
-    <div class="mk-copy">
+    <div class="mk-copy" data-icon={(props.icon ?? false) ? `` : undefined}>
       <span class="mk-copy-value mk-mono" data-copy-value tabindex="0" aria-labelledby={props.labelled_by} ref={(el) => runWithOwner(owner, () => b.value(el))}>
         {props.value}
       </span>

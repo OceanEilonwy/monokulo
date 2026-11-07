@@ -19,7 +19,7 @@ import type { CountdownTone } from './types';
  * crosses those, never a ticking clock. At zero it sends
  * `mk-countdown-end` for a page script to follow.
  */
-export interface CountdownProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "compact" | "data-size" | "data-tone" | "left" | "note" | "ref" | "remaining" | "soon" | "style" | "suffix" | "tone" | "total" | "urgent"> {
+export interface CountdownProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "compact" | "data-inline" | "data-size" | "data-tone" | "inline" | "left" | "note" | "ref" | "remaining" | "soon" | "style" | "suffix" | "tone" | "total" | "urgent"> {
   /**
    * How long it runs, in seconds: the full bar.
    */
@@ -64,6 +64,11 @@ export interface CountdownProps extends Omit<JSX.IntrinsicElements["div"], "clas
    */
   compact?: boolean;
   /**
+   * Just the time, in the type around it: no bar and no note.
+   * @default false
+   */
+  inline?: boolean;
+  /**
    * `false` renders the server's markup, without the behaviour's (tests).
    * @default true
    */
@@ -81,12 +86,12 @@ export interface CountdownProps extends Omit<JSX.IntrinsicElements["div"], "clas
  * `mk-countdown-end` for a page script to follow.
  */
 export function Countdown(props: CountdownProps): JSX.Element {
-  const rest = omit(props, "total", "remaining", "left", "suffix", "note", "tone", "soon", "urgent", "compact", "enhanced");
+  const rest = omit(props, "total", "remaining", "left", "suffix", "note", "tone", "soon", "urgent", "compact", "inline", "enhanced");
   const enhanced = props.enhanced ?? true;
   const b = setup(props);
   const owner = getOwner();
   return (
-    <div class="mk-countdown" data-tone={enhanced ? b.now() : (props.tone ?? "normal")} data-size={(props.compact ?? false) ? `compact` : undefined} ref={(el) => runWithOwner(owner, () => b.root(el))} {...rest}>
+    <div class="mk-countdown" data-tone={enhanced ? b.now() : (props.tone ?? "normal")} data-size={(props.compact ?? false) ? `compact` : undefined} data-inline={(props.inline ?? false) ? `` : undefined} ref={(el) => runWithOwner(owner, () => b.root(el))} {...rest}>
       <p class="mk-countdown-line">
         <span>
           <strong hidden={enhanced ? `` : undefined}>
