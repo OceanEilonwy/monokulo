@@ -329,7 +329,7 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     payment left to the tick on the faded code and the track.
 67. **Part paid shows what's left in fiat,** the quote times the share of XMR left, and an
     overpaid order's tick is orange, tying in with its coins.
-68. **The default embed for Detailed is 420 by 880,** down from 1000. The tallest state on
+68. **The default embed for Detailed is 420 by 880,** down from 900. The tallest state on
     the way to Paid needs about 836px, and a verified domain and description about 38px
     more. Part paid, a reversal and the like may go past that and scroll inside the frame,
     as an open payments table does. An existing embed that names its height keeps it.
