@@ -48,7 +48,8 @@ export interface InputProps extends Omit<JSX.IntrinsicElements["input"], "action
   size?: ControlSize;
   /**
    * Inside its right edge: `IconButton`s (scan a code, choose a
-   * file). Their own names say what they do.
+   * file), or a worded `Button` (Save), shown compact. Their own
+   * names say what they do.
    */
   actions?: JSX.Element;
 }

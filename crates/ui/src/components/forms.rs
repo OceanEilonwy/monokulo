@@ -273,7 +273,8 @@ component! {
         disabled: bool,
         size: Option<ControlSize>,
         /// Inside its right edge: `IconButton`s (scan a code, choose a
-        /// file). Their own names say what they do.
+        /// file), or a worded `Button` (Save), shown compact. Their own
+        /// names say what they do.
         actions: Option<Slot>,
         /// More attributes: `minlength`, `inputmode`, `data-saved`, `fx-*`.
         rest: Attrs,
@@ -329,6 +330,15 @@ pub(super) fn input_examples() -> Vec<(&'static str, Input)> {
                     Slot::from(crate::IconButton::new("Scan refund QR", "⌗")),
                     Slot::from(crate::IconButton::new("Choose QR image", "▣")),
                 ])),
+        ),
+        (
+            "With a Save inside",
+            Input::new("refund_address_plain")
+                .label("Refund address")
+                .placeholder("Your Monero refund address")
+                .actions(Slot::from(
+                    crate::Button::new("Save").kind(crate::ButtonType::Submit),
+                )),
         ),
     ]
 }

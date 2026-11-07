@@ -3199,6 +3199,39 @@
     "title": "With actions inside"
   },
   {
+    "component": "Input",
+    "html": "<span class=\"mk-input-with-actions\"><input class=\"mk-input\" type=\"text\" name=\"refund_address_plain\" placeholder=\"Your Monero refund address\" aria-label=\"Refund address\"><span class=\"mk-input-actions\"><button class=\"mk-btn\" type=\"submit\">Save</button></span></span>",
+    "props": {
+      "actions": {
+        "$slot": [
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Save"
+                ]
+              },
+              "disabled": false,
+              "kind": "submit"
+            }
+          }
+        ]
+      },
+      "disabled": false,
+      "invalid": false,
+      "kind": "text",
+      "label": "Refund address",
+      "name": "refund_address_plain",
+      "placeholder": "Your Monero refund address",
+      "readonly": false,
+      "required": false
+    },
+    "title": "With a Save inside"
+  },
+  {
     "component": "MoneyInput",
     "html": "<span class=\"mk-money\" data-island=\"MoneyInput\" data-props=\"{&quot;decimals&quot;:2}\"><input class=\"mk-input\" type=\"text\" inputmode=\"decimal\" autocomplete=\"off\" name=\"book_usd\" value=\"1250.5\" aria-label=\"Amount in USD\" data-mk=\"1\"><span class=\"mk-money-unit\">USD</span></span>",
     "props": {
