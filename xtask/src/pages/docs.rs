@@ -1140,6 +1140,8 @@ mod tests {
                 "api-sec api-wide api-resource",
                 "api-sec api-op",
                 "api-sec api-op",
+                // Without the script: a plain iframe.
+                "api-sec",
             ]
         );
         assert!(article.contains(
