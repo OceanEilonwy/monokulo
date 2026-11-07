@@ -1,0 +1,1 @@
+t<section class="a">{{status}}{{if awaiting}}<p>{{amount}} {at}}</p>{{qr small}}k{address short}}{{end}}</section>{st<section class="a">{{status}}{{if awaiting}}<p>{{amount}} {at}}</p>{{qr small}}{{address short}}{{end}}</section>
