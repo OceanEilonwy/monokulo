@@ -433,13 +433,15 @@ test('the client asks for a layout and sizes its frame to suit', async ({ page, 
   // What the frame's asked to be, rather than what it computes to.
   await expect(frame).toHaveAttribute('style', /width: 280px/);
   await expect(frame).toHaveAttribute('style', /height: 152px/);
-  // With no layout asked for, the frame fits Detailed's way to Paid.
+  // With no layout asked for, the frame starts at Detailed's way to Paid, then
+  // follows the height the checkout reports (monokulo:resize), so only its
+  // width is fixed here.
   await page.setContent('<div id="mount"></div>');
   await page.evaluate(({ base_url, public_key, order_id }) => {
     window.Monokulo.mount('#mount', { orderId: order_id, monokulo: base_url, publicKey: public_key });
   }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: url.split('/').pop() });
   await expect(page.locator('#mount iframe')).toHaveAttribute('style', /width: 420px/);
-  await expect(page.locator('#mount iframe')).toHaveAttribute('style', /height: 880px/);
+  await expect(page.locator('#mount iframe')).toHaveAttribute('style', /height: \d+px/);
 });
 
 test('real checkout follows the customer payment from the mempool to confirmed and lists it', async ({ page, request }) => {

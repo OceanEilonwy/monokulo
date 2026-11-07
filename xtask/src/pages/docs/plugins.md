@@ -139,7 +139,7 @@ now.
 
 ### 3. Send the customer to pay
 
-To the order's `mk:checkout` link (`/checkout/{order_id}`, resolved against
+To the order's `mk:checkout` link (`/api/v1/checkout/{order_id}`, resolved against
 the address you call Monokulo at), or show that page in an iframe on yours.
 
 A customer browsing the shop's own `.onion` address must stay on Tor: send

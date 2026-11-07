@@ -123,8 +123,8 @@ whichever address you called. Without one they're absent.
   "order_id": "order_9f3c…",
   "_links": {
     "self": { "href": "/api/v1/orders/order_9f3c…" },
-    "mk:checkout": { "href": "/checkout/order_9f3c…", "type": "text/html" },
-    "mk:onion-checkout": { "href": "http://2gzy…wid.onion/checkout/order_9f3c…", "type": "text/html" }
+    "mk:checkout": { "href": "/api/v1/checkout/order_9f3c…", "type": "text/html" },
+    "mk:onion-checkout": { "href": "http://2gzy…wid.onion/api/v1/checkout/order_9f3c…", "type": "text/html" }
   }
 }
 ```

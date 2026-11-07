@@ -170,3 +170,65 @@ const checkout = Monokulo.mount("#pay", order, {
 // later
 checkout.destroy();
 ```
+
+## Without the script: a plain iframe
+
+The script is optional. The checkout is a page for people at
+`/api/v1/checkout/{order_id}`, and an `<iframe>` on it is all a page needs. It
+takes no key and works without JavaScript; the script only adds `onPaid` and
+`onExpired` callbacks. An order links to its page as `mk:checkout` (and
+`mk:onion-checkout` while Monokulo has an onion address): build the URL from
+that link, not by hand.
+
+```html A plain frame
+<iframe
+  title="Monero payment"
+  src="https://pay.example/api/v1/checkout/order_…?theme=light"
+  sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+  allow="camera"
+  referrerpolicy="strict-origin"
+  style="width:100%;border:0;height:880px"></iframe>
+```
+
+- `sandbox`: the page's script, its refund form and its links out need exactly these.
+- `allow="camera"`: the refund form scans a QR code of an address.
+- `referrerpolicy="strict-origin"`: says which site is framing the page, even from a page that sends no `Referer`. A store with verified domains only lets those sites frame it (`Content-Security-Policy: frame-ancestors`, set on its Domains tab); anywhere else the frame is refused.
+- Height: start from the layout's size: `tiny` 152px, `compact` 380px, `detailed` 880px. The page is cross-origin, so your page can't measure it, but it tells you: inside a frame it posts `{ type: "monokulo:resize", height }` to its parent whenever its height changes, and nothing else. Apply it to the frame it came from, ignoring any other source:
+
+```js Follow the checkout's height
+window.addEventListener("message", (event) => {
+  const frame = document.querySelector("#pay iframe");
+  const data = event.data;
+  if (!frame || event.source !== frame.contentWindow) return;
+  if (data?.type === "monokulo:resize" && Number.isFinite(data.height) && data.height > 0) {
+    frame.style.height = Math.min(Math.ceil(data.height), 5000) + "px";
+  }
+});
+```
+
+- A site with a Content-Security-Policy needs `frame-src` for the Monokulo address, and nothing else.
+
+**Query options**, all optional:
+
+| Name | Values | Description |
+| --- | --- | --- |
+| `view` | `detailed`, `compact`, `tiny` | The layout. Left out, the store's own choice (its Checkout tab). |
+| `theme` | `light`, `dark` | Pins the theme. Left out, the device's. |
+| `refund` | `false` | Hides the refund-address form. |
+| `refresh` | `false` | Without JavaScript, stops the page reloading itself every minute. |
+
+**Routes**: all under `/api/v1/checkout/{order_id}`. The order id is
+unguessable and whoever has it may pay, so there is no key; they are pages for
+people, not the JSON API.
+
+| Route | What it is |
+| --- | --- |
+| `GET /api/v1/checkout/{order_id}` | The page: the amount, the address and its QR code, live progress. |
+| `GET /api/v1/checkout/{order_id}/events` | Its live updates, as server-sent events. |
+| `POST /api/v1/checkout/{order_id}/refund-address` | Where its refund form posts. |
+| `GET /api/v1/checkout/{order_id}/share` | The link a merchant sends: the page in a frame inside Monokulo's own. |
+
+Without the script nothing tells the page it was paid. Ship on the signed
+`order.paid` webhook, or read the order (`GET /api/v1/orders/{order_id}`) with
+the store's secret key; a shop can poll its own server for that and reload the
+page once it answers.

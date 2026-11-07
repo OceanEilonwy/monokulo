@@ -3,7 +3,7 @@
 //! id is unguessable, and whoever has it may pay).
 //!
 //! The page and the routes beside it all live under `/api/v1/checkout/{order_id}`
-//! and are documented in `docs/embedding-the-checkout.md`:
+//! and are documented on the Webpages page (docs.monokulo.com/webpages/, `xtask/src/pages/docs/webpages.md`):
 //!
 //! - `GET  /api/v1/checkout/{order_id}`: the page (this resource).
 //! - `GET  /api/v1/checkout/{order_id}/events`: its live updates, as server-sent
@@ -26,5 +26,5 @@ api::resource!(
     rel = "checkout",
     params(order_id: OrderId),
     kind = page,
-    doc = "The page the payer pays on: the amount, the address and its QR code, and live progress.\n\nSend the payer there, or show it in a frame on the shop's page: an `<iframe src=\"…/api/v1/checkout/{order_id}?theme=light\">` is all it takes (`monokulo-client.js` adds status callbacks on top). It works without JavaScript.\n\nQuery options, all optional: `view=detailed|compact|tiny` (the layout; the store's own choice when left out), `theme=light|dark` (pinned to match the shop; the customer's device when left out), `refund=false` (hide the refund address form), `refresh=false` (a page without JavaScript stops reloading itself).\n\nBeside it: `GET …/events` (live updates as server-sent events), `POST …/refund-address` (the refund form's target) and `GET …/share` (the page inside Monokulo's own, to send to a payer). A frame needs `sandbox=\"allow-same-origin allow-scripts allow-forms allow-popups\"` and `allow=\"camera\"` (to scan a refund QR code), and its `Referer` should say the shop's origin (`referrerpolicy=\"strict-origin\"`): a store with verified domains only lets those sites frame it.\n\nFull details: `docs/embedding-the-checkout.md`."
+    doc = "The page the payer pays on: the amount, the address and its QR code, and live progress.\n\nSend the payer there, or show it in a frame on the shop's page: an `<iframe src=\"…/api/v1/checkout/{order_id}?theme=light\">` is all it takes (`monokulo-client.js` adds status callbacks on top). It works without JavaScript.\n\nQuery options, all optional: `view=detailed|compact|tiny` (the layout; the store's own choice when left out), `theme=light|dark` (pinned to match the shop; the customer's device when left out), `refund=false` (hide the refund address form), `refresh=false` (a page without JavaScript stops reloading itself).\n\nBeside it: `GET …/events` (live updates as server-sent events), `POST …/refund-address` (the refund form's target) and `GET …/share` (the page inside Monokulo's own, to send to a payer). A frame needs `sandbox=\"allow-same-origin allow-scripts allow-forms allow-popups\"` and `allow=\"camera\"` (to scan a refund QR code), and its `Referer` should say the shop's origin (`referrerpolicy=\"strict-origin\"`): a store with verified domains only lets those sites frame it.\n\nFull details: docs.monokulo.com/webpages/."
 );
