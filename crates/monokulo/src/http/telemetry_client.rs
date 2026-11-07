@@ -186,7 +186,11 @@ mod tests {
             .unwrap();
         assert!(page_may_report(&db, "/stores/c1/settings", ""));
         assert!(page_may_report(&db, "/api/v1/checkout/o1", ""));
-        assert!(page_may_report(&db, "/monokulo/api/v1/checkout/o1", "/monokulo"));
+        assert!(page_may_report(
+            &db,
+            "/monokulo/api/v1/checkout/o1",
+            "/monokulo"
+        ));
     }
 
     #[test]

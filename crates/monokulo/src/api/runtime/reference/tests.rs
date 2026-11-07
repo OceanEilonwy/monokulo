@@ -121,7 +121,10 @@ fn the_document_holds_what_the_api_promises(written: &Reference) {
         }
     }
     // The pages the API links are in it, as HTML.
-    for page in ["/api/v1/checkout/{order_id}", "/stores/{id}/orders/{order_id}"] {
+    for page in [
+        "/api/v1/checkout/{order_id}",
+        "/stores/{id}/orders/{order_id}",
+    ] {
         assert!(
             !document["paths"][page]["get"]["responses"]["200"]["content"]["text/html"].is_null(),
             "{page}"

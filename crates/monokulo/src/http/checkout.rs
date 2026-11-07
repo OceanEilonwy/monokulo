@@ -1662,7 +1662,9 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/checkout/{order_id}?view=compact&refund=false"))
+                    .uri(format!(
+                        "/api/v1/checkout/{order_id}?view=compact&refund=false"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1715,7 +1717,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/v1/checkout/{order_id}/refund-address?view=detailed"))
+                    .uri(format!(
+                        "/api/v1/checkout/{order_id}/refund-address?view=detailed"
+                    ))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("refund_address=not-an-address"))
                     .unwrap(),
@@ -2433,7 +2437,10 @@ mod tests {
         let router = build_router(state);
 
         // The checkout and the payment link that frames it.
-        for uri in ["/api/v1/checkout/nonexistent", "/api/v1/checkout/nonexistent/share"] {
+        for uri in [
+            "/api/v1/checkout/nonexistent",
+            "/api/v1/checkout/nonexistent/share",
+        ] {
             let response = router
                 .clone()
                 .oneshot(

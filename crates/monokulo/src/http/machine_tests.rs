@@ -220,26 +220,35 @@ async fn every_json_route_answers_its_errors_with_documented_problems() {
             "not-found",
         ),
         (
-            request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
-                .header("accept", "application/json")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from("refund_address="))
-                .unwrap(),
+            request(
+                "POST",
+                &format!("/api/v1/checkout/{order_id}/refund-address"),
+            )
+            .header("accept", "application/json")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("refund_address="))
+            .unwrap(),
             "invalid-refund-address",
         ),
         (
-            request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
-                .header("accept", "application/json")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from("refund_address=4notanaddress"))
-                .unwrap(),
+            request(
+                "POST",
+                &format!("/api/v1/checkout/{order_id}/refund-address"),
+            )
+            .header("accept", "application/json")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("refund_address=4notanaddress"))
+            .unwrap(),
             "invalid-refund-address",
         ),
         (
-            request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
-                .header("accept", "application/json")
-                .body(Body::from("refund_address=x"))
-                .unwrap(),
+            request(
+                "POST",
+                &format!("/api/v1/checkout/{order_id}/refund-address"),
+            )
+            .header("accept", "application/json")
+            .body(Body::from("refund_address=x"))
+            .unwrap(),
             "invalid-request",
         ),
         // A merchant who isn't the admin, on the admin's routes.
@@ -262,10 +271,13 @@ async fn every_json_route_answers_its_errors_with_documented_problems() {
     // The same refund address form without JavaScript still gets the page.
     let page = send(
         &router,
-        request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("refund_address="))
-            .unwrap(),
+        request(
+            "POST",
+            &format!("/api/v1/checkout/{order_id}/refund-address"),
+        )
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from("refund_address="))
+        .unwrap(),
     )
     .await;
     assert!(page.headers()["content-type"]
@@ -275,11 +287,14 @@ async fn every_json_route_answers_its_errors_with_documented_problems() {
     // And with JavaScript a good address is saved.
     let saved = send(
         &router,
-        request("POST", &format!("/api/v1/checkout/{order_id}/refund-address"))
-            .header("accept", "application/json")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from(format!("refund_address={REFUND_ADDRESS}")))
-            .unwrap(),
+        request(
+            "POST",
+            &format!("/api/v1/checkout/{order_id}/refund-address"),
+        )
+        .header("accept", "application/json")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(format!("refund_address={REFUND_ADDRESS}")))
+        .unwrap(),
     )
     .await;
     assert_eq!(saved.status(), StatusCode::OK);

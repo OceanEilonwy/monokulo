@@ -1991,16 +1991,24 @@ mod tests {
                 ))
         };
 
-        let page = text(get(format!("/api/v1/checkout/{order}"), false).await.unwrap()).await;
+        let page = text(
+            get(format!("/api/v1/checkout/{order}"), false)
+                .await
+                .unwrap(),
+        )
+        .await;
         assert!(
             page.contains(r#"id="checkout-refresh""#),
             "refreshes while open"
         );
         assert!(!page.contains("data-void"), "the address can be copied");
-        let mut checkout = get(format!("/api/v1/checkout/{order}/events?fragments=true"), false)
-            .await
-            .unwrap()
-            .into_body();
+        let mut checkout = get(
+            format!("/api/v1/checkout/{order}/events?fragments=true"),
+            false,
+        )
+        .await
+        .unwrap()
+        .into_body();
         let mut api_events = api(format!("/api/v1/orders/{order}/events"))
             .await
             .unwrap()
@@ -2041,7 +2049,12 @@ mod tests {
 
         // Reloaded, with no JavaScript: told, nothing to pay, and still
         // refreshing for a late payment.
-        let page = text(get(format!("/api/v1/checkout/{order}"), false).await.unwrap()).await;
+        let page = text(
+            get(format!("/api/v1/checkout/{order}"), false)
+                .await
+                .unwrap(),
+        )
+        .await;
         assert!(
             page.contains("This order was cancelled"),
             "told on a reload"

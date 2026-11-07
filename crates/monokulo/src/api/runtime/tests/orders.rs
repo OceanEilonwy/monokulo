@@ -498,7 +498,12 @@ async fn no_answer_repeats_a_header() {
         ("GET", "/api/v1/openapi.json".into(), None, true),
         ("GET", format!("/api/v1/checkout/{order_id}"), None, false),
         ("GET", format!("/api/v1/checkout/{order_id}"), None, true),
-        ("GET", format!("/api/v1/checkout/{order_id}/share"), None, false),
+        (
+            "GET",
+            format!("/api/v1/checkout/{order_id}/share"),
+            None,
+            false,
+        ),
         ("GET", "/static/monokulo-client.js".into(), None, true),
         ("GET", script, None, false),
         ("GET", "/".into(), None, false),

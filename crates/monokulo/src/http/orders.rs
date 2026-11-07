@@ -2038,7 +2038,9 @@ mod tests {
             "a point-in-time page without JS, never a meta refresh: {html}"
         );
         assert!(
-            html.contains(&format!("http://test.example/api/v1/checkout/{order_id}/share")),
+            html.contains(&format!(
+                "http://test.example/api/v1/checkout/{order_id}/share"
+            )),
             "expected a real absolute payment link, got: {html}"
         );
     }
