@@ -204,7 +204,7 @@ export function Select(props: SelectProps): JSX.Element {
                 )}
               </For>
             </ul>
-            <p class="mk-empty" role="status" hidden={enhanced ? b.matches() : undefined}>
+            <p class="mk-no-match" role="status" hidden={enhanced ? b.matches() : undefined}>
               Nothing matches.
             </p>
           </div>
@@ -424,7 +424,7 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                 )}
               </For>
             </ul>
-            <p class="mk-empty" role="status" hidden={enhanced ? b.matches() : undefined}>
+            <p class="mk-no-match" role="status" hidden={enhanced ? b.matches() : undefined}>
               Nothing matches.
             </p>
           </div>
