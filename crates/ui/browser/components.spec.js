@@ -45,6 +45,18 @@ test('the select supports the keyboard and stays the form field', async ({ page 
   await select.evaluate(el => { el.value = el.options[0].value; el.dispatchEvent(new Event('change', { bubbles: true })); });
   await expect(combobox).toContainText(await select.evaluate(el => el.options[0].dataset.label || el.options[0].text));
   expect(picked).not.toBe(await select.inputValue());
+  // "Nothing matches." only once the find box rules every option out.
+  await combobox.focus();
+  await page.keyboard.press('ArrowDown');
+  const finder = page.getByRole('combobox', { name: 'Find' });
+  await expect(finder).toBeVisible();
+  const empty = page.locator('#book-currency').locator('..').locator('.mk-no-match');
+  await expect(empty).toBeHidden();
+  await finder.fill('Monero');
+  await expect(empty).toBeHidden();
+  await finder.fill('zzz');
+  await expect(empty).toBeVisible();
+  await expect(empty).toHaveText('Nothing matches.');
 });
 
 test('without JavaScript every specimen is native HTML that works', async ({ browser }) => {
