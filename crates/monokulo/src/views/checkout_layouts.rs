@@ -15,59 +15,52 @@ pub enum Layout {
     Tiny,
 }
 
+/// One centred column: who's asking, the amount, where the order stands, the
+/// code, the address, anything that's gone wrong, then everything else.
 const DETAILED: &str = r#"{{merchant}}
 <div class="pay-grid">
-  {{status}}
   <div class="pay-col-primary">
-    {{amount}}
-    {{fiat}}
-    {{countdown}}
+    {{amount bare}}
+    <div class="pay-sub">{{fiat}}{{countdown}}</div>
+    {{status track}}
     {{qr}}
     {{address}}
+    {{message full}}
   </div>
   <div class="pay-col-secondary">
-    {{progress}}
     {{refund}}
-    {{payments}}
+    {{progress text}}
+    {{payments folded}}
     <div class="meta">Order ID: {{order-id}}</div>
   </div>
 </div>
 "#;
 
-const COMPACT: &str = r#"{{merchant}}
-<div class="pay-grid">
-  {{status}}
-  <div class="pay-col-primary">
-    {{amount}}
-    {{fiat}}
-    {{countdown}}
-    {{qr}}
-    {{address}}
+/// A card in a 280 by 380 frame: the amount and status symbol, the code, then
+/// the short address and a few words.
+const COMPACT: &str = r#"<div class="pass">
+  <div class="pass-head">
+    <div class="pass-amounts">{{amount bare}}{{fiat}}</div>
+    {{status icon}}
   </div>
-  <div class="pay-col-secondary">
-    {{refund}}
+  <div class="pass-code">{{qr medium}}</div>
+  <div class="pass-foot">
+    {{address short}}
+    {{message}}
   </div>
 </div>
 "#;
 
-/// Status icon, amounts and code, in a 280px frame. Everything but the code
-/// and address is a word or two, and once nothing is owed a message takes their
-/// place, in the same space, so nothing moves.
+/// The code with everything else beside it, in a 280 by 152 frame. Nothing
+/// moves as the order changes: the same parts stay, in every state.
 const TINY: &str = r#"<div class="tiny">
-  <div class="tiny-head">
-    {{status icon}}
-    <div class="tiny-amounts">{{amount}}{{fiat}}</div>
-  </div>
-  {{if awaiting, double_spend}}
+  {{qr small}}
+  <div class="tiny-side">
+    <div class="tiny-amounts">{{amount bare}}{{fiat}}</div>
+    {{status label}}
     {{message}}
-  {{end}}
-  {{if awaiting}}
-    {{qr small}}
     {{address short}}
-  {{end}}
-  {{if !awaiting}}
-    <div class="tiny-instead">{{message}}</div>
-  {{end}}
+  </div>
 </div>
 "#;
 

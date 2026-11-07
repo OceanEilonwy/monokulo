@@ -119,6 +119,8 @@ pub fn sample_order(
         } else {
             "0.482100000000".to_string()
         },
+        previous_due_xmr: (state.status == OrderStatus::Partial)
+            .then(|| "0.482100000000".to_string()),
         amount_received_xmr: received.to_string(),
         amount: "84.00".to_string(),
         currency: "USD".to_string(),

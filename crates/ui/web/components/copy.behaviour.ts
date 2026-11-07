@@ -11,6 +11,9 @@ export function setup(props: CopyValueProps): CopyValueBehaviour {
   let value: HTMLElement | undefined;
   const [status, setStatus] = createSignal('');
   const [busy, setBusy] = createSignal(false);
+  const [copied, setCopied] = createSignal(false);
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(copiedTimer));
   // The value's text as it is on the page, which a script or a renderer
   // may change in place: set as the behaviour attaches, so `ownedWrite`.
   // Its first value as given: the element's own text takes over once attached.
@@ -29,6 +32,7 @@ export function setup(props: CopyValueProps): CopyValueBehaviour {
 
   return {
     preview,
+    copied,
     status,
     busy,
     reveal: selectAll,
@@ -38,7 +42,11 @@ export function setup(props: CopyValueProps): CopyValueBehaviour {
       // Read at the click: a renderer may have changed it in place.
       const text = value?.textContent ?? props.value;
       try {
-        setStatus((await copyText(text, selectAll)) ? 'Copied' : COPY_BY_HAND);
+        const done = await copyText(text, selectAll);
+        setStatus(done ? 'Copied' : COPY_BY_HAND);
+        setCopied(done);
+        clearTimeout(copiedTimer);
+        if (done) copiedTimer = setTimeout(() => setCopied(false), 1600);
       } finally {
         setBusy(false);
       }

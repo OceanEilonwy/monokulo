@@ -35,6 +35,8 @@ pub static ASSETS: &[Asset] = &[
     asset!(baked "ui.css", ui::assets::COMPONENTS, CSS),
     // The checkout's own (`views::checkout`), which allows no inline style.
     asset!(baked "checkout.css", crate::views::checkout::CHECKOUT_CSS, CSS),
+    // The POS's status artwork, for the checkout's status symbol.
+    asset!(baked "status.css", ui::assets::STATUS, CSS),
     // Partial page updates and server-sent events on the server-rendered
     // pages (`http::fx`). fixi and ssexi are vendored, pinned copies (see
     // their `.SOURCE` files); fx-glue is what they leave out on purpose.

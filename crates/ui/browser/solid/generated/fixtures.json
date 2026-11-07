@@ -2141,7 +2141,7 @@
   },
   {
     "component": "ItemCard",
-    "html": "<article class=\"mk-item-card\"><div class=\"mk-item-card-head\"><div class=\"mk-item-card-name\"><h4 class=\"mk-item-card-title\"><span class=\"mk-item-card-icon\" aria-hidden=\"true\">🌐</span><span>shop.rachelshandicrafts.com</span></h4><span class=\"tag tag-unknown\">Not verified</span></div><div class=\"mk-item-card-actions\"><button class=\"mk-btn\" type=\"button\" data-size=\"compact\">Check again</button><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\" data-size=\"compact\">Remove</button></div></div><p class=\"mk-item-card-meta\">Added 10 min ago · the record isn't there yet</p><div class=\"mk-item-card-body\"><table class=\"table-stack mk-dns-record\"><thead><tr><th scope=\"col\">Type</th><th scope=\"col\">Host</th><th scope=\"col\">Value</th></tr></thead><tbody><tr><td data-label=\"Type\"><code>TXT</code></td><td data-label=\"Host\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the host&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;_monokulo&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">_monokulo</span><!--mk:2--></div></td><td data-label=\"Value\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the value&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">monokulo-verify=6c168c735d314966ac858a7a71de5eaf</span><!--mk:2--></div></td></tr></tbody></table></div></article>",
+    "html": "<article class=\"mk-item-card\"><div class=\"mk-item-card-head\"><div class=\"mk-item-card-name\"><h4 class=\"mk-item-card-title\"><span class=\"mk-item-card-icon\" aria-hidden=\"true\">🌐</span><span>shop.rachelshandicrafts.com</span></h4><span class=\"tag tag-unknown\">Not verified</span></div><div class=\"mk-item-card-actions\"><button class=\"mk-btn\" type=\"button\" data-size=\"compact\">Check again</button><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\" data-size=\"compact\">Remove</button></div></div><p class=\"mk-item-card-meta\">Added 10 min ago · the record isn't there yet</p><div class=\"mk-item-card-body\"><table class=\"table-stack mk-dns-record\"><thead><tr><th scope=\"col\">Type</th><th scope=\"col\">Host</th><th scope=\"col\">Value</th></tr></thead><tbody><tr><td data-label=\"Type\"><code>TXT</code></td><td data-label=\"Host\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the host&quot;,&quot;head&quot;:8,&quot;icon&quot;:false,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;_monokulo&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">_monokulo</span><!--mk:2--></div></td><td data-label=\"Value\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the value&quot;,&quot;head&quot;:8,&quot;icon&quot;:false,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">monokulo-verify=6c168c735d314966ac858a7a71de5eaf</span><!--mk:2--></div></td></tr></tbody></table></div></article>",
     "props": {
       "actions": {
         "$slot": [
@@ -2191,6 +2191,7 @@
                     "props": {
                       "copy_label": "Copy the host",
                       "head": 8,
+                      "icon": false,
                       "tail": 8,
                       "truncate": "end",
                       "value": "_monokulo"
@@ -2206,6 +2207,7 @@
                     "props": {
                       "copy_label": "Copy the value",
                       "head": 8,
+                      "icon": false,
                       "tail": 8,
                       "truncate": "end",
                       "value": "monokulo-verify=6c168c735d314966ac858a7a71de5eaf"
@@ -2337,7 +2339,7 @@
   },
   {
     "component": "DnsRecord",
-    "html": "<table class=\"table-stack mk-dns-record\"><thead><tr><th scope=\"col\">Type</th><th scope=\"col\">Host</th><th scope=\"col\">Value</th></tr></thead><tbody><tr><td data-label=\"Type\"><code>TXT</code></td><td data-label=\"Host\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the host&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;_monokulo&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">_monokulo</span><!--mk:2--></div></td><td data-label=\"Value\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the value&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">monokulo-verify=6c168c735d314966ac858a7a71de5eaf</span><!--mk:2--></div></td></tr></tbody></table>",
+    "html": "<table class=\"table-stack mk-dns-record\"><thead><tr><th scope=\"col\">Type</th><th scope=\"col\">Host</th><th scope=\"col\">Value</th></tr></thead><tbody><tr><td data-label=\"Type\"><code>TXT</code></td><td data-label=\"Host\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the host&quot;,&quot;head&quot;:8,&quot;icon&quot;:false,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;_monokulo&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">_monokulo</span><!--mk:2--></div></td><td data-label=\"Value\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the value&quot;,&quot;head&quot;:8,&quot;icon&quot;:false,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">monokulo-verify=6c168c735d314966ac858a7a71de5eaf</span><!--mk:2--></div></td></tr></tbody></table>",
     "props": {
       "host": {
         "$slot": [
@@ -2346,6 +2348,7 @@
             "props": {
               "copy_label": "Copy the host",
               "head": 8,
+              "icon": false,
               "tail": 8,
               "truncate": "end",
               "value": "_monokulo"
@@ -2361,6 +2364,7 @@
             "props": {
               "copy_label": "Copy the value",
               "head": 8,
+              "icon": false,
               "tail": 8,
               "truncate": "end",
               "value": "monokulo-verify=6c168c735d314966ac858a7a71de5eaf"
@@ -4802,10 +4806,11 @@
   },
   {
     "component": "CopyValue",
-    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy payment reference&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div>",
+    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy payment reference&quot;,&quot;head&quot;:8,&quot;icon&quot;:false,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div>",
     "props": {
       "copy_label": "Copy payment reference",
       "head": 8,
+      "icon": false,
       "tail": 8,
       "truncate": "end",
       "value": "order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789"
@@ -4814,10 +4819,11 @@
   },
   {
     "component": "CopyValue",
-    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy middle example&quot;,&quot;head&quot;:10,&quot;tail&quot;:10,&quot;truncate&quot;:&quot;middle&quot;,&quot;value&quot;:&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div>",
+    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy middle example&quot;,&quot;head&quot;:10,&quot;icon&quot;:false,&quot;tail&quot;:10,&quot;truncate&quot;:&quot;middle&quot;,&quot;value&quot;:&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div>",
     "props": {
       "copy_label": "Copy middle example",
       "head": 10,
+      "icon": false,
       "tail": 10,
       "truncate": "middle",
       "value": "order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789"
@@ -4826,10 +4832,11 @@
   },
   {
     "component": "CopyValue",
-    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy segmented example&quot;,&quot;head&quot;:8,&quot;segments&quot;:&quot;0:8,32:8,-8:8&quot;,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;segments&quot;,&quot;value&quot;:&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div>",
+    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy segmented example&quot;,&quot;head&quot;:8,&quot;icon&quot;:false,&quot;segments&quot;:&quot;0:8,32:8,-8:8&quot;,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;segments&quot;,&quot;value&quot;:&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div>",
     "props": {
       "copy_label": "Copy segmented example",
       "head": 8,
+      "icon": false,
       "segments": "0:8,32:8,-8:8",
       "tail": 8,
       "truncate": "segments",
@@ -4839,10 +4846,11 @@
   },
   {
     "component": "CopyValue",
-    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy wallet id&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;48xQ7v3Rk&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">48xQ7v3Rk</span><!--mk:2--></div>",
+    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy wallet id&quot;,&quot;head&quot;:8,&quot;icon&quot;:false,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;48xQ7v3Rk&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">48xQ7v3Rk</span><!--mk:2--></div>",
     "props": {
       "copy_label": "Copy wallet id",
       "head": 8,
+      "icon": false,
       "tail": 8,
       "truncate": "end",
       "value": "48xQ7v3Rk"

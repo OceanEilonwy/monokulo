@@ -396,12 +396,12 @@ test('tiny shows a code that opens the wallet, then words in its place, live', a
   await expect(page.locator('[data-part="address"]')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy the full address' })).toBeVisible();
   await customerSends(request, orderId, 1);
-  // A region flips by itself: the code goes, and words take its place.
-  await expect(page.locator('#live-message')).toContainText("Don't send it again");
-  await expect(page.locator('[data-part="qr"]')).toHaveCount(0);
-  await expect(page.locator('[data-part="address"]')).toHaveCount(0);
+  // The code fades under a tick, and the address stays to copy.
+  await expect(page.locator('#live-message')).toHaveText('Payment seen');
+  await expect(page.locator('.qr-wrap.is-spent .qr-mark')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy the full address' })).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/confirm`);
-  await expect(page.locator('#live-message')).toHaveText('Paid. Nothing more to do.');
+  await expect(page.locator('#live-message')).toHaveText('Nothing more to do.');
   await expect(page.locator('#checkout-announce')).toHaveText('Paid');
   await captureCoverageStage(page, 'checkout-tiny-paid', test.info());
 });
@@ -411,8 +411,8 @@ test('tiny keeps paying the rest after a partial payment, and says a reversal do
   const orderId = url.split('/').pop();
   await page.goto(`${url}?view=tiny`);
   await customerSends(request, orderId, 0.5);
-  await expect(page.locator('#amount-label')).toHaveText('Still to pay');
-  await expect(page.locator('.qr-note')).toBeVisible();
+  await expect(page.locator('.amount-was')).toContainText('0.001 XMR');
+  await expect(page.locator('#live-message')).toHaveText('Send the remaining amount');
   const reversed = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/double-spend`);
   expect(reversed.ok()).toBe(true);
   await expect(page.locator('#live-message')).toHaveText("A payment was reversed. It doesn't count.");
@@ -432,7 +432,14 @@ test('the client asks for a layout and sizes its frame to suit', async ({ page, 
   await expect(page.frameLocator('#mount iframe').locator('.checkout-tiny')).toBeVisible();
   // What the frame's asked to be, rather than what it computes to.
   await expect(frame).toHaveAttribute('style', /width: 280px/);
-  await expect(frame).toHaveAttribute('style', /height: 380px/);
+  await expect(frame).toHaveAttribute('style', /height: 152px/);
+  // With no layout asked for, the frame fits Detailed's way to Paid.
+  await page.setContent('<div id="mount"></div>');
+  await page.evaluate(({ base_url, public_key, order_id }) => {
+    window.Monokulo.mount('#mount', { orderId: order_id, monokulo: base_url, publicKey: public_key });
+  }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: url.split('/').pop() });
+  await expect(page.locator('#mount iframe')).toHaveAttribute('style', /width: 420px/);
+  await expect(page.locator('#mount iframe')).toHaveAttribute('style', /height: 880px/);
 });
 
 test('real checkout follows the customer payment from the mempool to confirmed and lists it', async ({ page, request }) => {
@@ -467,14 +474,17 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   // The payment is listed by a shortened txid, not yet confirmed.
   await expect(page.locator('[data-table="payments"]')).toContainText(`test-p…`);
-  await expect(page.locator('#progress-bar')).toHaveAttribute('value', '0');
+  await expect(page.locator('#confirmations-label')).toContainText('0 /');
   await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/confirm`);
   // The live stream carries the new state in; no reload.
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
   await expect(page.locator('#status-badge')).toHaveText('Paid');
   // A screen reader hears each change, from an element that stays.
   await expect(page.locator('#checkout-announce')).toHaveText('Paid');
-  await expect(page.locator('#progress-bar')).toHaveAttribute('value', '100');
+  await expect(page.locator('#live-status .step-done')).toHaveCount(3);
+  // The way to Paid fits the embed's default frame, with nothing to scroll.
+  await page.setViewportSize({ width: 420, height: 880 });
+  expect(await page.evaluate(() => document.documentElement.scrollHeight - innerHeight)).toBeLessThanOrEqual(0);
   await captureCoverageStage(page, 'checkout-paid-live', test.info());
   // A final order closes its stream for good rather than reconnecting:
   // once the page has seen the stream end, no amount of time opens another
@@ -507,16 +517,15 @@ test('real checkout guides a customer who underpays and then sends too much', as
   await expect(page.locator('#status-badge')).toHaveText('Partial payment received');
   // The stage: what arrived, then the rest, with a new code that asks for it.
   await expect(page.locator('#live-status .mk-stage.state-partial')).toBeVisible();
-  await expect(page.locator('#amount-label')).toHaveText('Still to pay');
-  await expect(page.locator('#xmr-amount')).toHaveText('0.00075 XMR');
-  await expect(page.locator('.qr-wrap.qr-new svg')).toBeVisible();
+  await expect(page.locator('#xmr-amount')).toContainText('0.00075 XMR');
+  await expect(page.locator('.amount-was')).toContainText('0.001 XMR');
   expect(await code()).not.toBe(first);
   await captureCoverageStage(page, 'checkout-underpaid', test.info());
   // They send the full amount again instead of the rest.
   await customerSends(request, orderId, 1, 20);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'overpaid');
   await expect(page.locator('#status-badge')).toHaveText('Overpaid');
-  await expect(page.locator('#live-status .mk-stage.state-overpaid')).toContainText('(0.00025 XMR extra). Do not send more. Contact the merchant about the extra amount.');
+  await expect(page.locator('#live-message.state-overpaid')).toContainText('(0.00025 XMR extra). Do not send more. Contact the merchant about the extra amount.');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   await expect(page.locator('[data-table="payments"] tbody tr')).toHaveCount(2);
   await captureCoverageStage(page, 'checkout-overpaid', test.info());
@@ -527,7 +536,11 @@ test('real checkout guides a customer who underpays and then sends too much', as
   await customerSends(request, spent, 1);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'unconfirmed');
   await request.post(`${fixture.base_url}/__coverage/orders/${spent}/double-spend`);
-  await expect(page.locator('#live-status .mk-stage.state-double-spend')).toBeVisible();
+  await expect(page.locator('#live-message.state-double-spend')).toBeVisible();
+  // What's gone wrong can run past a frame, which scrolls to show it all.
+  await page.setViewportSize({ width: 420, height: 600 });
+  expect(await page.evaluate(() => { scrollTo(0, 100000); return scrollY; })).toBeGreaterThan(0);
+  await page.setViewportSize({ width: 1280, height: 720 });
   await captureCoverageStage(page, 'checkout-double-spend', test.info());
 
   // And another walks away: the order expires on screen.
@@ -536,6 +549,6 @@ test('real checkout guides a customer who underpays and then sends too much', as
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'pending');
   await request.post(`${fixture.base_url}/__coverage/orders/${late}/expired`);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'expired');
-  await expect(page.locator('#live-status .mk-stage.state-expired')).toBeVisible();
+  await expect(page.locator('#live-message.state-expired')).toBeVisible();
   await captureCoverageStage(page, 'checkout-expired', test.info());
 });

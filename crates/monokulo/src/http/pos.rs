@@ -2033,10 +2033,7 @@ mod tests {
         assert_eq!(live["status"], "cancelled");
         assert_eq!(live["is_terminal"], false);
         assert!(fragments.contains("This order was cancelled"), "told live");
-        assert!(
-            fragments.contains("data-void"),
-            "the address struck through live"
-        );
+        assert!(fragments.contains("data-spent"), "the address muted live");
         let api_live =
             next_named(&mut api_events, &mut api_pending, &mut api_parser, "order").await;
         assert_eq!(api_live["status"], "cancelled");
@@ -2050,7 +2047,7 @@ mod tests {
             "told on a reload"
         );
         assert!(page.contains("qr-wrap is-spent"), "the code faded");
-        assert!(page.contains("data-void"), "the address struck through");
+        assert!(page.contains("data-spent"), "the address muted");
         assert!(
             page.contains(r#"id="checkout-refresh""#),
             "refreshes while the engine watches"

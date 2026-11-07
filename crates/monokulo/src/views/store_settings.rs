@@ -749,10 +749,10 @@ fn layout_thumb(layout: super::checkout_layouts::Layout) -> Markup {
                     (line("70")) (big("44")) (code("s")) (line("80")) (line("80")) (line("60"))
                 },
                 Layout::Compact => {
-                    (line("60")) (big("40")) (code("m")) (line("70"))
+                    (big("40")) (code("m")) (line("60")) (line("70"))
                 },
                 Layout::Tiny => {
-                    (big("40")) (code("l"))
+                    (code("s")) (big("40")) (line("60"))
                 },
             }
         }
@@ -762,19 +762,21 @@ fn layout_thumb(layout: super::checkout_layouts::Layout) -> Markup {
 /// "Layout": what customers see when a store's site shows its checkout.
 fn layout_card(store: &StoreSettingsData) -> Markup {
     use super::checkout_layouts::Layout;
-    let choice = |layout: Layout| match layout {
+    let choice = |layout: Layout| {
+        match layout {
         Layout::Detailed => (
             "Detailed",
             "Everything, including refund address and payments.",
         ),
         Layout::Compact => (
             "Compact",
-            "Status, amount, code and address, for a side panel or modal.",
+            "Status symbol, amounts, code and short address. Fits a 280 by 380 frame.",
         ),
         Layout::Tiny => (
             "Tiny",
-            "Status icon, amounts, code and short address. Fits a 280px frame.",
+            "The code with the amounts, status and short address beside it. Fits a 280 by 152 frame.",
         ),
+    }
     };
     let shown = store.shown("checkout_layout", store.checkout_layout.name());
     let custom_thumb_and_help = html! {

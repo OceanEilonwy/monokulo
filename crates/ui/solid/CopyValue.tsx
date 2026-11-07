@@ -49,6 +49,12 @@ export interface CopyValueProps {
    */
   segments?: string;
   /**
+   * The button as a copy symbol, a tick for a while after a copy, for
+   * a small frame. `copy_label` still names it.
+   * @default false
+   */
+  icon?: boolean;
+  /**
    * `false` renders the server's markup, without the behaviour's (tests).
    * @default true
    */
@@ -81,7 +87,22 @@ export function CopyValue(props: CopyValueProps): JSX.Element {
             null
           )}
           <button class="mk-btn" data-size="compact" type="button" aria-label={(props.copy_label ?? "Copy full value")} disabled={enhanced ? b.busy() : undefined} onClick={b.copy}>
-            Copy
+            {(props.icon ?? false) ? (
+              <svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true">
+                {b.copied() ? (
+                  <path d="M5 12l5 5L20 7"></path>
+                ) : (
+                  <>
+                    <rect x="8" y="8" width="12" height="13" rx="2"></rect>
+                    <path d="M16 8V3H3v13h5"></path>
+                  </>
+                )}
+              </svg>
+            ) : (
+              <>
+                Copy
+              </>
+            )}
           </button>
           <span class="mk-copy-status" role="status">
             {b.status()}
@@ -100,6 +121,10 @@ export interface CopyValueBehaviour {
    * The shortened value, when it is shorter.
    */
   readonly preview: Accessor<string | undefined>;
+  /**
+   * The last copy went through: an icon button says so for a while.
+   */
+  readonly copied: Accessor<boolean>;
   /**
    * What the last copy did, for screen readers too.
    */
@@ -136,7 +161,22 @@ export function attachCopyValue(root: Element, props: CopyValueProps): () => voi
             null
           )}
           <button class="mk-btn" data-size="compact" type="button" aria-label={(props.copy_label ?? "Copy full value")} disabled={enhanced ? b.busy() : undefined} onClick={b.copy}>
-            Copy
+            {(props.icon ?? false) ? (
+              <svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true">
+                {b.copied() ? (
+                  <path d="M5 12l5 5L20 7"></path>
+                ) : (
+                  <>
+                    <rect x="8" y="8" width="12" height="13" rx="2"></rect>
+                    <path d="M16 8V3H3v13h5"></path>
+                  </>
+                )}
+              </svg>
+            ) : (
+              <>
+                Copy
+              </>
+            )}
           </button>
           <span class="mk-copy-status" role="status">
             {b.status()}

@@ -619,6 +619,13 @@ async fn build_checkout_view(
                 .xmr_amount_piconero
                 .saturating_sub(detail.order.amount_received_piconero),
         ),
+        previous_due_xmr: previous_due(
+            detail.order.status,
+            detail.order.xmr_amount_piconero,
+            detail.order.amount_received_piconero,
+            &detail.payments,
+        )
+        .map(pricing::exchange_rate::format_piconero_as_xmr),
         xmr_amount: pricing::exchange_rate::format_piconero_as_xmr(
             detail.order.xmr_amount_piconero,
         ),
@@ -676,6 +683,34 @@ async fn build_checkout_view(
             })
             .collect(),
     }
+}
+
+/// While part paid, what was due before the latest payment: what's due now
+/// plus that payment. `payments` are oldest first, as the engine lists them.
+/// `None` after a reversal or if the payments don't add up to what's received,
+/// as the amount last shown can't be known from them.
+fn previous_due(
+    status: OrderStatus,
+    total: pricing::xmr_amount::Piconero,
+    received: pricing::xmr_amount::Piconero,
+    payments: &[engine_protocol::admin_api::PaymentView],
+) -> Option<pricing::xmr_amount::Piconero> {
+    if status != OrderStatus::Partial
+        || payments
+            .iter()
+            .any(|p| p.voided_at.is_some() && !p.superseded)
+    {
+        return None;
+    }
+    let counted = || payments.iter().filter(|p| p.voided_at.is_none());
+    let sum = counted().try_fold(0u64, |sum, p| sum.checked_add(p.amount_piconero.get()))?;
+    if sum != received.get() {
+        return None;
+    }
+    let due = total.saturating_sub(received).get();
+    Some(pricing::xmr_amount::Piconero(
+        due.checked_add(counted().next_back()?.amount_piconero.get())?,
+    ))
 }
 
 /// What the checkout's header tells the payer about who they're paying
@@ -1333,6 +1368,46 @@ mod tests {
     // order needs no provider configured at all.
     const TEST_CURRENCY: &str = "XMR";
 
+    #[test]
+    fn previous_due_is_what_was_due_before_the_latest_payment() {
+        use super::previous_due;
+        use engine_protocol::admin_api::PaymentView;
+        use engine_protocol::order_status::OrderStatus;
+        use pricing::xmr_amount::Piconero;
+        let payment = |amount, voided_at, superseded| PaymentView {
+            txid: "tx".to_string(),
+            output_index: 0,
+            amount_piconero: Piconero(amount),
+            first_seen_at: 0,
+            block_height: None,
+            voided_at,
+            superseded,
+        };
+        let due = |status, received, payments: &[PaymentView]| {
+            previous_due(status, Piconero(1000), Piconero(received), payments).map(Piconero::get)
+        };
+        let partial = OrderStatus::Partial;
+
+        // One payment: the order's total.
+        assert_eq!(due(partial, 400, &[payment(400, None, false)]), Some(1000));
+        // A second: what the first left, not the total.
+        let two = [payment(400, None, false), payment(100, None, false)];
+        assert_eq!(due(partial, 500, &two), Some(600));
+        // A payment replaced by another of the same output still adds up.
+        let replaced = [payment(400, Some(1), true), payment(400, None, false)];
+        assert_eq!(due(partial, 400, &replaced), Some(1000));
+        // After a reversal, or if they don't add up, it can't be known.
+        let reversed = [payment(400, Some(1), false), payment(100, None, false)];
+        assert_eq!(due(partial, 100, &reversed), None);
+        assert_eq!(due(partial, 500, &[payment(400, None, false)]), None);
+        assert_eq!(due(partial, 0, &[]), None);
+        // Only while part paid.
+        assert_eq!(
+            due(OrderStatus::Confirming, 1000, &[payment(1000, None, false)]),
+            None
+        );
+    }
+
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
@@ -1640,7 +1715,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/checkout/{order_id}/refund-address?view=compact"))
+                    .uri(format!("/checkout/{order_id}/refund-address?view=detailed"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("refund_address=not-an-address"))
                     .unwrap(),
@@ -1650,7 +1725,7 @@ mod tests {
         assert_eq!(invalid.status(), StatusCode::OK);
         let invalid_html = body_text(invalid).await;
         assert!(invalid_html.contains("Enter a valid Monero address"));
-        assert!(invalid_html.contains("refund-address?view=compact"));
+        assert!(invalid_html.contains("refund-address?view=detailed"));
 
         let invalid_json = router
             .clone()
@@ -1998,12 +2073,13 @@ mod tests {
         assert_eq!(
             targets,
             [
-                r##"{"target":"#live-status","swap":"outerHTML"}"##,
                 r##"{"target":"#live-amount","swap":"outerHTML"}"##,
                 r##"{"target":"#live-fiat","swap":"outerHTML"}"##,
                 r##"{"target":"#live-countdown","swap":"outerHTML"}"##,
+                r##"{"target":"#live-status","swap":"outerHTML"}"##,
                 r##"{"target":"#live-qr","swap":"outerHTML"}"##,
                 r##"{"target":"#live-address","swap":"outerHTML"}"##,
+                r##"{"target":"#live-message","swap":"outerHTML"}"##,
                 r##"{"target":"#live-progress","swap":"outerHTML"}"##,
                 r##"{"target":"#live-payments","swap":"outerHTML"}"##,
             ]
@@ -2044,11 +2120,11 @@ mod tests {
             ]
         );
         assert!(
-            first[0]
+            first[3]
                 .1
                 .starts_with(r#"<div id="live-status" class="stage-slot" data-live"#),
             "{}",
-            first[0].1
+            first[3].1
         );
 
         assert!(engine
@@ -2067,6 +2143,11 @@ mod tests {
             "only what changed"
         );
         assert!(data.contains("state-double-spend"), "{data}");
+        let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
+        assert_eq!(event, r##"{"target":"#live-message","swap":"outerHTML"}"##);
+        assert!(data.contains("A payment was reversed"), "{data}");
         let (event, _) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
             .await
             .unwrap();
@@ -2133,7 +2214,7 @@ mod tests {
         )
         .await;
         assert!(
-            html.contains(r#"class="pay-wrap" id="checkout-root""#),
+            html.contains(r#"class="pay-wrap checkout-detailed" id="checkout-root""#),
             "{html}"
         );
         let share = body_text(router.clone().oneshot(page("/share")).await.unwrap()).await;

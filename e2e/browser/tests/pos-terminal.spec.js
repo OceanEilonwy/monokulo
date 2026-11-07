@@ -141,10 +141,10 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
  * JavaScript, its once-a-minute refresh without. */
 async function expectCancelledCheckout(checkout, { javaScript = true } = {}) {
   await expect(checkout.locator('#checkout-root')).toHaveAttribute('data-status', 'cancelled');
-  await expect(checkout.locator('#live-status .mk-stage')).toContainText('This order was cancelled.');
-  await expect(checkout.locator('#live-status .mk-stage')).toContainText('keep this page open');
+  await expect(checkout.locator('#live-message')).toContainText('This order was cancelled.');
+  await expect(checkout.locator('#live-message')).toContainText('keep this page open');
   await expect(checkout.locator('#live-qr .qr-wrap.is-spent')).toHaveCount(1);
-  await expect(checkout.locator('#live-address [data-void]')).toHaveCount(1);
+  await expect(checkout.locator('#live-address [data-spent]')).toHaveCount(1);
   if (javaScript) {
     await expect(checkout.locator('#checkout-stream')).toHaveCount(1);
   } else {
@@ -158,7 +158,7 @@ test('cancelling on the POS reaches the customer\'s checkout live, after a reloa
   const checkout = await context.newPage();
   await checkout.goto(checkoutUrl);
   await expect(checkout.locator('#checkout-root')).toHaveAttribute('data-status', 'pending');
-  await expect(checkout.locator('#live-address [data-void]')).toHaveCount(0);
+  await expect(checkout.locator('#live-address [data-spent]')).toHaveCount(0);
 
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
