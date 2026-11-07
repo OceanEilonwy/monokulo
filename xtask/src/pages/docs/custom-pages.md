@@ -29,7 +29,7 @@ your site's `Referer` to know whose frame it is. The embed library sends the
 `referrerpolicy="strict-origin"` to it, or customers there will get your layout.
 
 Passing `view` asks for a layout, so leave it out. Set the frame's size with
-`width` and `height` in `mount`'s options, as it's 420 by 900 otherwise:
+`width` and `height` in `mount`'s options, as it's 420 by 880 otherwise, the frame **Preview every state** shows your page in:
 
 ```js Sizing the frame
 Monokulo.mount("#pay", order, { width: "560px", height: "720px" });

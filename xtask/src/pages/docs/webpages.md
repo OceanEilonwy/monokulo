@@ -150,7 +150,7 @@ order's status: server-sent events, polling as a fallback.
 | `onExpired` | `(data) => void` | optional | Called when the status becomes `expired`. | |
 | `theme` | `"light"` or `"dark"` | the device's | Pins the checkout's theme. | |
 | `refund` | `false` | optional | Hides the refund-address form. | |
-| `width`, `height` | CSS length | 420px × 900px | The iframe's size. | |
+| `width`, `height` | CSS length | the layout's: 420px × 880px, or 280px × 380px for `compact` and 280px × 152px for `tiny` | The iframe's size. | |
 | `monokulo`, `publicKey` | string | optional | Monokulo's address and the store's key, for a bare order id. | `publicKey` lets it poll where server-sent events can't be used. |
 
 - Mounting the same element again replaces the old checkout.
