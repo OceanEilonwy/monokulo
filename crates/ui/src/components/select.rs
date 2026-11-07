@@ -322,7 +322,7 @@ component! {
                             }
                         }
                     }
-                    p class="mk-empty" role="status" hidden[b.matches] { "Nothing matches." }
+                    p class="mk-no-match" role="status" hidden[b.matches] { "Nothing matches." }
                 }
             }
         }
