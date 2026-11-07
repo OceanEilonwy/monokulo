@@ -1240,14 +1240,19 @@ pub struct CheckoutShareViewModel {
 /// The title and the framed checkout are one card on the page. The card's
 /// surface is the checkout's own background (`--paper-raised`), so the
 /// frame's edge doesn't show and the payment reads as one panel.
+///
+/// The page is as wide as the checkout's one column, and short of the 560px
+/// where a short frame goes to two: this frame takes its content's height, so
+/// it would always look short, and the page scrolls however tall it gets. The
+/// fixed height is the frame the client gives Detailed, for no JavaScript.
 const SHARE_STYLE: &str = r#"
-.share-wrap { max-width: 840px; }
+.share-wrap { max-width: 500px; }
 .share-card { margin-top: var(--space-md); background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
 .share-frame {
   width: 100%;
   display: block;
   border: none;
-  height: 620px;
+  height: 880px;
 }
 "#;
 
