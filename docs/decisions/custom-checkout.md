@@ -345,3 +345,9 @@ Newest last. Each says what was chosen and why, so it can be reversed.
     scrolling and all; the hint names the size. The sizes live on `Layout::embed_size`,
     with a test holding `monokulo-client.js`'s defaults to them. The docs said 420 by
     900; they say 880 now, as decision 68 set.
+71. **The refund address's Save button sits inside the input, at its right edge,** where
+    the scan and image buttons sit when JavaScript runs; without it, Save is there
+    instead. To fit a worded button, an `Input` with actions is now one box: the
+    wrapper carries the border, the focus ring and the saved, refused, read-only and
+    disabled looks, the actions follow the text in flow, so any button fits whatever
+    its width. The padding-by-count rule and `#refund_address`'s own padding are gone.

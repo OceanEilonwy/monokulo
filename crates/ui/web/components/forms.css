@@ -43,15 +43,23 @@ a.mk-launch-tile[href]:hover { background: var(--btn-hover-bg); border-color: va
 .mk-launch-tile-text { display: flex; flex-direction: column; gap: var(--space-xs); }
 .mk-launch-tile-title { font-weight: 700; }
 .mk-launch-tile-hint { font-size: var(--text-sm); opacity: .85; }
-/* An input with buttons inside its right edge (Input actions). */
-.mk-input-with-actions { position: relative; display: block; min-width: 0; }
-/* Typed text stops short of the actions, however many there are. */
-.mk-input-with-actions > .mk-input { padding-right: calc(var(--space-sm) + 2.1rem); }
-.mk-input-with-actions:has(> .mk-input-actions > :nth-child(2)) > .mk-input { padding-right: calc(var(--space-sm) + 2 * 2.1rem + var(--space-xs)); }
-.mk-input-with-actions:has(> .mk-input-actions > :nth-child(3)) > .mk-input { padding-right: calc(var(--space-sm) + 3 * 2.1rem + 2 * var(--space-xs)); }
-.mk-input-actions { position: absolute; top: 50%; right: var(--space-xs); transform: translateY(-50%); display: flex; gap: var(--space-xs); }
+/* An input with buttons inside its right edge (Input actions): one box,
+   the wrapper carrying the border, the focus ring and the states, the
+   actions in flow after the text. Any button fits, an icon or a word
+   (Save), and the typed text stops short of them whatever their width. */
+.mk-input-with-actions { box-sizing: border-box; display: flex; align-items: center; min-width: 0; border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: var(--control-bg); }
+.mk-input-with-actions > .mk-input { flex: 1 1 auto; width: auto; border: 0; border-radius: 0; background: transparent; }
+.mk-input-with-actions > .mk-input:focus-visible { outline: none; }
+.mk-input-with-actions:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-color: var(--focus-ring); }
+.mk-input-with-actions:has(> [aria-invalid="true"]) { border-color: var(--error); }
+.mk-input-with-actions:has(> [readonly]) { background: var(--surface-sunken); }
+.mk-input-with-actions:has(> :disabled) { opacity: .55; }
+.mk-input-with-actions:has(> :disabled) > .mk-input { opacity: 1; }
+.mk-input-actions { flex: none; display: flex; align-items: center; gap: var(--space-xs); padding-right: var(--space-xs); }
 .mk-input-actions > .mk-btn.icon-only { border-color: transparent; background: transparent; }
 .mk-input-actions > .mk-btn.icon-only:hover { background: var(--btn-hover-bg); }
+/* A worded button inside (Save) is compact whatever it was asked for. */
+.mk-input-actions > .mk-btn:not(.icon-only) { min-height: 2rem; padding: var(--space-xs) var(--space-md); font-size: var(--text-sm); }
 
 /* Rows a form edits (RowsEditor): each row's controls, its remove at the
    right. A row marked to go is faded and struck; its button says Undo.

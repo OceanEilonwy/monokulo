@@ -274,7 +274,6 @@ fn refund_part(data: &CheckoutViewModel) -> Markup {
                                 p id="scan-error" class="scan-error" role="alert" hidden {}
                                 (ui::FieldNote::new(html! { "If this order needs a refund, this address is recorded for the merchant to use. "
                                     "Refunds are not sent automatically." }))
-                                noscript { (ui::FormActions::new(ui::Button::new("Save").kind(ui::ButtonType::Submit))) }
                         }
                     } }
         }
@@ -901,6 +900,11 @@ fn refund_actions(data: &CheckoutViewModel) -> ui::Slot {
     let image = html! {
         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" { rect x="2" y="3" width="20" height="18" rx="2" {} circle cx="8.5" cy="8.5" r="1.5" {} path d="m2 17 6-6 4 4 3-3 7 7" {} }
     };
+    // Without JavaScript nothing saves as you type: a Save button sits
+    // where the scan and image buttons would.
+    let save = html! {
+        noscript { (ui::Button::new("Save").kind(ui::ButtonType::Submit).size(ui::ControlSize::Compact)) }
+    };
     ui::Slot::many([
         saved.into(),
         ui::IconButton::new("Scan refund QR", scan)
@@ -911,6 +915,7 @@ fn refund_actions(data: &CheckoutViewModel) -> ui::Slot {
             .attr("id", "upload-refund")
             .flag("hidden")
             .into(),
+        save.into(),
     ])
 }
 
@@ -1366,8 +1371,8 @@ mod tests {
 
     /// Without JavaScript the checkout still works: it refreshes itself
     /// once a minute from inside `<noscript>` only (with a link to stop
-    /// it), the refund address has its own Save button, and there is no
-    /// site nav or brand.
+    /// it), the refund address has its own Save button inside its box, and
+    /// there is no site nav or brand.
     #[test]
     fn checkout_page_works_without_javascript() {
         let mut data = test_checkout_view_model(false);
@@ -1389,8 +1394,8 @@ mod tests {
                 "{html}"
             );
             assert!(html.contains(
-                r#"<noscript><div class="form-actions"><button class="mk-btn" type="submit">Save</button></div></noscript>"#
-            ));
+                r#"<noscript><button class="mk-btn" type="submit" data-size="compact">Save</button></noscript></span></span>"#
+            ), "{html}");
             assert!(!html.contains(r#"<nav class="site-nav""#), "{html}");
             assert!(!html.contains("Monokulo"), "{html}");
         }
