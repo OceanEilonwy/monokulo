@@ -298,6 +298,16 @@ pub fn edit_page(
     wizard_page(chrome, store, 0, body)
 }
 
+/// The layout whose default frame a custom page gets: `monokulo-client.js`
+/// frames a page it isn't asked a `view` for at Detailed's size.
+const CUSTOM_PAGE_LAYOUT: Layout = Layout::Detailed;
+
+/// "420 by 880", for a hint.
+fn format_embed_size(layout: Layout) -> String {
+    let (width, height) = layout.embed_size();
+    format!("{width} by {height}")
+}
+
 /// A frame showing one state of a draft: sandboxed, so nothing in it runs, and
 /// with its own address, so it's never taken for this page.
 fn preview_frame(preview_token: &str, state: &PreviewState) -> Markup {
@@ -307,16 +317,21 @@ fn preview_frame(preview_token: &str, state: &PreviewState) -> Markup {
             "/checkout-preview/{preview_token}/frame?state={}",
             state.slug
         ),
+        CUSTOM_PAGE_LAYOUT.embed_size(),
     )
 }
 
-fn frame_at(state: &PreviewState, path: &str) -> Markup {
+/// A sandboxed frame at the size the embed library would give the page, so
+/// the preview shows what a customer gets, scrolling and all.
+fn frame_at(state: &PreviewState, path: &str, (width, height): (u32, u32)) -> Markup {
     html! {
         figure class="template-preview" {
             figcaption { (state.name) }
             iframe
                 sandbox=""
                 loading="lazy"
+                width=(width)
+                height=(height)
                 title=(format!("Your page when: {}", state.name))
                 src=(crate::base::url(path)) {}
         }
@@ -336,10 +351,10 @@ pub fn layout_preview(chrome: &PageChrome, store: &WizardStore, layout: Layout) 
             }
         }
         (super::settings::plain_card("layout-preview", "Every state", html! {
-            (ui::Hint::new("In your saved colours, on a made-up order that can't be paid."))
+            (ui::Hint::new(format!("In your saved colours, at the embed's default size for this layout ({}), on a made-up order that can't be paid.", format_embed_size(layout))))
             div class="template-previews" {
                 @for state in &PREVIEW_STATES {
-                    (frame_at(state, &format!("{page}/frame?layout={}&state={}", layout.name(), state.slug)))
+                    (frame_at(state, &format!("{page}/frame?layout={}&state={}", layout.name(), state.slug), layout.embed_size()))
                 }
             }
         }))
@@ -363,7 +378,7 @@ pub fn preview_step(
 ) -> Markup {
     let body = html! {
         (super::settings::plain_card("template-preview", "Every state", html! {
-            (ui::Hint::new(format!("Template size {} of {}. These use a made-up order that can't be paid.", format_size(size), format_size(BUDGET))))
+            (ui::Hint::new(format!("Template size {} of {}. At the embed's default size ({}), on a made-up order that can't be paid.", format_size(size), format_size(BUDGET), format_embed_size(CUSTOM_PAGE_LAYOUT))))
             div class="template-previews" {
                 @for state in &PREVIEW_STATES { (preview_frame(preview_token, state)) }
             }

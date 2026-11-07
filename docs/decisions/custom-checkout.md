@@ -338,3 +338,10 @@ Newest last. Each says what was chosen and why, so it can be reversed.
 69. **The confirming wedge reads its value from the attribute.** A checkout page's policy
     drops the symbol's `style`, so Tiny and Compact's wedge drew empty on real pages.
     `checkout.css` maps each 10% step back.
+70. **Preview every state frames each state at the embed's default size for the layout:**
+    280 by 152 for Tiny, 280 by 380 for Compact, 420 by 880 for Detailed and a custom
+    page. The frames used to be a grid of equal 620px-tall cards, which showed Tiny in a
+    tall empty box and cut Detailed short. The owner sees what a customer's frame shows,
+    scrolling and all; the hint names the size. The sizes live on `Layout::embed_size`,
+    with a test holding `monokulo-client.js`'s defaults to them. The docs said 420 by
+    900; they say 880 now, as decision 68 set.

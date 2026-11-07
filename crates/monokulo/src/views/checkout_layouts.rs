@@ -80,6 +80,17 @@ impl Layout {
         Layout::ALL.into_iter().find(|layout| layout.name() == name)
     }
 
+    /// The frame `monokulo-client.js` makes for it when the shop names no
+    /// size, in CSS pixels, width then height. A custom page is framed at
+    /// Detailed's. The previews show each layout in this frame.
+    pub fn embed_size(self) -> (u32, u32) {
+        match self {
+            Layout::Detailed => (420, 880),
+            Layout::Compact => (280, 380),
+            Layout::Tiny => (280, 152),
+        }
+    }
+
     /// What a merchant knows it as.
     pub fn label(self) -> &'static str {
         match self {
@@ -127,5 +138,27 @@ mod tests {
             assert_eq!(Layout::from_name(layout.name()), Some(layout));
         }
         assert_eq!(Layout::from_name("nope"), None);
+    }
+
+    /// The previews frame each layout at the size `monokulo-client.js` gives
+    /// it by default, so what the owner sees is what a customer's frame shows.
+    /// The sizes are written in both places; this keeps them one.
+    #[test]
+    fn the_preview_frames_are_the_embed_librarys_defaults() {
+        let client = include_str!("../../static/monokulo-client.js");
+        let px = |layout: Layout| {
+            let (width, height) = layout.embed_size();
+            format!("[\"{width}px\", \"{height}px\"]")
+        };
+        let expected = format!(
+            "{{ tiny: {}, compact: {} }}[options.view] || {}",
+            px(Layout::Tiny),
+            px(Layout::Compact),
+            px(Layout::Detailed)
+        );
+        assert!(
+            client.contains(&expected),
+            "monokulo-client.js's default frames differ from Layout::embed_size: looked for `{expected}`"
+        );
     }
 }

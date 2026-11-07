@@ -80,8 +80,8 @@ test('real challenge continues inside a cross-site checkout frame with and witho
       if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
       const page = await context.newPage();
       await page.goto(`${shop}/__coverage/ready`);
-      // Framed the way the embed library frames the checkout (420 x 900).
-      await page.setContent(`<iframe id="payment" title="Payment" style="width:420px;height:900px;border:0" src="${fixture.base_url}/__coverage/challenge"></iframe>`);
+      // Framed the way the embed library frames the checkout (420 x 880).
+      await page.setContent(`<iframe id="payment" title="Payment" style="width:420px;height:880px;border:0" src="${fixture.base_url}/__coverage/challenge"></iframe>`);
       const frame = page.frameLocator('#payment');
       if (!javaScriptEnabled) {
         await expect(frame.getByRole('heading', { name: 'Checking your connection' })).toBeVisible();
