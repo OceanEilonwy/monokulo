@@ -56,7 +56,12 @@
   // On the base path Monokulo is served at (`crate::base`), as the session is.
   var base = document.querySelector("meta[name=\"monokulo-base\"]");
   var path = (base && base.content) || "/";
-  if (zone) document.cookie = "tz=" + encodeURIComponent(zone) + "; path=" + path + "; max-age=31536000; SameSite=Lax";
+  // Not inside a frame (the embedded checkout): a Lax cookie is refused as
+  // third-party there, which the console reports as an error. The header
+  // below still carries the zone on every request.
+  var framed = false;
+  try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  if (zone && !framed) document.cookie = "tz=" + encodeURIComponent(zone) + "; path=" + path + "; max-age=31536000; SameSite=Lax";
   // No view transitions: they flash on every small section swap.
   window.fixiCfg = { transition: false, headers: zone ? { "X-Timezone": zone } : {} };
 
