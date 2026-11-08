@@ -1,0 +1,1 @@
+<section class="a">t{{if awaiting}}e &lt;t>{{end}}</section>
