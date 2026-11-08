@@ -1,0 +1,1 @@
+<section class="a">a{{if awaiting}}<p>{{amount}} {}</p>{{qr }}{{address}}{{end}}</section>ads

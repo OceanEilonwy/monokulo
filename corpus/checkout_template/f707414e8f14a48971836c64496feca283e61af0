@@ -1,0 +1,1 @@
+<section class="a">{{if double_spend}}{}}<p>{{amount}} {{fiat}}</p>{{end}}</section>
