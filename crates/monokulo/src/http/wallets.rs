@@ -2041,6 +2041,11 @@ mod tests {
 
     /// Brings in a second wallet, with keys of its own.
     async fn bring_in_another(router: &Router, cookie: &str, name: &str, seed: u8) {
+        bring_in_on(router, cookie, name, seed, "mainnet").await;
+    }
+
+    /// [`bring_in_another`] on `network`.
+    async fn bring_in_on(router: &Router, cookie: &str, name: &str, seed: u8, network: &str) {
         let made = made_in_the_browser(seed);
         let response = router
             .clone()
@@ -2051,7 +2056,7 @@ mod tests {
                     ("name", name),
                     ("view_key_hex", &made.view_key_hex),
                     ("spend_pubkey_hex", &made.spend_pubkey_hex),
-                    ("network", "mainnet"),
+                    ("network", network),
                 ],
             ))
             .await
@@ -2258,18 +2263,31 @@ mod tests {
         assert_ne!(after.address, open.address);
     }
 
-    /// Picking a wallet asks first, in the Wallet card; refusals show in
-    /// the card.
+    /// Picking a wallet asks first, in the Wallet card. A wallet on another
+    /// network is offered and can be changed to; one on a test network is
+    /// warned about first. Refusals show in the card.
     #[tokio::test]
-    async fn the_wallet_card_asks_first_and_refuses_another_network() {
-        let (state, _engine) = real_engine_state().await;
+    async fn the_wallet_card_asks_first_and_warns_about_a_test_network() {
+        let engine = engine_test_support::spawn_test_engine_with_networks(&[
+            monero::Network::Mainnet,
+            monero::Network::Stagenet,
+        ])
+        .await;
+        let state = AppState {
+            engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
+            ..AppState::for_tests()
+        }
+        .with_options("public_uri = \"https://pay.example.test\"\n[signup]\nmode = \"public\"\n")
+        .await;
         let router = build_router(state.clone());
         let email = "fixi-changer@example.com";
         let (cookie, _) = sign_up(&router, email, None).await;
         bring_in(&router, &cookie, "Copper Heron").await;
         bring_in_another(&router, &cookie, "Cafe till", 31).await;
+        bring_in_on(&router, &cookie, "Quiet Lantern", 33, "stagenet").await;
         let copper = wallet_named(&state, email, "Copper Heron");
         let cafe = wallet_named(&state, email, "Cafe till");
+        let stagenet = wallet_named(&state, email, "Quiet Lantern");
         let store = connect_store(
             &router,
             &cookie,
@@ -2293,6 +2311,7 @@ mod tests {
             html.contains("No orders are open on Copper Heron"),
             "{html}"
         );
+        assert!(!html.contains("have no value"), "a mainnet wallet: {html}");
 
         // Picking the current one again asks nothing.
         let html = body_text(
@@ -2305,25 +2324,8 @@ mod tests {
         .await;
         assert!(!html.contains("change-confirm"), "{html}");
 
-        // A stagenet wallet: not offered, and refused if sent.
-        let stagenet = crate::db::WalletId::new("w_stagenet".to_owned());
-        {
-            let db = state.db.lock();
-            let user = db.get_user_by_email(email).unwrap().unwrap();
-            db.create_wallet(&crate::db::NewWalletRow {
-                id: &stagenet,
-                user_id: &user.id,
-                name: "Quiet Lantern",
-                network: monero::Network::Stagenet,
-                primary_address: "5stagenetaddress",
-                engine_wallet_id: &crate::db::EngineWalletId::new("wl_x".to_owned()),
-                origin: crate::db::WalletOrigin::Imported,
-                backup: None,
-                app: None,
-                created_at: 1,
-            })
-            .unwrap();
-        }
+        // A stagenet wallet is offered, with its network's badge, and
+        // picking it warns before the change.
         let page = body_text(
             get(
                 &router,
@@ -2333,30 +2335,40 @@ mod tests {
             .await,
         )
         .await;
-        assert!(!page.contains("w_stagenet"), "{page}");
-        assert!(!page.contains("Quiet Lantern"), "{page}");
+        assert!(page.contains("Quiet Lantern"), "{page}");
+        assert!(page.contains(r#"data-network="stagenet""#), "{page}");
+        assert!(page.contains(r#"data-network="mainnet""#), "{page}");
+        let response = router
+            .clone()
+            .oneshot(card_post(&[("wallet_id", stagenet.id.as_str())]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("Change to Quiet Lantern?"), "{html}");
         assert!(
-            page.contains("A store can only change to a wallet on its own network."),
-            "{page}"
+            html.contains("Quiet Lantern is a stagenet wallet. Its coins have no value"),
+            "{html}"
         );
-        assert!(
-            page.contains(r#"data-network="mainnet""#),
-            "the store's own network's wallets carry its badge: {page}"
+        assert_eq!(
+            store_row(&state, &store).wallet_id.as_ref(),
+            Some(&copper.id),
+            "asking changes nothing"
         );
+
+        // Confirmed, the store moves to stagenet.
         let response = router
             .clone()
             .oneshot(card_post(&[
-                ("wallet_id", "w_stagenet"),
+                ("wallet_id", stagenet.id.as_str()),
                 ("confirm", "yes"),
             ]))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let html = body_text(response).await;
-        assert!(html.contains("network can"), "{html}");
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             store_row(&state, &store).wallet_id.as_ref(),
-            Some(&copper.id)
+            Some(&stagenet.id)
         );
 
         // Someone else's wallet, or none: refused the same way.

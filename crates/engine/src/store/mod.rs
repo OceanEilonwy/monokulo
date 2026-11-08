@@ -475,7 +475,7 @@ pub enum StoreError {
     /// stores on it).
     #[error("{0}")]
     InUse(String),
-    /// The change asked for can't be made (a wallet on another network).
+    /// The change asked for can't be made (the wallet a store already uses).
     #[error("{0}")]
     Refused(String),
 }
@@ -1657,7 +1657,8 @@ impl Store {
     /// keep their addresses on the old wallet, and move to a scan-only row
     /// holding the old wallet's keys, which the scanner watches them with
     /// (migration 0029). The store keeps its id, keys for the API and
-    /// settings. Refused for a wallet on another network, a deleted one, or
+    /// settings. A wallet on another network moves the store to it; its older
+    /// orders stay on theirs. Refused for a deleted wallet, or
     /// the one it already uses.
     pub fn change_tenant_wallet(
         &self,
@@ -1690,11 +1691,6 @@ impl Store {
             return Err(StoreError::Refused(
                 "the store already takes payments into this wallet".to_owned(),
             ));
-        }
-        if new_network != network {
-            return Err(StoreError::Refused(format!(
-                "the wallet is on {new_network} and the store on {network}: a store's network can't change"
-            )));
         }
         // The scan-only row for this store's orders on the old wallet: the
         // one from an earlier change away from it, or a new one starting
@@ -1763,6 +1759,27 @@ impl Store {
              WHERE tenants.id = ?1",
             params![tenant_id, wallet_id, now],
         )?;
+        // A wallet on another network moves the store there. Its orders so
+        // far stay on the old one with the scan row, whose network they
+        // read; the store's cursor starts where a new store's would on the
+        // new network (unset until that network is first scanned), and its
+        // half-scanned block on the old network is the scan row's to redo.
+        if new_network != network {
+            tx.execute(
+                "UPDATE tenants SET network = ?2,
+                    scanned_through_height = (SELECT MAX(height) FROM scanned_blocks WHERE network = ?2)
+                 WHERE id = ?1",
+                params![tenant_id, new_network],
+            )?;
+            tx.execute(
+                "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
+                params![network, tenant_id],
+            )?;
+            tx.execute(
+                "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
+                params![network, tenant_id],
+            )?;
+        }
         Self::mirror_wallet_counter(&tx, tenant_id)?;
         tx.commit()?;
         Ok(WalletChange {
@@ -2172,13 +2189,18 @@ impl Store {
         Ok(rows)
     }
 
-    /// What all of `tenant_id`'s orders received, and how many were made
-    /// at or after `since`: sums over every row, for a dashboard's figures.
+    /// What `tenant_id`'s orders on its current network received, and how
+    /// many of them were made at or after `since`, for a dashboard's
+    /// figures. Orders from before a wallet change to another network stay
+    /// on theirs (their scan row's) and aren't counted: testnet coins
+    /// aren't added to mainnet ones.
     pub fn order_totals(&self, tenant_id: &TenantId, since: i64) -> Result<OrderTotals> {
         let (received, made_since): (i64, i64) = self.conn.query_row(
-            "SELECT COALESCE(SUM(amount_received_piconero), 0),
-                    COALESCE(SUM(created_at_utc >= ?2), 0)
-             FROM orders WHERE tenant_id = ?1",
+            "SELECT COALESCE(SUM(o.amount_received_piconero), 0),
+                    COALESCE(SUM(o.created_at_utc >= ?2), 0)
+             FROM orders o JOIN tenants s ON s.id = o.scan_tenant_id
+             JOIN tenants t ON t.id = o.tenant_id
+             WHERE o.tenant_id = ?1 AND s.network = t.network",
             params![tenant_id, since],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
@@ -2200,7 +2222,7 @@ impl Store {
     ) -> Result<Vec<OrderId>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT p.order_id FROM pending_payment_recomputes p
-             JOIN orders o ON o.id = p.order_id JOIN tenants t ON t.id = o.tenant_id
+             JOIN orders o ON o.id = p.order_id JOIN tenants t ON t.id = o.scan_tenant_id
              WHERE t.network = ?1 AND p.order_id > ?2 ORDER BY p.order_id LIMIT ?3",
         )?;
         let rows = stmt
@@ -2541,14 +2563,17 @@ impl Store {
         Ok(CancelOrder::Cancelled)
     }
 
-    /// The highest block recorded on `tenant_id`'s network (`0` before the
-    /// first), for a status recompute made outside the scanner.
-    pub fn scanned_tip(&self, tenant_id: &TenantId) -> Result<u64> {
+    /// The highest block recorded on `order_id`'s network (`0` before the
+    /// first), for a status recompute made outside the scanner. An order's
+    /// network is its scan row's: a store whose wallet moved to another
+    /// network keeps its older orders on the network they were made on.
+    pub fn order_scanned_tip(&self, order_id: &OrderId) -> Result<u64> {
         let network = self
             .conn
             .query_row(
-                "SELECT network FROM tenants WHERE id = ?1",
-                [tenant_id],
+                "SELECT s.network FROM orders o JOIN tenants s ON s.id = o.scan_tenant_id
+                 WHERE o.id = ?1",
+                [order_id],
                 |row| row.get::<_, SqlNetwork>(0),
             )
             .optional()?
@@ -2802,7 +2827,7 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
-             JOIN tenants t ON t.id = o.tenant_id
+             JOIN tenants t ON t.id = o.scan_tenant_id
              WHERE op.block_height = ?2 AND t.network = ?1
                AND (op.voided_at_utc IS NULL OR op.superseded_by IS NOT NULL)",
         )?;
@@ -2826,7 +2851,7 @@ impl Store {
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM order_payments op
                  JOIN orders o ON o.id = op.order_id
-                 JOIN tenants t ON t.id = o.tenant_id
+                 JOIN tenants t ON t.id = o.scan_tenant_id
                  WHERE op.block_height > ?2 AND t.network = ?1
                    AND (op.voided_at_utc IS NULL OR op.superseded_by IS NOT NULL))",
                 params![SqlNetwork(network), sql_height(height)?],
@@ -2844,7 +2869,7 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(
             "SELECT op.rowid, op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
-             JOIN tenants t ON t.id = o.tenant_id
+             JOIN tenants t ON t.id = o.scan_tenant_id
              WHERE op.rowid > ?2 AND op.voided_at_utc IS NULL
                AND op.block_height IS NULL AND t.network = ?1
              ORDER BY op.rowid LIMIT ?3",
@@ -2993,7 +3018,9 @@ impl Store {
     }
 
     /// What a status recompute needs to know about an order: its store's
-    /// confirmations requirement and network, and whether the row that
+    /// confirmations requirement, its network (its scan row's, where a
+    /// wallet change to another network leaves the order), and whether the
+    /// row that
     /// scans it (the store's, or the scan-only row watching an old wallet)
     /// is behind ([`scan_row_behind`], with `current_height`, the node's tip
     /// the recompute counts against). Small rows, not the tenants with their
@@ -3006,7 +3033,7 @@ impl Store {
         self.conn
             .query_row(
                 &format!(
-                    "SELECT t.confirmations_required, t.network, {}
+                    "SELECT t.confirmations_required, s.network, {}
                      FROM tenants t, tenants s WHERE t.id = :store AND s.id = :scan",
                     scan_row_behind("s")
                 ),

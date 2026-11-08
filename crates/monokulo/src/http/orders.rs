@@ -827,15 +827,10 @@ async fn store_wallet_view(
             since,
         })
     });
-    let network = current
-        .as_ref()
-        .and_then(|c| wallets.iter().find(|w| w.wallet.id.as_str() == c.id))
-        .map(|w| w.wallet.network);
-    // A store's network can't change (`change_store_wallet` refuses it):
-    // only wallets on its own are offered.
+    // Every wallet is offered, on any network: picking one on a test
+    // network is warned about before the change.
     let mut choices: Vec<views::store_settings::WalletChoice> = wallets
         .iter()
-        .filter(|w| network.is_none_or(|n| n == w.wallet.network))
         .map(|w| {
             let is_current = row.wallet_id.as_ref() == Some(&w.wallet.id);
             views::store_settings::WalletChoice {
@@ -1412,8 +1407,9 @@ pub struct ChangeWalletForm {
 /// `POST /stores/{id}/settings/wallet` - changes the wallet the
 /// store takes payments into. Picking a wallet first shows what will happen, with the
 /// store's open orders counted; confirming makes the change in the engine
-/// and then records the new period here. A wallet on another network is
-/// refused, here and by the engine.
+/// and then records the new period here. A wallet on another network moves
+/// the store there (its older orders stay on theirs); one on a test network
+/// is warned about when asking.
 pub async fn change_store_wallet(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -1462,20 +1458,6 @@ pub async fn change_store_wallet(
         // Picked the one it already uses: nothing to ask.
         return render_store_settings_page(&state, row, &user, None, None, Some(SECTION)).await;
     }
-    if let Some(current) = &current {
-        if current.network != chosen.network {
-            return refuse(
-                format!(
-                    "{} is a {} wallet and this store takes {} payments. A store's network can't change.",
-                    chosen.name,
-                    engine_protocol::network::network_str(chosen.network),
-                    engine_protocol::network::network_str(current.network)
-                ),
-                row,
-            )
-            .await;
-        }
-    }
     let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1491,6 +1473,7 @@ pub async fn change_store_wallet(
         let pending = views::store_settings::PendingWalletChange {
             wallet_id: chosen.id.to_string(),
             wallet_name: chosen.name.clone(),
+            network: engine_protocol::network::network_str(chosen.network).to_owned(),
             open_orders,
         };
         return render_store_settings_page_with(
@@ -1517,7 +1500,8 @@ pub async fn change_store_wallet(
         Ok(answer) => answer.orders_on_previous_wallet,
         Err(EngineClientError::EngineError { status, message })
             if status == reqwest::StatusCode::CONFLICT
-                || status == reqwest::StatusCode::NOT_FOUND =>
+                || status == reqwest::StatusCode::NOT_FOUND
+                || status == reqwest::StatusCode::BAD_REQUEST =>
         {
             return refuse(format!("The wallet couldn't be changed: {message}."), row).await;
         }

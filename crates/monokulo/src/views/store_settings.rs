@@ -148,7 +148,7 @@ pub struct WalletChoice {
     pub name: String,
     pub short_address: String,
     pub current: bool,
-    /// Its Monero network: the store's own, as only those are offered.
+    /// Its Monero network (`mainnet`, `stagenet` or `testnet`).
     pub network: String,
     /// Stores other than this one that use it.
     pub other_stores: u64,
@@ -157,6 +157,9 @@ pub struct WalletChoice {
 pub struct PendingWalletChange {
     pub wallet_id: String,
     pub wallet_name: String,
+    /// The picked wallet's Monero network: one other than `mainnet` is
+    /// warned about before the change.
+    pub network: String,
     /// The store's open orders, which stay on the current wallet; `None`
     /// when the engine couldn't say.
     pub open_orders: Option<usize>,
@@ -610,7 +613,7 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                 .help(html! {
                     @if let Some(current) = &wallet.current {
                         "New payments go into this wallet, since " (store.clock.time(current.since))
-                        ". A store can only change to a wallet on its own network."
+                        "."
                     } @else {
                         "This store isn't linked to one of your wallets yet. Pick the one it takes payments into."
                     }
@@ -620,6 +623,7 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                 @if let (Some(pending), Some(current)) = (&wallet.pending, &wallet.current) {
                     div class="change-confirm" role="status" {
                         h3 { "Change to " (pending.wallet_name) "?" }
+                        (test_network_warning(pending))
                         p {
                             "New orders take payments into " strong { (pending.wallet_name) } ". "
                             (open_orders_line(pending.open_orders, &current.name))
@@ -629,6 +633,7 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                 } @else if let Some(pending) = &wallet.pending {
                     div class="change-confirm" role="status" {
                         h3 { "Take payments into " (pending.wallet_name) "?" }
+                        (test_network_warning(pending))
                         (ui::FormActions::new(confirm(format!("Use {}", pending.wallet_name))))
                     }
                 } @else {
@@ -680,6 +685,23 @@ fn wallet_choice(choice: &WalletChoice, picked: Option<&str>) -> Choice {
         .current(choice.current)
         .note(note)
         .selected(picked == Some(choice.id.as_str()))
+}
+
+/// Said before a change to a wallet on a test network (stagenet or
+/// testnet): its coins are worth nothing, so a store taking real payments
+/// shouldn't use it. Nothing for a mainnet wallet.
+fn test_network_warning(pending: &PendingWalletChange) -> Markup {
+    html! {
+        @if pending.network != "mainnet" {
+            (ui::Alert::new(
+                format!(
+                    "{} is a {} wallet. Its coins have no value: customers would pay this store in test coins. Use it only to try the store out.",
+                    pending.wallet_name, pending.network
+                ),
+                ui::Tone::Warning,
+            ))
+        }
+    }
 }
 
 /// What happens to the orders already open, said before the change.

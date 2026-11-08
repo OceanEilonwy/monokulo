@@ -933,14 +933,30 @@ async fn forget_handles(
 /// payments into. New orders
 /// get addresses on the new wallet; the store's orders on the old one keep
 /// their addresses and go on being watched with the old wallet's keys, by a
-/// scan-only row (`Store::change_tenant_wallet`). `409` for a wallet on
-/// another network, or the one it already uses; `404` for an unknown or
-/// deleted one.
+/// scan-only row (`Store::change_tenant_wallet`). A wallet on another
+/// network moves the store there, and `400` when this instance has no node
+/// for that network. `409` for the wallet it already uses; `404` for an
+/// unknown or deleted one.
 pub(super) async fn change_wallet(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
     Json(req): Json<ChangeWalletRequest>,
 ) -> Result<Json<WalletChangeView>, ApiError> {
+    // A wallet's network never changes, so this needs no lock.
+    let id = req.wallet_id.clone();
+    if let Some(wallet) = state
+        .db
+        .read(move |s| s.get_wallet(&id))
+        .await?
+        .filter(|w| w.deleted_at.is_none())
+    {
+        if !state.networks.daemons.is_configured(wallet.network) {
+            return Err(ApiError::BadRequest(format!(
+                "no monero_node is configured for network {:?} on this instance",
+                network_str(wallet.network)
+            )));
+        }
+    }
     // The store's lock, exclusive: no order is being made for it (each
     // holds it shared from reading the wallet to claiming its index), nor
     // its keys moved or the store deleted, while its wallet changes.
@@ -1251,7 +1267,7 @@ pub(super) async fn cancel_order(
             store.in_transaction(|store| {
                 let outcome = store.cancel_order(&tenant.id, &order_id, now)?;
                 if outcome == crate::store::CancelOrder::Cancelled {
-                    let current_height = store.scanned_tip(&tenant.id)?;
+                    let current_height = store.order_scanned_tip(&order_id)?;
                     crate::scanner::recompute_and_notify_in_tx(
                         store,
                         &order_id,
@@ -1334,76 +1350,103 @@ pub(super) async fn lookup_payment(
     };
     let txid = txid.to_string();
 
-    let network = tenant.network;
-    let daemon = state.networks.daemons.get(network).ok_or_else(|| {
-        ApiError::Unavailable(format!(
-            "no Monero node is configured for network {network:?}"
-        ))
-    })?;
-
-    // The transaction and where it is, in one answer. It may come pruned
-    // (all a scan reads), which is why its id is passed along with it.
-    let found = daemon.find_transaction(&txid).await?;
-    let (tx, block_height) = match found {
-        None | Some((_, engine_daemon::TxLocation::NotFound)) => {
-            return Ok(Json(PaymentLookupView::NotFoundOnChain))
-        }
-        Some((fetched, engine_daemon::TxLocation::InPool)) => (fetched.tx, None),
-        Some((fetched, engine_daemon::TxLocation::InBlock(h))) => (fetched.tx, Some(h)),
-    };
-    let now = now_unix();
-    // The block's own list of transactions, so that under proof-of-work
-    // checking the payment settles only if that block is the proven one.
-    let found_in = match block_height {
-        Some(height) => crate::work::chain::block_holding(daemon.as_ref(), &txid, height).await,
-        None => None,
-    };
-
-    // With the store's keys, then with those of each wallet it used before
+    // The store's keys, then those of each wallet it used before
     // (`Store::change_tenant_wallet`): a transaction may pay an order it
-    // took on an old wallet.
+    // took on an old wallet. Each row is looked up on its own network: a
+    // store whose wallet moved to another network keeps its older orders
+    // on the one they were made on. The store's own network needs a node;
+    // an old one without a node any more is skipped.
     let id = tenant.id.clone();
     let watchers = state.db.read(move |s| s.watchers_of(&id)).await?;
-    let mut touched = std::collections::BTreeSet::new();
+    let store_network = tenant.network;
+    if !state.networks.daemons.is_configured(store_network) {
+        return Err(ApiError::Unavailable(format!(
+            "no Monero node is configured for network {store_network:?}"
+        )));
+    }
+    let mut by_network: Vec<(monero::Network, Vec<crate::store::Tenant>)> = Vec::new();
     for scanner in std::iter::once(tenant).chain(watchers) {
-        let scan = scan_for_lookup(&state, &scanner, &txid, &tx).await?;
-        let (id, found_in) = (scanner.id.clone(), found_in.clone());
-        touched.extend(
-            state
-                .db
-                .write(move |store| {
-                    let touched =
-                        crate::scanner::record_scan_match(store, &id, &scan, now, block_height)?;
-                    if let (false, Some(height), Some(hash)) =
-                        (touched.is_empty(), block_height, &found_in)
-                    {
-                        store.attest_payment_block(&scan.txid, height, hash)?;
-                    }
-                    Ok::<_, crate::scanner::ScannerError>(touched)
-                })
-                .await?,
-        );
+        match by_network.iter_mut().find(|(n, _)| *n == scanner.network) {
+            Some((_, rows)) => rows.push(scanner),
+            None => by_network.push((scanner.network, vec![scanner])),
+        }
     }
 
+    let now = now_unix();
+    let mut on_chain = false;
+    let mut touched = std::collections::BTreeSet::new();
+    for (network, scanners) in by_network {
+        let Some(daemon) = state.networks.daemons.get(network) else {
+            continue;
+        };
+        // The transaction and where it is, in one answer. It may come
+        // pruned (all a scan reads), which is why its id is passed along
+        // with it.
+        let (tx, block_height) = match daemon.find_transaction(&txid).await? {
+            None | Some((_, engine_daemon::TxLocation::NotFound)) => continue,
+            Some((fetched, engine_daemon::TxLocation::InPool)) => (fetched.tx, None),
+            Some((fetched, engine_daemon::TxLocation::InBlock(h))) => (fetched.tx, Some(h)),
+        };
+        on_chain = true;
+        // The block's own list of transactions, so that under proof-of-work
+        // checking the payment settles only if that block is the proven one.
+        let found_in = match block_height {
+            Some(height) => crate::work::chain::block_holding(daemon.as_ref(), &txid, height).await,
+            None => None,
+        };
+        let mut touched_here = std::collections::BTreeSet::new();
+        for scanner in scanners {
+            let scan = scan_for_lookup(&state, &scanner, &txid, &tx).await?;
+            let (id, found_in) = (scanner.id.clone(), found_in.clone());
+            touched_here.extend(
+                state
+                    .db
+                    .write(move |store| {
+                        let touched = crate::scanner::record_scan_match(
+                            store,
+                            &id,
+                            &scan,
+                            now,
+                            block_height,
+                        )?;
+                        if let (false, Some(height), Some(hash)) =
+                            (touched.is_empty(), block_height, &found_in)
+                        {
+                            store.attest_payment_block(&scan.txid, height, hash)?;
+                        }
+                        Ok::<_, crate::scanner::ScannerError>(touched)
+                    })
+                    .await?,
+            );
+        }
+        if touched_here.is_empty() {
+            continue;
+        }
+        // A current tip for `recompute_order_status` to derive confirmation
+        // counts against - `block_height` itself is not a safe substitute (a
+        // mempool match has none, and even a mined match's own height could
+        // already be behind the real tip by an unrelated confirmation or
+        // two). This network's tip, for this network's orders.
+        let current_height = daemon.get_height().await?;
+        let orders: Vec<crate::store::OrderId> = touched_here.iter().cloned().collect();
+        state
+            .db
+            .write(move |store| {
+                for order_id in &orders {
+                    crate::scanner::recompute_and_notify(store, order_id, current_height, now)?;
+                }
+                Ok::<(), crate::scanner::ScannerError>(())
+            })
+            .await?;
+        touched.extend(touched_here);
+    }
+
+    if !on_chain {
+        return Ok(Json(PaymentLookupView::NotFoundOnChain));
+    }
     if touched.is_empty() {
         return Ok(Json(PaymentLookupView::NoMatchingOrder));
     }
-
-    // A current tip for `recompute_order_status` to derive confirmation counts
-    // against - `block_height` itself is not a safe substitute (a mempool
-    // match has none, and even a mined match's own height could already be
-    // behind the real tip by an unrelated confirmation or two).
-    let current_height = daemon.get_height().await?;
-    let orders: Vec<crate::store::OrderId> = touched.iter().cloned().collect();
-    state
-        .db
-        .write(move |store| {
-            for order_id in &orders {
-                crate::scanner::recompute_and_notify(store, order_id, current_height, now)?;
-            }
-            Ok::<(), crate::scanner::ScannerError>(())
-        })
-        .await?;
 
     Ok(Json(PaymentLookupView::Matched {
         order_ids: touched.into_iter().collect(),
