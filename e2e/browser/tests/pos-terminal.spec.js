@@ -498,7 +498,7 @@ test('merchant records the customer refund address from a QR image, with clear f
   await page.unroute('**/refund-address');
   await input.fill('54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg');
   await expect(input).toHaveAttribute('aria-invalid', 'true');
-  await expect(message).toHaveText("Enter a valid Monero address for this store's network.");
+  await expect(message).toHaveText("Enter a valid Monero address on the same network as this order.");
   // Then their real one.
   await input.fill('');
   await input.fill(refundAddress);

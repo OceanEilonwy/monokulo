@@ -868,7 +868,7 @@ enum RefundRejection {
     /// The order has received money and already has an address.
     Locked,
     Empty,
-    /// Not a Monero address on the store's network.
+    /// Not a Monero address on the order's network (its payment address's).
     Invalid,
     /// The engine failed to save it.
     SaveFailed,
@@ -887,7 +887,7 @@ impl RefundRejection {
         match self {
             Self::Locked => "The refund address for this order can no longer be changed.",
             Self::Empty => "Enter a refund address.",
-            Self::Invalid => "Enter a valid Monero address for this store's network.",
+            Self::Invalid => "Enter a valid Monero address on the same network as this order.",
             Self::SaveFailed => "Something went wrong saving that. Please try again.",
         }
     }

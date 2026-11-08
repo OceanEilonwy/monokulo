@@ -1498,10 +1498,22 @@ pub async fn change_store_wallet(
         .await
     {
         Ok(answer) => answer.orders_on_previous_wallet,
+        // The engine's only 400 here: no node for the wallet's network.
+        Err(EngineClientError::EngineError { status, .. })
+            if status == reqwest::StatusCode::BAD_REQUEST =>
+        {
+            let network = engine_protocol::network::network_str(chosen.network);
+            return refuse(
+                format!(
+                    "This Monokulo has no {network} node, so a store can't take {network} payments yet. Nothing changed. Once a {network} node is added in the admin's settings, try again."
+                ),
+                row,
+            )
+            .await;
+        }
         Err(EngineClientError::EngineError { status, message })
             if status == reqwest::StatusCode::CONFLICT
-                || status == reqwest::StatusCode::NOT_FOUND
-                || status == reqwest::StatusCode::BAD_REQUEST =>
+                || status == reqwest::StatusCode::NOT_FOUND =>
         {
             return refuse(format!("The wallet couldn't be changed: {message}."), row).await;
         }

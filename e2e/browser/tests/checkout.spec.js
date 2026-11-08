@@ -122,7 +122,7 @@ test('real checkout validates, shows saving, rejects a response, and retries', a
     if (answer === 'offline') return route.abort('failed');
     if (answer === 400) await new Promise(resolve => { release = resolve; });
     await route.fulfill({ status: answer, contentType: 'application/json',
-      body: JSON.stringify(answer === 200 ? { ok: true } : { type: 'https://docs.monokulo.com/problems/invalid-refund-address', title: 'Not a refund address for this store', status: 400, detail: 'invalid' }) });
+      body: JSON.stringify(answer === 200 ? { ok: true } : { type: 'https://docs.monokulo.com/problems/invalid-refund-address', title: 'Not a refund address for this order', status: 400, detail: 'invalid' }) });
   });
   await page.goto(url);
   const input = page.locator('#refund_address');
