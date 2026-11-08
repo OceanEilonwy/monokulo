@@ -5164,7 +5164,8 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
 }
 
 #[tokio::test]
-async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_another_network() {
+async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_a_network_without_a_node()
+{
     let state = AppState::for_tests();
     let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
@@ -5190,10 +5191,11 @@ async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_another
             crate::now_unix(),
         )
         .unwrap();
+    // This instance has no stagenet node: the store can't move there.
     let response = change_wallet(&router, &tenant, stagenet.id.as_str()).await;
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response).await;
-    assert!(body.to_string().contains("network"), "{body}");
+    assert!(body.to_string().contains("stagenet"), "{body}");
     assert_eq!(
         tenant_row(&store, &tenant).wallet_id,
         own,
@@ -5217,6 +5219,98 @@ async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_another
         router.oneshot(req).await.unwrap().status(),
         StatusCode::UNAUTHORIZED
     );
+}
+
+/// A store on mainnet changes to a stagenet wallet. It moves to stagenet:
+/// new orders get stagenet addresses and its cursor starts at stagenet's
+/// scanned height, not mainnet's. The order it already had stays on
+/// mainnet with the row watching the old wallet: its status counts against
+/// mainnet's tip, and what it received isn't added to the store's stagenet
+/// takings.
+#[tokio::test]
+async fn a_wallet_change_to_another_network_moves_the_store_and_leaves_its_orders() {
+    let mut state = AppState::for_tests();
+    let fake = || {
+        Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+            label: "fake-node:18081".to_owned(),
+            client: Arc::new(FakeDaemonClient::new()),
+        }]))
+    };
+    state.networks.daemons = crate::engine_settings::Daemons::fixed(HashMap::from([
+        (Network::Mainnet, fake()),
+        (Network::Stagenet, fake()),
+    ]));
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    store
+        .lock()
+        .execute_raw_for_test(
+            "INSERT INTO scanned_blocks (network, height, block_hash)
+             VALUES ('mainnet', 3000000, 'aa'), ('stagenet', 1500000, 'bb')",
+        )
+        .unwrap();
+    let tenant = create_tenant(&router, 61).await;
+    assert_eq!(
+        tenant_row(&store, &tenant).scanned_through_height,
+        Some(3_000_000)
+    );
+    let old_order = new_order(&router, &tenant).await;
+    let old_order =
+        engine_protocol::ids::OrderId::new(old_order["order_id"].as_str().unwrap().to_owned());
+
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/wallets",
+        None,
+        &serde_json::json!({
+            "view_key_hex": valid_view_key_hex(63),
+            "spend_pubkey_hex": valid_spend_pubkey_hex(64),
+            "network": "stagenet",
+        }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let stagenet = body_json(response).await;
+    let response = change_wallet(&router, &tenant, stagenet["wallet_id"].as_str().unwrap()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["orders_on_previous_wallet"], 1);
+
+    let row = tenant_row(&store, &tenant);
+    assert_eq!(row.network, Network::Stagenet);
+    assert_eq!(
+        row.scanned_through_height,
+        Some(1_500_000),
+        "stagenet's height, not mainnet's"
+    );
+    let watcher = store.lock().watchers_of(&row.id).unwrap().remove(0);
+    assert_eq!(watcher.network, Network::Mainnet);
+    assert_eq!(watcher.scanned_through_height, Some(3_000_000));
+
+    let new_order = new_order(&router, &tenant).await;
+    let address = monero::Address::from_str(new_order["address"].as_str().unwrap()).unwrap();
+    assert_eq!(address.network, Network::Stagenet);
+    let new_order =
+        engine_protocol::ids::OrderId::new(new_order["order_id"].as_str().unwrap().to_owned());
+    assert_eq!(
+        store.lock().order_scanned_tip(&old_order).unwrap(),
+        3_000_000
+    );
+    assert_eq!(
+        store.lock().order_scanned_tip(&new_order).unwrap(),
+        1_500_000
+    );
+
+    // Received on both: only the stagenet order counts in the store's figures.
+    store
+        .lock()
+        .execute_raw_for_test(&format!(
+            "UPDATE orders SET amount_received_piconero = CASE id
+                WHEN '{old_order}' THEN 7 ELSE 5 END"
+        ))
+        .unwrap();
+    let totals = store.lock().order_totals(&row.id, 0).unwrap();
+    assert_eq!(totals.received_piconero.0, 5);
+    assert_eq!(totals.orders_since, 1);
 }
 
 /// The wallet a store left can't be deleted while an order on it can still

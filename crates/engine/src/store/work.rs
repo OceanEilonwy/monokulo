@@ -336,7 +336,7 @@ impl Store {
             "INSERT OR IGNORE INTO pending_payment_recomputes (order_id)
              SELECT DISTINCT p.order_id FROM order_payments p
              JOIN orders o ON o.id = p.order_id
-             JOIN tenants t ON t.id = o.tenant_id
+             JOIN tenants t ON t.id = o.scan_tenant_id
              WHERE t.network = ?1 AND p.block_height IS NOT NULL AND p.voided_at_utc IS NULL",
             [engine_protocol::network::SqlNetwork(network)],
         )?;
@@ -499,7 +499,7 @@ impl Store {
                 ReorgPhase::CollectConfirmed { after_height, after_id } => {
                     let rows: Vec<(i64, u64)> = s.rows(
                         "SELECT op.id, op.block_height FROM order_payments op
-                         JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
+                         JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.scan_tenant_id
                          WHERE op.block_height IS NOT NULL AND op.block_height >= ?2
                            AND (op.block_height > ?3 OR (op.block_height = ?3 AND op.id > ?4))
                            AND op.id <= ?5 AND t.network = ?1
@@ -518,7 +518,7 @@ impl Store {
                 ReorgPhase::CollectUnconfirmed { after_id } => {
                     let ids: Vec<i64> = s.rows(
                         "SELECT op.id FROM order_payments op
-                         JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
+                         JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.scan_tenant_id
                          WHERE op.block_height IS NULL AND op.id > ?2 AND op.id <= ?3 AND t.network = ?1
                          ORDER BY op.id LIMIT ?4",
                         params![engine_protocol::network::SqlNetwork(network), after_id, job.candidate_max_id, Unsigned(limit)],
@@ -730,13 +730,13 @@ impl Store {
         let tip = i64::try_from(tip).unwrap_or(i64::MAX);
         let queries = [
             (
-                "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.tenant_id
+                "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.scan_tenant_id
                  WHERE o.next_due_at_utc IS NOT NULL AND o.next_due_at_utc <= ?2 AND t.network = ?1
                  ORDER BY o.next_due_at_utc, o.id LIMIT ?3",
                 now,
             ),
             (
-                "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.tenant_id
+                "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.scan_tenant_id
                  WHERE o.next_due_height IS NOT NULL AND o.next_due_height <= ?2 AND t.network = ?1
                  ORDER BY o.next_due_height, o.id LIMIT ?3",
                 tip,
@@ -858,7 +858,7 @@ impl Store {
     ) -> Result<Vec<OrderPaymentRow>> {
         self.rows(
             "SELECT op.* FROM order_payments op
-             JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
+             JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.scan_tenant_id
              WHERE op.voided_at_utc IS NOT NULL AND op.superseded_by IS NULL
                AND op.voided_at_utc >= ?2 AND op.id > ?3 AND t.network = ?1
              ORDER BY op.id LIMIT ?4",
@@ -1356,18 +1356,18 @@ impl Store {
             reorg,
             recomputes_pending: count(
                 "SELECT COUNT(*) FROM pending_payment_recomputes p
-                 JOIN orders o ON o.id = p.order_id JOIN tenants t ON t.id = o.tenant_id
+                 JOIN orders o ON o.id = p.order_id JOIN tenants t ON t.id = o.scan_tenant_id
                  WHERE t.network = ?1",
                 &[&net],
             )?,
             // Due by time, then due by height and not by time: each order
             // once, each count from its own index.
             orders_due: count(
-                "SELECT COUNT(*) FROM orders o JOIN tenants t ON t.id = o.tenant_id
+                "SELECT COUNT(*) FROM orders o JOIN tenants t ON t.id = o.scan_tenant_id
                  WHERE o.next_due_at_utc IS NOT NULL AND o.next_due_at_utc <= ?2 AND t.network = ?1",
                 &[&net, &now],
             )? + count(
-                "SELECT COUNT(*) FROM orders o JOIN tenants t ON t.id = o.tenant_id
+                "SELECT COUNT(*) FROM orders o JOIN tenants t ON t.id = o.scan_tenant_id
                  WHERE o.next_due_height IS NOT NULL AND o.next_due_height <= ?2 AND t.network = ?1
                    AND (o.next_due_at_utc IS NULL OR o.next_due_at_utc > ?3)",
                 &[&net, &tip, &now],
