@@ -165,9 +165,9 @@ pub enum Problem {
     /// Only this Monokulo's admin may do this.
     #[problem(status = 403, title = "Only the admin may do this")]
     AdminOnly,
-    /// The refund address isn't a Monero address on the store's network,
+    /// The refund address isn't a Monero address on the order's network,
     /// or is empty.
-    #[problem(status = 400, title = "Not a refund address for this store")]
+    #[problem(status = 400, title = "Not a refund address for this order")]
     InvalidRefundAddress,
     /// The order has received a payment and already has a refund address,
     /// which can no longer be changed: a refund may be on its way to it.
