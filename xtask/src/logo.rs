@@ -9,9 +9,9 @@
 //! saying which leaf.
 //!
 //! One drawing, five renderings, picked by the size they are shown at:
-//!   full     48px and up: facet lines in the text colour, and the chain
-//!   small    under 48px, beside the name: no facet lines, fewer heavier links
-//!   icon     square icons (favicon, app, plugin): no chain, the lens fills the square
+//!   full     48px and up: the eyelet and a single bead
+//!   small    under 48px, beside the name: the same, drawn heavier
+//!   icon     square icons (favicon, app, plugin): no eyelet or bead, the lens fills the square
 //!   loading  the icon with the membership paths lighting in turn
 //!   hero     full with the loading paths, for the README (light and dark files)
 //!
@@ -35,7 +35,7 @@ enum Kind {
 }
 
 impl Kind {
-    /// Square icons: no chain, the lens scaled to fill the square.
+    /// Square icons: no eyelet or bead, the lens scaled to fill the square.
     fn is_icon(self) -> bool {
         matches!(self, Kind::Icon | Kind::Loading)
     }
@@ -239,7 +239,7 @@ fn pulses(windows: &[(f64, f64)], dur: f64) -> String {
     )
 }
 
-fn loading_glow(c: &Palette, edge: &str, facets: &[(usize, Vec<Point>)]) -> String {
+fn loading_glow(c: &Palette, facets: &[(usize, Vec<Point>)]) -> String {
     let paths = leaf_paths(facets);
     // six beats, the paths picked in golden-ratio order so consecutive beats land far apart
     let mut order: Vec<usize> = (0..paths.len()).collect();
@@ -264,7 +264,7 @@ fn loading_glow(c: &Palette, edge: &str, facets: &[(usize, Vec<Point>)]) -> Stri
     for (f, w) in &windows {
         let _ = write!(
             out,
-            r#"<path d="{}" fill="{}"{edge} opacity="0">{}</path>"#,
+            r#"<path d="{}" fill="{}" opacity="0">{}</path>"#,
             d_of(&facets[*f].1),
             c.glint,
             pulses(w, order.len() as f64 * 0.7)
@@ -277,14 +277,6 @@ fn loading_glow(c: &Palette, edge: &str, facets: &[(usize, Vec<Point>)]) -> Stri
 fn drawing(kind: Kind, c: &Palette, clip_id: &str, rim_class: &str) -> String {
     let icon = kind.is_icon();
     let small = kind == Kind::Small;
-    let edge = if matches!(kind, Kind::Full | Kind::Hero) {
-        format!(
-            r#" stroke="{}" stroke-width="0.55" stroke-linejoin="round""#,
-            c.ink
-        )
-    } else {
-        String::new()
-    };
     let all = facets();
     let mut drawn = format!(
         r#"<circle cx="{}" cy="{}" r="{}" fill="{}"/>"#,
@@ -296,13 +288,13 @@ fn drawing(kind: Kind, c: &Palette, clip_id: &str, rim_class: &str) -> String {
     for (n, pts) in &all {
         let _ = write!(
             drawn,
-            r#"<path d="{}" fill="{}"{edge}/>"#,
+            r#"<path d="{}" fill="{}"/>"#,
             d_of(pts),
             c.tone(TONE_BY_LAYER[*n])
         );
     }
     if kind.animates() {
-        drawn += &loading_glow(c, &edge, &all);
+        drawn += &loading_glow(c, &all);
     }
     let cls = if rim_class.is_empty() {
         String::new()
@@ -321,32 +313,27 @@ fn drawing(kind: Kind, c: &Palette, clip_id: &str, rim_class: &str) -> String {
     if !icon {
         let (ex, ey) = pt(RIM_R + 3.2, 72.0);
         let (ring_r, ring_w) = if small { (2.2, 2.2) } else { (1.9, 1.6) };
-        let (link_w, dash) = if small {
-            (3.4, "0.1 5")
+        // one bead hangs below the eyelet
+        let (bx, by, br) = if small {
+            (37.2, 54.4, 2.1)
         } else {
-            (2.2, "0.1 3.4")
+            (36.8, 53.5, 1.6)
         };
         let _ = write!(
             body,
-            r#"<circle{cls} cx="{}" cy="{}" r="{}" fill="none" stroke="{ink}" stroke-width="{}"/><path{cls} d="M{},{} C{},{} {},{} {},{}" fill="none" stroke="{ink}" stroke-width="{}" stroke-linecap="round" stroke-dasharray="{dash}"/>"#,
+            r#"<circle{cls} cx="{}" cy="{}" r="{}" fill="none" stroke="{ink}" stroke-width="{}"/><circle cx="{}" cy="{}" r="{}" fill="{ink}"/>"#,
             r2(ex),
             r2(ey),
             r2(ring_r),
             r2(ring_w),
-            r2(ex),
-            r2(ey + 2.0),
-            r2(ex - 1.0),
-            r2(ey + 10.0),
-            r2(ex + 9.0),
-            r2(ey + 13.0),
-            r2(ex + 19.0),
-            r2(ey + 6.0),
-            r2(link_w),
+            r2(bx),
+            r2(by),
+            r2(br),
             ink = c.ink
         );
     }
     if icon {
-        // without the chain the lens is scaled up to fill the square
+        // without the eyelet the lens is scaled up to fill the square
         body = format!(
             r#"<g transform="translate(32 32) scale(1.42) translate({} {})">{body}</g>"#,
             r2(-CX),
@@ -387,7 +374,7 @@ fn standalone(kind: Kind, title: &str, dark: bool, palette: &Palette) -> String 
 
 fn rust_module() -> String {
     format!(
-        "//! The Monokulo mark's drawings for inline use. {GENERATED_NOTE}\n//!\n//! Each is the inside of a `viewBox=\"0 0 64 64\"` SVG. Lines are\n//! `currentColor`; the facets take the `--logo-*` roles in theme.css.\n\n/// 48px and up: facet lines and the chain.\npub const FULL: &str = r##\"{}\"##;\n\n/// Under 48px, beside the name: no facet lines, fewer and heavier chain links.\npub const SMALL: &str = r##\"{}\"##;\n",
+        "//! The Monokulo mark's drawings for inline use. {GENERATED_NOTE}\n//!\n//! Each is the inside of a `viewBox=\"0 0 64 64\"` SVG. Lines are\n//! `currentColor`; the facets take the `--logo-*` roles in theme.css.\n\n/// 48px and up: the eyelet and a single bead.\npub const FULL: &str = r##\"{}\"##;\n\n/// Under 48px, beside the name: the eyelet and bead, drawn heavier.\npub const SMALL: &str = r##\"{}\"##;\n",
         drawing(Kind::Full, &INLINE, "monokulo-lens-full", ""),
         small()
     )
