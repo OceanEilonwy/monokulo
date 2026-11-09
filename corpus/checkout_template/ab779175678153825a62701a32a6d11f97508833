@@ -1,0 +1,1 @@
+<section class="a">{{if !awaiting}}<p>{{amount}} {{fiat}}i</p>{{qr small}}<p>{{amount}} {{fiat}}}</p>{{qr small}}s="q t}}{{end}}</section>
