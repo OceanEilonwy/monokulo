@@ -86,7 +86,7 @@ pub static ASSETS: &[Asset] = &[
     asset!(bytes "manrope-500.woff2", ui::assets::MANROPE_500, WOFF2),
     asset!(bytes "manrope-700.woff2", ui::assets::MANROPE_700, WOFF2),
     asset!(bytes "manrope-800.woff2", ui::assets::MANROPE_800, WOFF2),
-    // The full Monokulo mark (with the chain and the facet lines),
+    // The full Monokulo mark (with the eyelet and bead),
     // ink-on-paper, for other sites to link to; the pages draw it inline
     // (`views::logo_mark`). The square version is every page's icon. Both
     // written by `cargo xtask logo`.
