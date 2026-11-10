@@ -132,6 +132,7 @@ impl World {
             merchant_order_id: Some("#1042".into()),
             description: None,
             xmr_amount_piconero: pricing::xmr_amount::Piconero(24_500_000_000_000),
+            expires_at: None,
         }
     }
 

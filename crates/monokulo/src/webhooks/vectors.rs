@@ -84,6 +84,7 @@ fn event(n: u8, kind: OrderEventKind) -> LoggedEvent {
         merchant_order_id: Some("1042".into()),
         description: Some("Order #1042: Blue mug + 2 more".into()),
         xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
+        expires_at: None,
     }
 }
 

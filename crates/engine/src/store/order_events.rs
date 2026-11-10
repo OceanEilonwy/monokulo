@@ -119,8 +119,9 @@ impl OrderEventSpan {
 
 impl Store {
     /// Adds a `kind` event about `order_id` to the log, with `fields` and
-    /// the order's `order_id`, `merchant_order_id`, `description` and
-    /// `xmr_amount_piconero` (and its new `status`, for a status change).
+    /// the order's `order_id`, `merchant_order_id`, `description`,
+    /// `xmr_amount_piconero` and `expires_at`, as they are now (a renewal
+    /// changes the last two), and its new `status`, for a status change.
     /// Called in the transaction that makes the change it announces, so the
     /// two land together or not at all. Returns its `seq`.
     pub fn append_order_event(
@@ -130,17 +131,19 @@ impl Store {
         fields: &[(&str, &str)],
         now: i64,
     ) -> Result<i64> {
-        let (tenant_id, merchant_order_id, description, xmr_amount): (
+        let (tenant_id, merchant_order_id, description, xmr_amount, expires_at): (
             TenantId,
             Option<String>,
             Option<String>,
             i64,
+            i64,
         ) = self
             .conn
             .query_row(
-                "SELECT tenant_id, merchant_order_id, description, xmr_amount_piconero FROM orders WHERE id = ?1",
+                "SELECT tenant_id, merchant_order_id, description, xmr_amount_piconero, expires_at_utc
+                 FROM orders WHERE id = ?1",
                 params![order_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .optional()?
             .ok_or(StoreError::NotFound)?;
@@ -155,6 +158,7 @@ impl Store {
         payload.insert("merchant_order_id".into(), merchant_order_id.into());
         payload.insert("description".into(), description.into());
         payload.insert("xmr_amount_piconero".into(), xmr_amount.into());
+        payload.insert("expires_at".into(), expires_at.into());
         let event_id = format!("evt_{}", uuid::Uuid::new_v4().simple());
         self.conn
             .prepare_cached(

@@ -287,6 +287,28 @@ pub struct CreateOrderResponse {
     pub expires_at: i64,
 }
 
+/// `POST /api/v1/admin/tenant/orders/{order_id}/renew`: a new quote for an
+/// expired order nothing has reached, priced by monokulo. Renewed only
+/// while the order's `expires_at` is still `expires_at` (the quote being
+/// renewed), so a second request for the same quote renews nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenewOrderRequest {
+    pub xmr_amount_piconero: Piconero,
+    /// The expiry of the quote being renewed, as the caller last read it.
+    pub expires_at: i64,
+}
+
+/// The order after a renew: renewed now (`renewed`), or as it was, its
+/// quote already another than the one asked about.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenewOrderResponse {
+    pub renewed: bool,
+    pub order_id: OrderId,
+    pub address: String,
+    pub xmr_amount_piconero: Piconero,
+    pub expires_at: i64,
+}
+
 /// One order, as every order route gives it. No fiat: monokulo keeps any
 /// fiat price of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

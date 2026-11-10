@@ -54,6 +54,10 @@ struct WireEvent {
     #[serde(default)]
     description: Option<String>,
     xmr_amount_piconero: Piconero,
+    /// The order's expiry when the event was written; absent from an older
+    /// engine's.
+    #[serde(default)]
+    expires_at: Option<i64>,
 }
 
 /// An `events_lost`'s data.
@@ -85,6 +89,7 @@ pub fn parse_event(seq: i64, data: &str) -> Result<LoggedEvent, String> {
         merchant_order_id: wire.merchant_order_id,
         description: wire.description,
         xmr_amount_piconero: wire.xmr_amount_piconero,
+        expires_at: wire.expires_at,
     })
 }
 

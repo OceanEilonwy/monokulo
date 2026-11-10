@@ -20,7 +20,10 @@ api::resource!(
 /// won't change again. Follow `mk:order-events` to hear each change as it
 /// happens, and send the payer to `mk:checkout`, or, when they're on Tor,
 /// to `mk:onion-checkout`. The store's secret key also gets
-/// `mk:dashboard-order`, the order's page for the merchant.
+/// `mk:dashboard-order`, the order's page for the merchant. The store's
+/// secret key and its apps' keys get the `renew-order` form: an order that
+/// expired with nothing paid to it can be given a new price and expiry,
+/// keeping its id and address.
 #[api::body]
 struct Body {
     /// The order's id: `order_` and 32 hex digits.
@@ -178,6 +181,69 @@ pub(crate) async fn load(
 /// Read one of the store's orders.
 #[get(any_key, problems = [NotFound, EngineUnavailable])]
 async fn get(path: Path, orders: Orders) -> api::Result<Body> {
+    load(&orders, &path.order_id, None)
+        .await?
+        .ok_or_else(not_found)
+}
+
+/// What renewing an order needs: which of its quotes ran out.
+#[api::input]
+struct Renewal {
+    /// The order's `expires_at` as you last read it: the quote that ran
+    /// out. Only that quote is renewed, so a second request for it (another
+    /// device, or a retry) gets the order as it is, renewed once.
+    expires_at: i64,
+}
+
+/// Renew this order: a new price and expiry, the same order.
+///
+/// For an order that expired with nothing paid to it: Monokulo prices its
+/// amount again, in its currency, at the store's rate now, and gives it a
+/// fresh expiry, as long as a new order's. Its id, address, reference and
+/// the confirmations it needs stay, so a till's sale keeps one order however
+/// often the customer needs a new code. It is `pending` again, announced on
+/// the store's event stream and pushes as `sale.waiting` with the new
+/// `xmr_amount_piconero` and `expires_at`, and to webhooks as
+/// `order.pending`.
+///
+/// Send the `expires_at` you last read: when the order's isn't that any more
+/// (another device renewed it first), nothing changes, and the answer is the
+/// order as it is. A payment still sent at the old price counts in full,
+/// against the new one: the order is `partial` (the customer pays the rest
+/// to the same address), `paid` or `overpaid`.
+///
+/// Refused (`409` `order-not-renewable`) once any payment has reached it,
+/// even one still in the pool, and when it ended too long ago for Monokulo
+/// to still watch its address (`payment.expired_order_grace_period_minutes`,
+/// 6 hours unless the admin changed it). An app's key renews only orders
+/// the store's apps made. Answers `200` with the order.
+#[post(
+    server,
+    form = "renew-order",
+    problems = [
+        NotFound,
+        Forbidden,
+        OrderNotRenewable,
+        RatesUnavailable,
+        EngineUnavailable,
+        Internal,
+    ]
+)]
+async fn renew(path: Path, orders: Orders, caller: Caller, input: Renewal) -> api::Result<Body> {
+    let app = match &caller.0.credential {
+        crate::http::store_key::Credential::App(app) => Some(app),
+        _ => None,
+    };
+    crate::orders::renew(
+        &orders.state,
+        &orders.store,
+        &orders.sk,
+        &path.order_id,
+        input.expires_at,
+        app,
+    )
+    .await
+    .map_err(|e| e.problem())?;
     load(&orders, &path.order_id, None)
         .await?
         .ok_or_else(not_found)

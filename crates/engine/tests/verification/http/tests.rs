@@ -1261,6 +1261,269 @@ async fn the_admin_cancel_route_cancels_an_unpaid_order_of_the_tenant_behind_the
     assert!(still["cancelled_at"].is_null());
 }
 
+/// Renewing (Monokular's New code, through monokulo;
+/// docs/decisions/order-renewal.md): only the owner's order, only once it
+/// has expired with nothing paid to it, only the quote that ended at the
+/// `expires_at` sent, and only while it is still watched. The renewed order
+/// keeps its id and address, is pending again with the new amount and a
+/// fresh expiry, and is announced as `order.pending` carrying both. A
+/// payment at the old price is still counted, against the new one.
+#[tokio::test]
+async fn the_admin_renew_route_renews_only_an_expired_order_nothing_reached() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let a = create_tenant(&router, 70).await;
+    let b = create_tenant(&router, 72).await;
+    let create = |token: String| {
+        let router = router.clone();
+        async move {
+            body_json(
+                router
+                    .oneshot(json_request(
+                        "POST",
+                        "/api/v1/admin/tenant/orders",
+                        Some(&token),
+                        &serde_json::json!({ "xmr_amount_piconero": 1_000u64 }),
+                    ))
+                    .await
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    let send =
+        |method: &'static str, uri: String, token: Option<String>, body: serde_json::Value| {
+            let router = router.clone();
+            async move {
+                router
+                    .oneshot(json_request(method, &uri, token.as_deref(), &body))
+                    .await
+                    .unwrap()
+            }
+        };
+    // Its deadline moved to `at`, and the status recomputed as the scanner would.
+    let expire = |order: &str, at: i64| {
+        let store = store.lock();
+        store
+            .conn_for_test()
+            .execute(
+                "UPDATE orders SET expires_at_utc = ?2 WHERE id = ?1",
+                rusqlite::params![order, at],
+            )
+            .unwrap();
+        let order = engine_protocol::ids::OrderId::new(order.to_owned());
+        crate::scanner::recompute_and_notify(&store, &order, 100, crate::now_unix()).unwrap();
+    };
+    let pay = |order: &str, amount: u64, txid: &str| {
+        let store = store.lock();
+        let order = engine_protocol::ids::OrderId::new(order.to_owned());
+        store
+            .record_payment_match(
+                &order,
+                txid,
+                0,
+                crate::store::Piconero(amount),
+                "[]",
+                crate::now_unix(),
+                Some(10),
+                None,
+            )
+            .unwrap();
+        crate::scanner::recompute_and_notify(&store, &order, 100, crate::now_unix()).unwrap();
+    };
+    let made = create(a.secret_token.clone()).await;
+    let order = made["order_id"].as_str().unwrap().to_owned();
+    let address = made["address"].as_str().unwrap().to_owned();
+    let renew = format!("/api/v1/admin/tenant/orders/{order}/renew");
+    let detail = format!("/api/v1/admin/tenant/orders/{order}");
+    let quote = |xmr: u64, expires_at: i64| serde_json::json!({ "xmr_amount_piconero": xmr, "expires_at": expires_at });
+    let first_expiry = made["expires_at"].as_i64().unwrap();
+
+    assert_eq!(
+        send("POST", renew.clone(), None, quote(2_000, first_expiry))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(
+            "POST",
+            renew.clone(),
+            Some(b.secret_token.clone()),
+            quote(2_000, first_expiry)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "tenant B must not renew tenant A's order"
+    );
+    assert_eq!(
+        send(
+            "POST",
+            renew.clone(),
+            Some(a.secret_token.clone()),
+            quote(2_000, first_expiry)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT,
+        "a pending order isn't renewed"
+    );
+
+    let ended = crate::now_unix() - 60;
+    expire(&order, ended);
+    let expired = body_json(
+        send(
+            "GET",
+            detail.clone(),
+            Some(a.secret_token.clone()),
+            serde_json::Value::Null,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(expired["status"], "expired");
+    assert_eq!(
+        send(
+            "POST",
+            renew.clone(),
+            Some(a.secret_token.clone()),
+            quote(0, ended)
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    // Another quote than the order's: nothing changes, and it says so.
+    let other = body_json(
+        send(
+            "POST",
+            renew.clone(),
+            Some(a.secret_token.clone()),
+            quote(2_000, ended - 1),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(other["renewed"], false);
+    assert_eq!(other["expires_at"], ended);
+    assert_eq!(other["xmr_amount_piconero"], 1_000);
+
+    let response = send(
+        "POST",
+        renew.clone(),
+        Some(a.secret_token.clone()),
+        quote(2_000, ended),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let renewed = body_json(response).await;
+    assert_eq!(renewed["renewed"], true);
+    assert_eq!(renewed["order_id"], order.as_str());
+    assert_eq!(renewed["address"], address.as_str());
+    assert_eq!(renewed["xmr_amount_piconero"], 2_000);
+    let new_expiry = renewed["expires_at"].as_i64().unwrap();
+    assert!(new_expiry > crate::now_unix(), "a fresh expiry");
+    let now = body_json(
+        send(
+            "GET",
+            detail.clone(),
+            Some(a.secret_token.clone()),
+            serde_json::Value::Null,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(now["status"], "pending");
+    assert_eq!(now["xmr_amount_piconero"], 2_000);
+    assert_eq!(now["expires_at"], new_expiry);
+    assert_eq!(now["currently_scanning"], true);
+    let events: Vec<_> = store
+        .lock()
+        .order_events_for_test()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.order_id.as_str() == order)
+        .collect();
+    let kinds: Vec<_> = events.iter().map(|e| e.event_type.as_str()).collect();
+    assert_eq!(kinds, ["order.expired", "order.pending"]);
+    let waiting = events.last().unwrap();
+    assert_eq!(
+        waiting.field("xmr_amount_piconero").as_deref(),
+        Some("2000")
+    );
+    assert_eq!(
+        waiting.field("expires_at"),
+        Some(new_expiry.to_string()),
+        "the event carries the new quote"
+    );
+    assert_eq!(events[0].field("expires_at"), Some(ended.to_string()));
+
+    // The same request again (a second till, a retry): one renewal.
+    let again = body_json(
+        send(
+            "POST",
+            renew.clone(),
+            Some(a.secret_token.clone()),
+            quote(3_000, ended),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(again["renewed"], false);
+    assert_eq!(again["xmr_amount_piconero"], 2_000);
+    assert_eq!(again["expires_at"], new_expiry);
+    assert_eq!(store.lock().order_events_for_test().unwrap().len(), 2);
+
+    // A payment at the old price, seen only now, is counted against the new one.
+    pay(&order, 1_000, "tx_old_price");
+    let short = body_json(
+        send(
+            "GET",
+            detail.clone(),
+            Some(a.secret_token.clone()),
+            serde_json::Value::Null,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(short["status"], "partial");
+    assert_eq!(short["amount_received_piconero"], 1_000);
+
+    // Something reached it: never renewed, even once it expired.
+    let partly = create(a.secret_token.clone()).await;
+    let partly = partly["order_id"].as_str().unwrap().to_owned();
+    pay(&partly, 1, "tx_partial");
+    let partly_ended = crate::now_unix() - 60;
+    expire(&partly, partly_ended);
+    let refused = send(
+        "POST",
+        format!("/api/v1/admin/tenant/orders/{partly}/renew"),
+        Some(a.secret_token.clone()),
+        quote(2_000, partly_ended),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+
+    // Past the window the scanner watches an expired order for: refused.
+    let old = create(a.secret_token.clone()).await;
+    let old = old["order_id"].as_str().unwrap().to_owned();
+    let long_ago = crate::now_unix() - 7 * 24 * 3600;
+    expire(&old, long_ago);
+    let refused = send(
+        "POST",
+        format!("/api/v1/admin/tenant/orders/{old}/renew"),
+        Some(a.secret_token.clone()),
+        quote(2_000, long_ago),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let text = body_json(refused).await.to_string();
+    assert!(text.contains("too long ago"), "{text}");
+}
+
 #[tokio::test]
 async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
     // The structural IDOR fix is only a guarantee if it holds for

@@ -959,6 +959,7 @@ async fn seed_webhooks(
                 merchant_order_id: None,
                 description: None,
                 xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
+                expires_at: None,
             };
             db.queue_order_event(
                 &event,
@@ -1121,6 +1122,7 @@ async fn seed_webhooks(
                 merchant_order_id: Some("gm-1042".to_string()),
                 description: None,
                 xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
+                expires_at: None,
             };
             let db = control.db.lock();
             db.queue_order_event(

@@ -180,10 +180,17 @@ impl SaleEvent {
 
     /// The sale event an engine order event is, for an order an app made;
     /// `None` for events apps aren't told about, and for a kind a newer
-    /// engine added.
+    /// engine added. Its amount and expiry are the event's, as they were
+    /// when it happened, not `order`'s copy: a renewal's `order.pending` can
+    /// be read before monokulo has updated its copy
+    /// (docs/decisions/order-renewal.md 8).
     pub fn from_logged(order: &AppOrder, logged: &LoggedEvent) -> Option<Self> {
         let event = SaleKind::of(logged.kind.known()?)?;
-        Some(Self::of(order, event, logged.created_at))
+        Some(Self {
+            xmr_amount_piconero: logged.xmr_amount_piconero,
+            expires_at: logged.expires_at.unwrap_or(order.expires_at),
+            ..Self::of(order, event, logged.created_at)
+        })
     }
 
     fn of(order: &AppOrder, event: SaleKind, at: i64) -> Self {
@@ -276,6 +283,7 @@ mod tests {
             merchant_order_id: None,
             description: None,
             xmr_amount_piconero: pricing::xmr_amount::Piconero(141_000_000_000),
+            expires_at: None,
         }
     }
 
@@ -301,6 +309,32 @@ mod tests {
         // A newer engine's kind.
         assert!(SaleEvent::from_logged(&o, &logged("order.refunded")).is_none());
         assert_eq!(SaleEvent::waiting(&o).event, SaleKind::Waiting);
+    }
+
+    /// A sale event's amount and expiry are the engine event's, as they
+    /// were when it was written: a renewal's `order.pending` read before
+    /// monokulo's copy of the order was updated still carries the new quote.
+    /// An older engine's event, with no expiry, takes the copy's.
+    #[test]
+    fn a_sale_event_carries_the_quote_its_engine_event_was_written_with() {
+        let o = order();
+        let renewed = LoggedEvent {
+            xmr_amount_piconero: pricing::xmr_amount::Piconero(150_000_000_000),
+            expires_at: Some(3_000),
+            ..logged("order.pending")
+        };
+        let e = SaleEvent::from_logged(&o, &renewed).unwrap();
+        assert_eq!(e.event, SaleKind::Waiting);
+        assert_eq!(
+            (
+                e.xmr_amount_piconero.get(),
+                e.expires_at,
+                e.address.as_str()
+            ),
+            (150_000_000_000, 3_000, "8Bx")
+        );
+        let older = SaleEvent::from_logged(&o, &logged("order.paid")).unwrap();
+        assert_eq!(older.expires_at, o.expires_at);
     }
 
     /// A sale event reads and writes as its stream name, and nothing else

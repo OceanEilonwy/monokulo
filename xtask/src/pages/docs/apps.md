@@ -111,6 +111,50 @@ same `idempotency_key` get the same order. Anyone with the payment link can
 read an order's `description`, so leave it out if what was bought is
 private.
 
+### Renew an expired order
+
+When a customer lets an order's code run out without paying and then wants
+to pay after all, renew the order rather than make a second one: one sale
+stays one order on the store's dashboard. An order carries the
+`renew-order` form for the store's secret key and for its apps' keys:
+
+```json
+"_templates": {
+  "renew-order": { "method": "POST", "target": "/api/v1/orders/order_9f3c…",
+                   "contentType": "application/json", "properties": [ … ] }
+}
+```
+
+Send it with the `expires_at` of the code that ran out, as you last read it:
+
+```
+POST https://www.monokulo.com/api/v1/orders/order_9f3c…
+Authorization: Bearer {app_key}
+Content-Type: application/json
+
+{ "expires_at": 1761312000 }
+```
+
+It answers `200` with the order: the same `order_id` and `address`, priced
+again at the store's rate now (`xmr_amount_piconero`), with a new
+`expires_at`, `pending` again. The store's other devices hear
+`sale.waiting` with the new amount and expiry. Only the quote that ended at
+the `expires_at` you sent is renewed: when the order's isn't that any more
+(another device renewed it first, or this is a retry), nothing changes and
+the answer is the order as it is. A payment the customer still sends at the
+old price counts in full against the new one: the order is `partial` (they
+pay the rest to the same address), `paid` or `overpaid`.
+
+A Monokulo whose orders carry no `renew-order` can't renew: make a new order
+there, or none, but never treat a `404` as a reason to.
+
+| Problem | Status | What to do |
+| --- | --- | --- |
+| [`order-not-renewable`](../problems/order-not-renewable/) | 409 | It isn't expired, a payment reached it (even one still in the pool), or it ended too long ago (6 hours, unless the admin changed it). `detail` says which. Settle the payment that arrived, or make a new order. |
+| [`forbidden`](../problems/forbidden/) | 403 | An app's key renews only orders the store's apps made; the public key never renews. |
+| [`rates-unavailable`](../problems/rates-unavailable/) | 503 | No rate right now: wait `retry_after` seconds and send it again. |
+| [`engine-unavailable`](../problems/engine-unavailable/) | 503 | Monokulo is busy, or still catching up with the chain after an outage: try again in a moment. |
+
 ## 4. Follow them
 
 ```
@@ -142,6 +186,9 @@ a payment again.
 A comment arrives every 25 s. After `lagged`, or a reconnect, read the
 orders you're showing again: follow each one's `mk:order` link (or the
 order's own `self`), or follow one order's own stream (`mk:order-events`).
+A renewed order (see [Renew an expired order](#renew-an-expired-order))
+comes as `sale.waiting` again, with its new `xmr_amount_piconero` and
+`expires_at`: show its new code.
 Never build an order's URL from its id.
 
 ## 5. Disconnect

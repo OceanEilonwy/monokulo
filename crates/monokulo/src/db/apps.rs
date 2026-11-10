@@ -363,6 +363,31 @@ impl Db {
         Ok(())
     }
 
+    /// An order's records after a renewal (`orders::renew`): its app order's
+    /// amount and expiry, when an app made it, and the rate its price now
+    /// asks at. Only an order of `store`.
+    pub fn record_renewal(
+        &self,
+        store: &ConnectionId,
+        order_id: &OrderId,
+        xmr_amount_piconero: Piconero,
+        expires_at: i64,
+        piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit,
+        provider: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE app_orders SET xmr_amount_piconero = ?3, expires_at = ?4
+             WHERE store_id = ?1 AND order_id = ?2",
+            params![store, order_id, xmr_amount_piconero, expires_at],
+        )?;
+        self.conn.execute(
+            "UPDATE order_currency_metadata SET piconero_per_unit = ?3, provider = ?4
+             WHERE connection_id = ?1 AND order_id = ?2",
+            params![store, order_id, piconero_per_unit, provider],
+        )?;
+        Ok(())
+    }
+
     /// The app order `order_id`, if an app made it.
     pub fn app_order(&self, order_id: &OrderId) -> Result<Option<AppOrder>> {
         self.conn

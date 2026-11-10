@@ -647,6 +647,11 @@ fn body_for(handler: &catalog::HandlerInfo, order: &Value) -> Option<Value> {
             json!({"entries": [{"level": "error", "message": "Monokulo could not be reached"}]}),
         ),
         ("POST", t) if t == super::super::v1::webhook_tests::Path::TEMPLATE => Some(json!({})),
+        // A quote the order no longer has (it was never this one): answered
+        // with the order as it is, renewing nothing.
+        ("POST", t) if t == super::super::v1::order::Path::TEMPLATE => {
+            Some(json!({"expires_at": RECORDED_AT}))
+        }
         _ => None,
     }
 }
@@ -1090,6 +1095,7 @@ async fn record_route_problems(
     let logs = super::super::v1::logs::Path::TEMPLATE;
     let tests = super::super::v1::webhook_tests::Path::TEMPLATE;
     let push_targets = super::super::v1::push_targets::Path::TEMPLATE;
+    let order = path_of(super::super::v1::order::Path::TEMPLATE, ids);
     for (uri, key) in [
         (orders, keys.sk),
         (logs, keys.sk),
@@ -1099,6 +1105,7 @@ async fn record_route_problems(
             keys.sk,
         ),
         (push_targets, keys.ak),
+        (order.as_str(), keys.sk),
     ] {
         // An empty object is all a test webhook takes: it would send one
         // (`record_test_webhooks` does).
@@ -1629,6 +1636,39 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         None,
     )
     .await;
+    // Renewing it, with the store's key and the app's: asked about a quote
+    // it doesn't have, it is answered as it is; with its own, it is refused,
+    // as it hasn't expired; and one the store doesn't have isn't found.
+    let expires_at = by_app["expires_at"].as_i64().unwrap();
+    for key in [sk, ak.as_str()] {
+        let answer = call(
+            &router,
+            "POST",
+            format!("/api/v1/orders/{order_id}"),
+            Some(key),
+            Some(json!({"expires_at": expires_at - 900})),
+        )
+        .await;
+        assert_eq!(answer.status(), StatusCode::OK);
+        assert_eq!(body_json(answer).await["expires_at"], expires_at);
+    }
+    let refused = call(
+        &router,
+        "POST",
+        format!("/api/v1/orders/{order_id}"),
+        Some(sk),
+        Some(json!({"expires_at": expires_at})),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    call(
+        &router,
+        "POST",
+        "/api/v1/orders/order_00000000000000000000000000000000".into(),
+        Some(sk),
+        Some(json!({"expires_at": expires_at})),
+    )
+    .await;
     // The order's changes: the first event is the order as it is.
     let order_stream = call(
         &router,
@@ -1899,6 +1939,47 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     assert_ne!(by_website[0]["order_id"], order_id.as_str());
     assert_ne!(by_website[0]["address"], by_app["address"]);
     assert_eq!(by_website[1]["order_id"], by_website[0]["order_id"]);
+
+    // Then (so no list shows it either) an order in dollars to renew, made
+    // where nothing records it (the examples follow one order), and asked of
+    // rate providers that are rate limiting this Monokulo, with its own
+    // quote: it is priced before the engine is asked, so it isn't renewed.
+    let unrecorded = build_router(state.clone());
+    let xmr = json!({"amount": "0.25", "currency": "XMR"});
+    let made = call(
+        &unrecorded,
+        "POST",
+        "/api/v1/orders".into(),
+        Some(sk),
+        Some(xmr),
+    )
+    .await;
+    assert_eq!(made.status(), StatusCode::CREATED);
+    let made = body_json(made).await;
+    let dollars = made["order_id"].as_str().unwrap().to_owned();
+    sql(
+        &state,
+        &format!(
+            "UPDATE order_currency_metadata SET currency = 'USD', amount = '10.00' WHERE order_id = '{dollars}'"
+        ),
+    );
+    let rateless = recorder.around(build_router(AppState {
+        exchange_rate: Arc::new(
+            crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
+                rate_limited_coingecko(42).await,
+            ),
+        ),
+        ..state.clone()
+    }));
+    let answer = call(
+        &rateless,
+        "POST",
+        format!("/api/v1/orders/{dollars}"),
+        Some(sk),
+        Some(json!({"expires_at": made["expires_at"]})),
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let recorded = recorder.take();
     // The first of each method, route, key, network and status, for a

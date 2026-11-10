@@ -356,6 +356,7 @@ async fn store_with_deliveries(
             merchant_order_id: None,
             description: None,
             xmr_amount_piconero: pricing::xmr_amount::Piconero(1),
+            expires_at: None,
         };
         db.queue_order_event(
             &event,

@@ -661,6 +661,21 @@ pub enum CancelOrder {
     Refused(OrderStatus),
 }
 
+/// What [`Store::renew_order`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenewOrder {
+    /// Its quote was replaced; its status is still to be recomputed.
+    Renewed,
+    /// Its quote wasn't the one asked about any more (renewed already by
+    /// another request): nothing changed.
+    Moved,
+    /// It can't be renewed, and why.
+    Refused(String),
+    /// The row scanning it is behind: a payment may be in a block not yet
+    /// scanned for it. Worth asking again.
+    Behind,
+}
+
 pub struct NewOrder {
     pub tenant_id: TenantId,
     pub merchant_order_id: Option<String>,
@@ -2561,6 +2576,85 @@ impl Store {
             params![order_id, now],
         )?;
         Ok(CancelOrder::Cancelled)
+    }
+
+    /// Gives one of `tenant_id`'s orders a new quote, `xmr_amount_piconero`
+    /// until `new_expires_at` (or a second after the quote it replaces, if
+    /// that's later), at the same address, if its quote is still
+    /// the one that ended at `expected_expires_at` and nothing can have
+    /// reached it (docs/decisions/order-renewal.md 1): expired, no payment
+    /// recorded at all (voided ones included) and no double spend ever, still
+    /// in the scan window as of `now`, on the store's own wallet, and its scan
+    /// row not behind. Writes the row only; the caller recomputes its status
+    /// (to `pending`) and announces it in the same transaction, as
+    /// [`Store::cancel_order`]'s caller does, so a payment the scanner
+    /// records first refuses the renewal and one recorded after it counts
+    /// against the new quote. Scoped by `tenant_id` like `get_order`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the order, the quote it replaces, the new quote and the clock: each is one thing the check reads"
+    )]
+    pub fn renew_order(
+        &self,
+        tenant_id: &TenantId,
+        order_id: &OrderId,
+        expected_expires_at: i64,
+        xmr_amount_piconero: Piconero,
+        new_expires_at: i64,
+        now: i64,
+        grace_period_seconds: i64,
+    ) -> Result<RenewOrder> {
+        let Some(order) = self.get_order(tenant_id, order_id)? else {
+            return Err(StoreError::NotFound);
+        };
+        if order.expires_at != expected_expires_at {
+            return Ok(RenewOrder::Moved);
+        }
+        if order.status != OrderStatus::Expired || order.cancelled_at.is_some() {
+            return Ok(RenewOrder::Refused(format!(
+                "it is {}, and only an expired order nothing was paid to can be renewed",
+                order.status
+            )));
+        }
+        let paid_to: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM order_payments WHERE order_id = ?1)",
+            [order_id],
+            |row| row.get(0),
+        )?;
+        if paid_to
+            || order.amount_received_piconero > Piconero::ZERO
+            || order.double_spend_detected_at.is_some()
+        {
+            return Ok(RenewOrder::Refused("a payment has reached it".to_owned()));
+        }
+        if !order.in_scan_window(now, grace_period_seconds) {
+            return Ok(RenewOrder::Refused(
+                "it ended too long ago, and Monokulo no longer watches its address".to_owned(),
+            ));
+        }
+        if order.scan_tenant_id != order.tenant_id {
+            return Ok(RenewOrder::Refused(
+                "it is on a wallet the store has since left".to_owned(),
+            ));
+        }
+        let tip = self.order_scanned_tip(order_id)?;
+        if self.recompute_facts(&order, tip)?.2 {
+            return Ok(RenewOrder::Behind);
+        }
+        // Always later than the quote it replaces, so a quote's expiry
+        // names it (a caller tells the latest quote by it), even for a
+        // renewal within the second the order was made in.
+        let new_expires_at = new_expires_at.max(order.expires_at.saturating_add(1));
+        let changed = self.conn.execute(
+            "UPDATE orders SET xmr_amount_piconero = ?3, expires_at_utc = ?4
+             WHERE id = ?1 AND expires_at_utc = ?2 AND status = 'expired' AND amount_received_piconero = 0",
+            params![order_id, expected_expires_at, xmr_amount_piconero, new_expires_at],
+        )?;
+        Ok(if changed == 1 {
+            RenewOrder::Renewed
+        } else {
+            RenewOrder::Moved
+        })
     }
 
     /// The highest block recorded on `order_id`'s network (`0` before the

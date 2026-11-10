@@ -268,6 +268,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             post(admin::cancel_order),
         )
         .route(
+            "/api/v1/admin/tenant/orders/{order_id}/renew",
+            post(admin::renew_order),
+        )
+        .route(
             "/api/v1/admin/tenant/payments/lookup",
             post(admin::lookup_payment),
         )
