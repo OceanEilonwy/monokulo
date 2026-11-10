@@ -119,6 +119,18 @@ impl Clock {
         }
     }
 
+    /// Nanoseconds since the epoch, for comparing with log records, which
+    /// are stamped to the nanosecond. A fixed or hand-moved clock has whole
+    /// seconds only, so it reads as the start of its second.
+    pub fn now_nanos(&self) -> i64 {
+        match self {
+            Clock::System => system_now_nanos(),
+            Clock::Fixed(_) | Clock::Manual(_) => {
+                self.now().as_secs().saturating_mul(1_000_000_000)
+            }
+        }
+    }
+
     /// A clock starting at `at` that only moves when the returned hand
     /// moves it.
     pub fn manual(at: UnixTime) -> (Clock, ManualTime) {
@@ -137,6 +149,17 @@ fn system_now() -> UnixTime {
                 i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
             }),
     )
+}
+
+/// The system's wall clock to the nanosecond, saturating rather than
+/// wrapping.
+#[allow(clippy::disallowed_methods)]
+fn system_now_nanos() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
+        })
 }
 
 /// The hand of a [`Clock::Manual`]: every clone moves the same time.

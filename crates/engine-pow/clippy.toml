@@ -13,5 +13,4 @@ allow-dbg-in-tests = true
 disallowed-methods = [
     { path = "std::time::SystemTime::now", reason = "read the time from a clock::Clock passed in (crates/clock)" },
     { path = "std::time::Instant::now", reason = "use tokio::time::Instant, which paused test time controls" },
-    { path = "service_runtime::time::now_unix", reason = "read the time from a clock::Clock passed in (crates/clock)" },
 ]
