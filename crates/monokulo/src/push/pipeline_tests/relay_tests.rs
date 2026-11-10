@@ -113,7 +113,8 @@ struct ServedRelay {
 }
 
 impl ServedRelay {
-    async fn start(apns: &str, fcm: &str) -> ServedRelay {
+    /// A relay reading `clock`: the test world's, so its times are the world's.
+    async fn start(apns: &str, fcm: &str, clock: clock::Clock) -> ServedRelay {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let store_path = std::env::temp_dir()
@@ -151,13 +152,9 @@ impl ServedRelay {
             ("MONOKULO_RELAY_FCM_CREDENTIALS", account.to_string()),
         ]);
         let config = settings::load(stored, env, Host::Embedded).await.unwrap();
-        let relay = Relay::start(
-            &config,
-            tokio_util::sync::CancellationToken::new(),
-            clock::Clock::System,
-        )
-        .await
-        .unwrap();
+        let relay = Relay::start(&config, tokio_util::sync::CancellationToken::new(), clock)
+            .await
+            .unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
             relay
@@ -219,7 +216,7 @@ async fn chain() -> Chain {
     let world = world().await;
     let (apns, apns_origin) = Provider::start().await;
     let (fcm, fcm_origin) = Provider::start().await;
-    let relay = ServedRelay::start(&apns_origin, &fcm_origin).await;
+    let relay = ServedRelay::start(&apns_origin, &fcm_origin, world.clock.clone()).await;
     Chain {
         world,
         relay,
@@ -289,7 +286,6 @@ async fn a_paid_sale_reaches_apns_through_the_relay_and_decrypts_on_the_device_o
     .await
     .expect("the paid event is queued and wakes the worker");
     subscriber.abort();
-    world.set(clock::Clock::System.now().as_secs());
     assert_eq!(world.tick().await, 1);
 
     let received = chain.apns.only();
@@ -302,12 +298,14 @@ async fn a_paid_sale_reaches_apns_through_the_relay_and_decrypts_on_the_device_o
         policy_topic(&target, &order)
     );
     let expiration: i64 = received.header("apns-expiration").parse().unwrap();
-    // The relay reads the system's time (`Clock::System`, `chain`), not the
-    // world's, so its expiry is checked against the system's.
-    let now = clock::Clock::System.now().as_secs();
-    assert!(
-        (now + 1_700..=now + 1_800).contains(&expiration),
-        "{expiration}"
+    // The relay reads the world's clock (`chain`), so the expiry is exact.
+    assert_eq!(
+        expiration,
+        world
+            .clock
+            .now()
+            .saturating_add(std::time::Duration::from_secs(1_800))
+            .as_secs()
     );
     assert_eq!(
         received.body["aps"],
