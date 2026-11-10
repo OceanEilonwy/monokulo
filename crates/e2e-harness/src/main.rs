@@ -353,6 +353,7 @@ async fn main() {
         push: Arc::new(monokulo::push::Push::for_tests()),
         revocations: Default::default(),
         stopping: Default::default(),
+        clock: Default::default(),
     };
     let cp_router = build_monokulo_router(cp_state);
     let cp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")

@@ -19,3 +19,25 @@ pub fn now_unix_nanos() -> i64 {
         .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
         .unwrap_or(0)
 }
+
+/// The time something reads: the system's, or one moment fixed. Abuse
+/// protection's rolling minutes and the checkout's countdown read one, so a
+/// test (or the recorded API reference, `cargo xtask api openapi`) can pin
+/// the moment and get the same answer on every machine and every run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Clock {
+    #[default]
+    System,
+    /// Always this moment, in Unix seconds.
+    Fixed(i64),
+}
+
+impl Clock {
+    /// Seconds since the Unix epoch, by this clock.
+    pub fn now(self) -> i64 {
+        match self {
+            Clock::System => now_unix(),
+            Clock::Fixed(at) => at,
+        }
+    }
+}

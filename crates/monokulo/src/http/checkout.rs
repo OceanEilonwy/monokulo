@@ -266,8 +266,8 @@ impl CheckoutOptions {
             .as_deref()
             .filter(|name| jiff::tz::TimeZone::get(name).is_ok())
     }
-    fn clock(&self) -> views::time::Clock {
-        views::time::Clock::new(self.zone(), None, crate::now_unix())
+    fn clock(&self, now: i64) -> views::time::Clock {
+        views::time::Clock::new(self.zone(), None, now)
     }
     fn theme(&self) -> crate::db::Theme {
         crate::db::Theme::from_db_str(self.theme.as_deref().unwrap_or(""))
@@ -470,7 +470,7 @@ async fn choose_page(
         .await
         .ok()?;
     let page = page?;
-    let now = crate::now_unix();
+    let now = state.clock.now();
     crate::checkout_pages::recheck_if_due(
         state.db.clone(),
         state.proofs.clone(),
@@ -573,7 +573,10 @@ async fn build_checkout_view(
         })
         .await
         .unwrap_or_default();
-    let header = merchant_header(row, &detail.order, metadata.as_ref(), &domains);
+    // One moment for the whole render: the countdown and the rest of the
+    // page agree, and a test can fix it (`AppState::clock`).
+    let now = state.clock.now();
+    let header = merchant_header(row, &detail.order, metadata.as_ref(), &domains, now);
     let (amount, currency) = match metadata {
         Some(metadata) => (metadata.amount, metadata.currency),
         None => ("—".to_string(), "".to_string()),
@@ -639,12 +642,9 @@ async fn build_checkout_view(
         progress_percent,
         is_terminal,
         double_spend_detected_at: detail.order.double_spend_detected_at,
-        clock: options.clock(),
+        clock: options.clock(now),
         local_times: options.zone().is_none(),
-        expires_in_display: crate::templates::format_duration_until(
-            detail.order.expires_at,
-            crate::now_unix(),
-        ),
+        expires_in_display: crate::templates::format_duration_until(detail.order.expires_at, now),
         created_at: detail.order.created_at,
         expires_at: detail.order.expires_at,
         refund_address: detail.order.refund_address.clone(),
@@ -731,6 +731,7 @@ fn merchant_header(
     order: &OrderView,
     metadata: Option<&crate::db::OrderCurrencyMetadataRow>,
     domains: &[crate::db::StoreDomainRow],
+    now: i64,
 ) -> MerchantHeader {
     let shown = metadata.is_none_or(|m| m.show_merchant_order_id);
     MerchantHeader {
@@ -744,11 +745,7 @@ fn merchant_header(
             .merchant_order_id
             .clone()
             .filter(|reference| shown && !reference.is_empty()),
-        merchant_site: crate::embed_domains::verified_site(
-            row.site.as_ref(),
-            domains,
-            crate::now_unix(),
-        ),
+        merchant_site: crate::embed_domains::verified_site(row.site.as_ref(), domains, now),
     }
 }
 
@@ -1251,9 +1248,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(options("Asia/Tokyo").suffix(), "?timezone=Asia%2FTokyo");
-        assert_eq!(options("Asia/Tokyo").clock().name(), "Asia/Tokyo");
+        assert_eq!(options("Asia/Tokyo").clock(0).name(), "Asia/Tokyo");
         assert_eq!(options("Not/AZone").suffix(), "");
-        assert_eq!(options("Not/AZone").clock().name(), "UTC");
+        assert_eq!(options("Not/AZone").clock(0).name(), "UTC");
         let compact = super::CheckoutOptions {
             view: Some("compact".into()),
             ..options("Europe/London")
@@ -2003,6 +2000,12 @@ mod tests {
     #[tokio::test]
     async fn the_routed_checkout_stream_sends_only_changed_parts_to_their_elements() {
         let (state, engine) = test_state_with_real_engine().await;
+        // Fixed, so the countdown is the same in every render and only the
+        // order's own change is sent.
+        let state = AppState {
+            clock: service_runtime::time::Clock::Fixed(crate::now_unix()),
+            ..state
+        };
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,

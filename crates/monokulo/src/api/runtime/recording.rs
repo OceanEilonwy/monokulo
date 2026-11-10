@@ -1037,7 +1037,10 @@ fn with_abuse(state: &AppState, config: abuse::AbuseConfig, recorder: &Recorder)
 /// when a challenge expires depend on where in the minute its requests
 /// fall, so on the system's clock they'd change from run to run.
 fn abuse(config: abuse::AbuseConfig) -> Arc<abuse::AbuseProtection> {
-    Arc::new(abuse::AbuseProtection::new(config).with_clock(abuse::Clock::Fixed(RECORDED_AT)))
+    Arc::new(
+        abuse::AbuseProtection::new(config)
+            .with_clock(service_runtime::time::Clock::Fixed(RECORDED_AT)),
+    )
 }
 
 /// A custom page that passes its checks.
