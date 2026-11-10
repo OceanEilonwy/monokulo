@@ -389,8 +389,9 @@ async fn a_store_sends_at_most_six_tests_a_minute() {
     // minute, which starts at its first test, can't end halfway through.
     let state = AppState {
         abuse: Arc::new(
-            abuse::AbuseProtection::new(shop.state.abuse.config())
-                .with_clock(service_runtime::time::Clock::Fixed(1_767_225_615)),
+            abuse::AbuseProtection::new(shop.state.abuse.config()).with_clock(clock::Clock::Fixed(
+                clock::UnixTime::from_secs(1_767_225_615),
+            )),
         ),
         ..shop.state.clone()
     };

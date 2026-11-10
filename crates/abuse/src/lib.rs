@@ -26,8 +26,8 @@ pub mod proxy_protocol;
 pub mod stats;
 pub mod streams;
 
+use clock::Clock;
 use parking_lot::RwLock;
-use service_runtime::time::Clock;
 use std::sync::Arc;
 
 pub use identity::{ClientIdentity, TrustedProxies};
@@ -139,7 +139,7 @@ impl AbuseProtection {
 
     /// Seconds since the Unix epoch, by its clock.
     pub fn now(&self) -> i64 {
-        self.clock.now()
+        self.clock.now().as_secs()
     }
 
     pub fn config(&self) -> AbuseConfig {

@@ -846,7 +846,9 @@ mod tests {
                         hard_per_min: 2,
                         ..Default::default()
                     })
-                    .with_clock(service_runtime::time::Clock::Fixed(1_767_225_630)),
+                    .with_clock(clock::Clock::Fixed(
+                        clock::UnixTime::from_secs(1_767_225_630),
+                    )),
                 ),
                 ..state(AbuseConfig::default())
             });

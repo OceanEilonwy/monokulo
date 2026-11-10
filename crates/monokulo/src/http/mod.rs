@@ -244,7 +244,7 @@ pub struct AppState {
     /// The time pages are rendered at: the system's, or, in a test that
     /// compares renders, one fixed moment so a countdown never ticks between
     /// them.
-    pub clock: service_runtime::time::Clock,
+    pub clock: clock::Clock,
 }
 
 impl AppState {

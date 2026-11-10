@@ -470,7 +470,7 @@ async fn choose_page(
         .await
         .ok()?;
     let page = page?;
-    let now = state.clock.now();
+    let now = state.clock.now().as_secs();
     crate::checkout_pages::recheck_if_due(
         state.db.clone(),
         state.proofs.clone(),
@@ -575,7 +575,7 @@ async fn build_checkout_view(
         .unwrap_or_default();
     // One moment for the whole render: the countdown and the rest of the
     // page agree, and a test can fix it (`AppState::clock`).
-    let now = state.clock.now();
+    let now = state.clock.now().as_secs();
     let header = merchant_header(row, &detail.order, metadata.as_ref(), &domains, now);
     let (amount, currency) = match metadata {
         Some(metadata) => (metadata.amount, metadata.currency),
@@ -2003,7 +2003,7 @@ mod tests {
         // Fixed, so the countdown is the same in every render and only the
         // order's own change is sent.
         let state = AppState {
-            clock: service_runtime::time::Clock::Fixed(crate::now_unix()),
+            clock: clock::Clock::Fixed(clock::Clock::System.now()),
             ..state
         };
         let router = build_router(state.clone());

@@ -1,0 +1,9 @@
+# Time is read from a `clock::Clock` passed in, so a test can say what time
+# it is (crates/clock). `clock` itself is the one place allowed to read the
+# system's wall clock. Monotonic time is `tokio::time::Instant`, which a
+# paused tokio test controls.
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "read the time from a clock::Clock passed in (crates/clock)" },
+    { path = "std::time::Instant::now", reason = "use tokio::time::Instant, which paused test time controls" },
+    { path = "service_runtime::time::now_unix", reason = "read the time from a clock::Clock passed in (crates/clock)" },
+]

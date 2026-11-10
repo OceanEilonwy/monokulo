@@ -4,6 +4,8 @@
 
 /// Seconds since the Unix epoch. A clock set before 1970 reads as 0 rather
 /// than panicking in a request or a loop.
+// Being retired for `clock::Clock` (clippy.toml refuses calls to it).
+#[allow(clippy::disallowed_methods)]
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -13,31 +15,10 @@ pub fn now_unix() -> i64 {
 
 /// Nanoseconds since the Unix epoch, as log records carry them; saturates
 /// rather than wrapping.
+#[allow(clippy::disallowed_methods)]
 pub fn now_unix_nanos() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
         .unwrap_or(0)
-}
-
-/// The time something reads: the system's, or one moment fixed. Abuse
-/// protection's rolling minutes and the checkout's countdown read one, so a
-/// test (or the recorded API reference, `cargo xtask api openapi`) can pin
-/// the moment and get the same answer on every machine and every run.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Clock {
-    #[default]
-    System,
-    /// Always this moment, in Unix seconds.
-    Fixed(i64),
-}
-
-impl Clock {
-    /// Seconds since the Unix epoch, by this clock.
-    pub fn now(self) -> i64 {
-        match self {
-            Clock::System => now_unix(),
-            Clock::Fixed(at) => at,
-        }
-    }
 }

@@ -1039,7 +1039,7 @@ fn with_abuse(state: &AppState, config: abuse::AbuseConfig, recorder: &Recorder)
 fn abuse(config: abuse::AbuseConfig) -> Arc<abuse::AbuseProtection> {
     Arc::new(
         abuse::AbuseProtection::new(config)
-            .with_clock(service_runtime::time::Clock::Fixed(RECORDED_AT)),
+            .with_clock(clock::Clock::Fixed(clock::UnixTime::from_secs(RECORDED_AT))),
     )
 }
 

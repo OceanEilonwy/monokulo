@@ -326,7 +326,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         relay: relay.clone(),
         revocations: Default::default(),
         stopping: stopping.clone(),
-        clock: service_runtime::time::Clock::System,
+        clock: clock::Clock::System,
         tor: tor.clone(),
         engine,
     };

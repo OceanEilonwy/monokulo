@@ -1,0 +1,18 @@
+[package]
+name = "clock"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "What time it is, from a clock passed in: the system's in production, a fixed or hand-moved one in tests"
+
+# Only serde, so the lightest crates (snp-attest, key-custody, telemetry)
+# can take a `Clock` and a `UnixTime` too.
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0.151"
+
+[lints]
+workspace = true
