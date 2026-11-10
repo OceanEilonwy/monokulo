@@ -8,6 +8,8 @@
 //! voided - see `double_spend_detected_at` in the schema, which is why that fact lives
 //! outside this function entirely.
 
+use clock::UnixTime;
+
 /// Shared with monokulo, which reads it from the admin API.
 pub use engine_protocol::amount::Piconero;
 pub use engine_protocol::order_status::OrderStatus;
@@ -26,8 +28,8 @@ pub struct StatusInputs {
     /// trusts a mempool-only sighting as final the instant the full amount is seen -
     /// see `derive_status`'s own doc comment for why this needs no special-casing.
     pub confirmations_required: u64,
-    pub now: i64,
-    pub expires_at: i64,
+    pub now: UnixTime,
+    pub expires_at: UnixTime,
 }
 
 /// Derive an order's status from its currently-valid (non-voided) payments.
@@ -139,8 +141,8 @@ mod tests {
         StatusInputs {
             xmr_amount_piconero: Piconero(expected),
             confirmations_required: conf_required,
-            now,
-            expires_at,
+            now: UnixTime::from_secs(now),
+            expires_at: UnixTime::from_secs(expires_at),
         }
     }
 

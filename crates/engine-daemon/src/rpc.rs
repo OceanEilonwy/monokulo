@@ -24,6 +24,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use clock::Clock;
 use monero::consensus::encode::deserialize;
 use monero::cryptonote::hash::Hashable as _;
 use monero::Transaction;
@@ -181,7 +182,7 @@ impl RpcDaemonClient {
             unsupported,
             max_response_bytes: MAX_RESPONSE_BYTES,
             stats: parking_lot::Mutex::default(),
-            link: crate::link::Link::default(),
+            link: crate::link::Link::new(Clock::System),
             pool: tokio::sync::Mutex::default(),
             pool_reuse: POOL_REUSE,
             pool_resync: POOL_RESYNC_INTERVAL,
@@ -197,6 +198,15 @@ impl RpcDaemonClient {
     pub fn with_pool_timing(mut self, reuse: Duration, resync: Duration) -> Self {
         self.pool_reuse = reuse;
         self.pool_resync = resync;
+        self
+    }
+
+    /// The time this client's link measurements are stamped with, in place
+    /// of the system's: for tests that say what time it is.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use = "the client with the clock set is returned, not changed in place"]
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.link = crate::link::Link::new(clock);
         self
     }
 
@@ -4159,7 +4169,7 @@ mod live_node_tests {
         // Just after a block the mainnet pool can be empty for a moment
         // (2026-10-23's run found it so); new transactions arrive within
         // seconds, so the test waits for some rather than fail on that.
-        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        let deadline = Instant::now() + Duration::from_secs(300);
         let pool: Vec<String> = loop {
             let pool: Vec<String> = c
                 .pool_hashes()
@@ -4173,7 +4183,7 @@ mod live_node_tests {
                 break pool;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                Instant::now() < deadline,
                 "the live mempool stayed empty for 5 minutes"
             );
             tokio::time::sleep(Duration::from_secs(5)).await;

@@ -37,7 +37,9 @@ use crate::store::TenantId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
+use clock::UnixTime;
 use tokio::time::Instant;
 
 use crate::key_custody::{LiveWallet, ScanIndices, ScanInput};
@@ -56,13 +58,13 @@ use walked::Walked;
 /// How far ahead of real time consensus lets a block's timestamp run.
 /// A block's scan window starts this much before its own timestamp, so a
 /// forward-dated block can't hide an order that was open when it was mined.
-const BLOCK_TIMESTAMP_DRIFT_SECONDS: i64 = 2 * 60 * 60;
+const BLOCK_TIMESTAMP_DRIFT: Duration = Duration::from_hours(2);
 
 /// How far before now a block's scan window may start, however old the
 /// block says it is: a week of outage is caught up in full, and a block
 /// with a made-up timestamp (consensus only bounds it by the blocks before
 /// it) can't put every order ever closed in scope.
-const BLOCK_SCOPE_LOOKBACK_SECONDS: i64 = 7 * 24 * 60 * 60;
+const BLOCK_SCOPE_LOOKBACK: Duration = Duration::from_hours(7 * 24);
 
 /// Proof that a block was scanned in full for a tenant, with the results.
 ///
@@ -180,7 +182,7 @@ impl BlockState {
         daemon: &dyn engine_daemon::MoneroDaemonClient,
         stores: usize,
         tuning: &super::ScanTuning,
-    ) -> std::time::Duration {
+    ) -> Duration {
         let base = tuning.round_budget;
         let Some(avg_tx_bytes) = self.paged.lock().as_ref().map(|paged| paged.avg_tx_bytes) else {
             self.progress.lock().round_budget = base;
@@ -229,17 +231,14 @@ impl BlockState {
 
     /// A block request that failed: one that ran out of time or came back
     /// too large halves the next.
-    fn note_failed(&self, error: &ScannerError) {
+    fn note_failed(&self, error: &ScannerError, now: UnixTime) {
         if matches!(error, ScannerError::Daemon(e) if e.asks_for_less()) {
             let mut progress = self.progress.lock();
             progress.avg_bytes_per_block =
                 crate::scanner::avg_after_failed_fetch(progress.avg_bytes_per_block);
             // The block may be too large to fetch whole at all: read
             // headers first, so the next try can page it.
-            progress.want_headers_first(
-                crate::now_unix(),
-                crate::scaling::HeadersFirstReason::FailedRequest,
-            );
+            progress.want_headers_first(now, crate::scaling::HeadersFirstReason::FailedRequest);
         }
     }
 
@@ -252,6 +251,7 @@ impl BlockState {
         sizes: &[usize],
         response_cap: u64,
         link: Option<engine_daemon::link::LinkCost>,
+        now: UnixTime,
     ) {
         let near = sizes.iter().any(|size| {
             crate::scanner::scan_in_pages(
@@ -262,18 +262,17 @@ impl BlockState {
             )
         });
         if near {
-            self.progress.lock().want_headers_first(
-                crate::now_unix(),
-                crate::scaling::HeadersFirstReason::LargeBlock,
-            );
+            self.progress
+                .lock()
+                .want_headers_first(now, crate::scaling::HeadersFirstReason::LargeBlock);
         }
     }
 
     /// Whether blocks' headers are read before the blocks: for a while
     /// after a sign that blocks may be large, and throughout a block
     /// scanned in pages.
-    fn headers_first(&self) -> bool {
-        self.paged.lock().is_some() || self.progress.lock().headers_first_on(crate::now_unix())
+    fn headers_first(&self, now: UnixTime) -> bool {
+        self.paged.lock().is_some() || self.progress.lock().headers_first_on(now)
     }
 
     /// The large block's current bytes-a-transaction estimate, if one is
@@ -293,8 +292,8 @@ impl BlockState {
     }
 
     /// Time spent fetching blocks.
-    fn note_fetch_time(&self, secs: f64) {
-        self.progress.lock().spent(crate::now_unix(), secs, 0.0, 0);
+    fn note_fetch_time(&self, secs: f64, now: UnixTime) {
+        self.progress.lock().spent(now, secs, 0.0, 0);
     }
 }
 
@@ -344,7 +343,11 @@ impl BlocksRound {
     /// A round's block state, starting from the cache the last round left,
     /// if its blocks came from the node this round reads, trimmed to the
     /// memory budget as it is now (the setting may have been lowered).
-    pub(crate) fn resume(state: &BlockState, inputs: &super::RoundInputs<'_>) -> Self {
+    pub(crate) fn resume(
+        state: &BlockState,
+        inputs: &super::RoundInputs<'_>,
+        now: UnixTime,
+    ) -> Self {
         let mut round = Self::default();
         let Some(mut carried) = state.carried.lock().take() else {
             return round;
@@ -358,8 +361,8 @@ impl BlocksRound {
             carried.cache.clear()
         };
         let mut progress = state.progress.lock();
-        progress.discarded(discarded, crate::now_unix());
-        progress.cache_bytes(round.cache.bytes as u64, crate::now_unix());
+        progress.discarded(discarded, now);
+        progress.cache_bytes(round.cache.bytes as u64, now);
         round
     }
 }
@@ -403,8 +406,8 @@ pub(super) async fn carry(round: &mut Round<'_>) {
         _ => cache.clear(),
     };
     let mut progress = round.state.blocks.progress.lock();
-    progress.discarded(discarded, crate::now_unix());
-    progress.cache_bytes(cache.bytes as u64, crate::now_unix());
+    progress.discarded(discarded, round.now);
+    progress.cache_bytes(cache.bytes as u64, round.now);
     drop(progress);
     if let (Some(node), false) = (node, cache.blocks.is_empty()) {
         *round.state.blocks.carried.lock() = Some(Carried { cache, node });
@@ -836,7 +839,15 @@ async fn serve_catch_up(
     // Tenants with nothing that could ever have been paid need no block read
     // to decide: straight to the high-water mark.
     let idle = round
-        .db(move |s, network| s.advance_idle_cursors(network, group, high_water, i64::MIN / 2, 0))
+        .db(move |s, network| {
+            s.advance_idle_cursors(
+                network,
+                group,
+                high_water,
+                UnixTime::from_secs(i64::MIN / 2),
+                0,
+            )
+        })
         .await?;
     record_idle(round, group, high_water, idle);
     // A group that diverged stays where it is; the rotation still moves on
@@ -940,6 +951,7 @@ async fn advance_group(
                 OnTimeout::Stop
             },
         };
+        let now = round.now;
         let (outcome, prefetched) = tokio::join!(scan_block(round, task, &given), async {
             match prefetch {
                 Some((from, count)) => {
@@ -947,7 +959,7 @@ async fn advance_group(
                     let fetched = fetch_chunk(daemon, from, count).await;
                     state
                         .blocks
-                        .note_fetch_time(started.elapsed().as_secs_f64());
+                        .note_fetch_time(started.elapsed().as_secs_f64(), now);
                     Some(fetched)
                 }
                 None => None,
@@ -963,10 +975,11 @@ async fn advance_group(
                     daemon.link_cost(),
                     &state.blocks,
                     state.tuning(),
+                    now,
                 );
             }
             // A failed prefetch is asked for again when it's needed.
-            Some(Err(e)) => state.blocks.note_failed(&e),
+            Some(Err(e)) => state.blocks.note_failed(&e, now),
             None => {}
         }
         match outcome? {
@@ -1086,12 +1099,11 @@ struct Plan {
 /// Where the scan window of a block mined at `timestamp` starts: the drift
 /// consensus allows before it, never later than `now`, and never more than
 /// the lookback before it.
-fn window_start(timestamp: u64, now: i64) -> i64 {
-    i64::try_from(timestamp)
-        .unwrap_or(i64::MAX)
-        .saturating_sub(BLOCK_TIMESTAMP_DRIFT_SECONDS)
+fn window_start(timestamp: u64, now: UnixTime) -> UnixTime {
+    UnixTime::from_secs(i64::try_from(timestamp).unwrap_or(i64::MAX))
+        .saturating_sub(BLOCK_TIMESTAMP_DRIFT)
         .min(now)
-        .max(now.saturating_sub(BLOCK_SCOPE_LOOKBACK_SECONDS))
+        .max(now.saturating_sub(BLOCK_SCOPE_LOOKBACK))
 }
 
 /// The tenants among `ids` with something in scope from `since`, their
@@ -1101,7 +1113,7 @@ fn scope(
     s: &Store,
     network: monero::Network,
     ids: &[TenantId],
-    since: i64,
+    since: UnixTime,
     grace: i64,
 ) -> Result<
     (
@@ -1175,7 +1187,7 @@ async fn scan_block(
         .blocks
         .progress
         .lock()
-        .start_block(height, crate::now_unix());
+        .start_block(height, round.now);
     let group_page = round.state.tuning().group_page;
     let mut waiting = round.state.backoff.waiting();
     waiting.extend_from_slice(given);
@@ -1208,7 +1220,9 @@ async fn scan_block(
     // block mined during it is new, and orders closed while it lasted.
     let timestamp = if let Some(block) = round.blocks.cache.get(height) {
         Some(block.timestamp)
-    } else if round.state.blocks.headers_first() || round.blocks.headers.contains_key(&height) {
+    } else if round.state.blocks.headers_first(round.now)
+        || round.blocks.headers.contains_key(&height)
+    {
         Some(known_header(round, height, end).await?.timestamp)
     } else if frontier {
         // A new block not held yet is fetched once: whole if anyone is in
@@ -1388,7 +1402,7 @@ async fn scan_block(
                         .blocks
                         .progress
                         .lock()
-                        .discarded(discarded, crate::now_unix());
+                        .discarded(discarded, round.now);
                     return Err(error);
                 }
             }
@@ -1469,7 +1483,7 @@ async fn scan_block(
         .blocks
         .progress
         .lock()
-        .finish_block(height, crate::now_unix());
+        .finish_block(height, round.now);
     let mut paged = round.state.blocks.paged.lock();
     if paged.as_ref().is_some_and(|p| p.outline.height == height) {
         *paged = None;
@@ -1594,7 +1608,7 @@ fn checkpoint(
     height: u64,
     hash: &str,
     progress: Vec<(TenantId, usize, Vec<ScanResult>)>,
-    now: i64,
+    now: UnixTime,
 ) -> Result<(), ScannerError> {
     let result = s.in_transaction(|s| -> Result<(), ScannerError> {
         for (tenant_id, next_tx, scans) in progress {
@@ -1635,7 +1649,7 @@ struct CommitBlock {
     prev_hash: String,
     parent: u64,
     idle_to: u64,
-    since: i64,
+    since: UnixTime,
     grace: i64,
 }
 
@@ -1665,7 +1679,7 @@ fn commit(
     network: monero::Network,
     block: &CommitBlock,
     scanned: &[ScannedBlock],
-    now: i64,
+    now: UnixTime,
 ) -> Result<Option<Commit>, ScannerError> {
     let result = s.in_transaction(|s| -> Result<Option<Commit>, ScannerError> {
         let height = block.height;
@@ -1787,6 +1801,10 @@ fn prefetch_range(round: &Round<'_>, next: u64, end: u64) -> Option<(u64, u64)> 
 impl BlockCache {
     /// Adds a fetched run of blocks, keeping within the memory budget
     /// around `keep`, which stays.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the chunk, how much of it to keep, the cache's limits, the state it reports to and the moment: each is one thing it reads"
+    )]
     fn add_chunk(
         &mut self,
         chunk: Vec<ChainBlock>,
@@ -1795,6 +1813,7 @@ impl BlockCache {
         link: Option<engine_daemon::link::LinkCost>,
         state: &BlockState,
         tuning: &super::ScanTuning,
+        now: UnixTime,
     ) {
         if chunk.is_empty() {
             return;
@@ -1805,14 +1824,20 @@ impl BlockCache {
             .map(|b| usize::try_from(b.wire_bytes).unwrap_or(usize::MAX))
             .collect();
         state.note_fetched(tuning, sizes.iter().sum(), chunk.len());
-        state.note_sizes(tuning, &sizes, tuning.response_cap_bytes(budget_mb), link);
+        state.note_sizes(
+            tuning,
+            &sizes,
+            tuning.response_cap_bytes(budget_mb),
+            link,
+            now,
+        );
         for (block, bytes) in chunk.into_iter().zip(sizes) {
             self.insert(block, bytes);
         }
         let discarded = self.trim(Some(keep), budget_bytes(budget_mb));
         let mut progress = state.progress.lock();
-        progress.discarded(discarded, crate::now_unix());
-        progress.cache_bytes(self.bytes as u64, crate::now_unix());
+        progress.discarded(discarded, now);
+        progress.cache_bytes(self.bytes as u64, now);
     }
 }
 
@@ -1897,7 +1922,7 @@ async fn scan_txs(
             )
             .await;
             round.state.blocks.progress.lock().spent(
-                crate::now_unix(),
+                round.now,
                 0.0,
                 scanning.elapsed().as_secs_f64(),
                 ((end - start) * batch.len()) as u64,
@@ -2085,7 +2110,7 @@ async fn fetch_page(
     round
         .state
         .blocks
-        .note_fetch_time(started.elapsed().as_secs_f64());
+        .note_fetch_time(started.elapsed().as_secs_f64(), round.now);
     let fetched = match fetched {
         Ok(fetched) => fetched,
         Err(e) => {
@@ -2125,7 +2150,7 @@ fn in_pages(round: &Round<'_>, header: &ChainHeader) -> bool {
 /// them while headers aren't read first; else up to the first whose header
 /// isn't held this round, or that is scanned in pages.
 fn whole_run(round: &Round<'_>, from: u64, count: u64) -> u64 {
-    if !round.state.blocks.headers_first() {
+    if !round.state.blocks.headers_first(round.now) {
         return count;
     }
     (from..from.saturating_add(count))
@@ -2167,7 +2192,7 @@ async fn source(round: &mut Round<'_>, height: u64, end: u64) -> Result<Source, 
     if let Some(block) = round.blocks.cache.get(height) {
         return Ok(Source::Whole(block));
     }
-    if round.state.blocks.headers_first() {
+    if round.state.blocks.headers_first(round.now) {
         let header = known_header(round, height, end).await?;
         if in_pages(round, &header) {
             return Ok(Source::Pages(paged(round, &header).await?));
@@ -2182,7 +2207,7 @@ async fn hold(round: &mut Round<'_>, height: u64, end: u64) -> Result<(), Scanne
     if round.blocks.cache.contains(height) {
         return Ok(());
     }
-    if round.state.blocks.headers_first() {
+    if round.state.blocks.headers_first(round.now) {
         let header = known_header(round, height, end).await?;
         if in_pages(round, &header) {
             return Ok(());
@@ -2219,7 +2244,7 @@ async fn paged(round: &Round<'_>, header: &ChainHeader) -> Result<Paged, Scanner
     round
         .state
         .blocks
-        .note_fetch_time(started.elapsed().as_secs_f64());
+        .note_fetch_time(started.elapsed().as_secs_f64(), round.now);
     let outline = outline?;
     if outline.hash != header.hash
         || outline.height != header.height
@@ -2269,11 +2294,11 @@ async fn block(
     round
         .state
         .blocks
-        .note_fetch_time(started.elapsed().as_secs_f64());
+        .note_fetch_time(started.elapsed().as_secs_f64(), round.now);
     let chunk = match fetched {
         Ok(chunk) => chunk,
         Err(e) => {
-            round.state.blocks.note_failed(&e);
+            round.state.blocks.note_failed(&e, round.now);
             return Err(e);
         }
     };
@@ -2287,6 +2312,7 @@ async fn block(
         round.inputs.daemon.link_cost(),
         &state.blocks,
         state.tuning(),
+        round.now,
     );
     round.blocks.cache.get(height).ok_or_else(|| {
         ScannerError::Daemon(engine_daemon::DaemonError::Request(
@@ -2356,30 +2382,35 @@ mod tests {
     #[test]
     fn a_block_near_the_paging_size_turns_headers_first_on() {
         let state = BlockState::default();
+        let now = UnixTime::from_secs(1_000);
         let cap = 32_000_000;
         state.note_sizes(
             &super::super::ScanTuning::DEFAULT,
             &[300_000, 2_000_000],
             cap,
             None,
+            now,
         );
-        state.note_failed(&ScannerError::Daemon(engine_daemon::DaemonError::Request(
-            "refused".into(),
-        )));
-        assert!(!state.headers_first());
+        state.note_failed(
+            &ScannerError::Daemon(engine_daemon::DaemonError::Request("refused".into())),
+            now,
+        );
+        assert!(!state.headers_first(now));
         state.note_sizes(
             &super::super::ScanTuning::DEFAULT,
             &[300_000, 8_000_001],
             cap,
             None,
+            now,
         );
-        assert!(state.headers_first(), "a quarter of the cap");
+        assert!(state.headers_first(now), "a quarter of the cap");
 
         let state = BlockState::default();
-        state.note_failed(&ScannerError::Daemon(engine_daemon::DaemonError::TooLarge(
-            "over the cap".into(),
-        )));
-        assert!(state.headers_first(), "a request refused as too large");
+        state.note_failed(
+            &ScannerError::Daemon(engine_daemon::DaemonError::TooLarge("over the cap".into())),
+            now,
+        );
+        assert!(state.headers_first(now), "a request refused as too large");
     }
 
     /// Replacing a cached block keeps the byte count exact, and trimming
@@ -2466,14 +2497,14 @@ mod tests {
         };
 
         carry(&state, engine_daemon::NodeKey::default());
-        let round = BlocksRound::resume(&state, &inputs);
+        let round = BlocksRound::resume(&state, &inputs, UnixTime::from_secs(1_000));
         assert_eq!(round.cache.bytes, 1024 * 1024, "two of four fit 1 MB");
         assert!(round.cache.contains(1) && round.cache.contains(2));
         assert!(state.carried.lock().is_none(), "taken, not shared");
         assert_eq!(state.progress.lock().discarded_cache_bytes, 1024 * 1024);
 
         carry(&state, engine_daemon::NodeKey(7));
-        let round = BlocksRound::resume(&state, &inputs);
+        let round = BlocksRound::resume(&state, &inputs, UnixTime::from_secs(1_000));
         assert_eq!(round.cache.bytes, 0, "another node's blocks");
         assert_eq!(state.progress.lock().discarded_cache_bytes, 3 * 1024 * 1024);
     }

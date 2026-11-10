@@ -18,6 +18,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use clock::Clock;
+
 #[cfg(feature = "snp")]
 use crate::engine_settings::SnpBootConfig;
 use crate::engine_settings::{Daemons, EngineSettings, ALL, SERVER_TOKEN, STANDALONE_ONLY};
@@ -229,6 +231,9 @@ impl Engine {
         let read_pool =
             crate::store::ReadStorePool::open(&db_file, settings.runtime.load().read_connections)
                 .map_err(StartError::ReadPool)?;
+        // The running engine tells time by the system's clock; its handlers
+        // and loops each read it once per operation.
+        let clock = Clock::System;
         let app_state = AppState {
             db: crate::store::Database::from_parts(db.clone(), read_pool, &store.lock()),
             rate_limits,
@@ -245,6 +250,7 @@ impl Engine {
                 scanner_status: Arc::clone(&scanner_status),
             },
             activity_stream: crate::activity::StreamTuning::DEFAULT,
+            clock: clock.clone(),
         };
 
         let (stop, stopped) = tokio::sync::watch::channel(false);
@@ -255,6 +261,7 @@ impl Engine {
         #[cfg(feature = "snp")]
         if let Some(snp) = snp {
             let handoff_url = snp_boot.handoff_url.map(|url| url.url().to_string());
+            let upkeep_clock = clock.clone();
             loops.push(service_runtime::supervise::supervise_until(
                 "snp key custody upkeep",
                 stopped.clone(),
@@ -265,6 +272,7 @@ impl Engine {
                             url,
                             token: raw_token.clone(),
                         }),
+                        upkeep_clock.clone(),
                     )
                 },
             ));
@@ -289,6 +297,7 @@ impl Engine {
                     Arc::clone(&scanner_status),
                     Arc::clone(&loops_settings),
                     manager_networks.clone(),
+                    clock.clone(),
                 )
             },
         ));

@@ -52,6 +52,7 @@ use axum::middleware;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
+use clock::Clock;
 use serde_json::json;
 use tower_http::limit::RequestBodyLimitLayer;
 
@@ -124,6 +125,9 @@ pub struct AppState {
     /// (`http::activity`): [`crate::activity::StreamTuning::DEFAULT`],
     /// except in tests that set their own.
     pub activity_stream: crate::activity::StreamTuning,
+    /// What time it is: [`Clock::System`] in production, pinned or moved by
+    /// hand in tests. A handler reads it once and passes that moment down.
+    pub clock: Clock,
 }
 
 /// The engine token every test state (and `engine-test-support`'s
@@ -173,6 +177,7 @@ impl AppState {
                 scanner_status: crate::scanner_status::new_scanner_status_map(),
             },
             activity_stream: crate::activity::StreamTuning::DEFAULT,
+            clock: Clock::Fixed(crate::node_test_support::TEST_NOW),
         }
     }
 }
@@ -578,8 +583,6 @@ impl http_body::Body for PermitBody {
         self.inner.size_hint()
     }
 }
-
-pub use crate::now_unix;
 
 pub use crate::network::{network_str, parse_network};
 

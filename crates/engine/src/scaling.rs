@@ -8,7 +8,9 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
+use clock::UnixTime;
 use parking_lot::Mutex;
 
 pub use engine_protocol::scaling::{
@@ -19,7 +21,7 @@ pub use engine_protocol::scaling::{
 /// Blocks kept for the recent figures.
 const RECENT_BLOCKS: usize = 64;
 /// How far back "recent" reaches for blocks a minute and the time split.
-const RECENT_SECS: i64 = 600;
+const RECENT: Duration = Duration::from_secs(600);
 // Bound telemetry even if the wall clock stops or moves backwards.
 const MAX_SAMPLES: usize = 4096;
 
@@ -27,7 +29,9 @@ const MAX_SAMPLES: usize = 4096;
 ///
 /// How long blocks' headers are read before the blocks after the last sign
 /// that a block may be too large to fetch whole.
-pub const HEADERS_FIRST_SECS: i64 = 60 * 60;
+pub const HEADERS_FIRST: Duration = Duration::from_hours(1);
+/// How long the largest recent cache size is kept as the peak.
+const PEAK_CACHE_KEPT: Duration = Duration::from_hours(1);
 
 pub type SharedProgress = Arc<Mutex<ScanProgress>>;
 
@@ -50,17 +54,17 @@ pub struct ScanProgress {
     /// it was spent: what sets the pace.
     pub time: VecDeque<TimeSpent>,
     /// The largest the block cache has been, and when (for an hour).
-    pub peak_cache: Option<(i64, u64)>,
+    pub peak_cache: Option<(UnixTime, u64)>,
     /// Bytes of blocks the cache let go of before any scan read them, since
     /// the engine started: fetched for nothing, and fetched again if needed.
     pub discarded_cache_bytes: u64,
-    /// The same, by when, for the last [`RECENT_SECS`].
-    pub discarded_recent: VecDeque<(i64, u64)>,
+    /// The same, by when, for the last [`RECENT`].
+    pub discarded_recent: VecDeque<(UnixTime, u64)>,
     /// The time the last round was given: the base, unless one page of a
     /// large block needed more.
-    pub round_budget: std::time::Duration,
+    pub round_budget: Duration,
     /// Until when blocks' headers are read before the blocks, and why.
-    pub headers_first: Option<(i64, HeadersFirstReason)>,
+    pub headers_first: Option<(UnixTime, HeadersFirstReason)>,
 }
 
 impl Default for ScanProgress {
@@ -82,7 +86,7 @@ impl Default for ScanProgress {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimeSpent {
-    pub unix: i64,
+    pub unix: UnixTime,
     pub fetch_secs: f64,
     pub scan_secs: f64,
     /// Transactions scanned times stores scanned for, during `scan_secs`.
@@ -91,23 +95,22 @@ pub struct TimeSpent {
 
 impl ScanProgress {
     /// Blocks' headers are read before the blocks for the next
-    /// [`HEADERS_FIRST_SECS`], because of `reason`.
-    pub fn want_headers_first(&mut self, now_unix: i64, reason: HeadersFirstReason) {
-        self.headers_first = Some((now_unix.saturating_add(HEADERS_FIRST_SECS), reason));
+    /// [`HEADERS_FIRST`], because of `reason`.
+    pub fn want_headers_first(&mut self, now: UnixTime, reason: HeadersFirstReason) {
+        self.headers_first = Some((now.saturating_add(HEADERS_FIRST), reason));
     }
 
     /// Whether blocks' headers are being read before the blocks.
-    pub fn headers_first_on(&self, now_unix: i64) -> bool {
-        self.headers_first
-            .is_some_and(|(until, _)| until > now_unix)
+    pub fn headers_first_on(&self, now: UnixTime) -> bool {
+        self.headers_first.is_some_and(|(until, _)| until > now)
     }
 
     /// The scan of block `height` is starting (or carrying on).
-    pub fn start_block(&mut self, height: u64, now_unix: i64) {
+    pub fn start_block(&mut self, height: u64, now: UnixTime) {
         if self.in_progress.as_ref().is_none_or(|b| b.height != height) {
             self.in_progress = Some(BlockInProgress {
                 height,
-                started_unix: now_unix,
+                started_unix: now.as_secs(),
                 wire_bytes: None,
                 pages: None,
             });
@@ -134,7 +137,7 @@ impl ScanProgress {
     }
 
     /// The scan of block `height` was committed.
-    pub fn finish_block(&mut self, height: u64, now_unix: i64) {
+    pub fn finish_block(&mut self, height: u64, now: UnixTime) {
         let Some(block) = self.in_progress.take() else {
             return;
         };
@@ -145,17 +148,17 @@ impl ScanProgress {
         self.recent.push_back(DoneBlock {
             height,
             wire_bytes: block.wire_bytes.unwrap_or(0),
-            secs: now_unix.saturating_sub(block.started_unix).max(0) as f64,
-            finished_unix: now_unix,
+            secs: now.since(UnixTime::from_secs(block.started_unix)).as_secs() as f64,
+            finished_unix: now.as_secs(),
         });
         while self.recent.len() > RECENT_BLOCKS {
             self.recent.pop_front();
         }
     }
 
-    pub fn spent(&mut self, now_unix: i64, fetch_secs: f64, scan_secs: f64, tx_scans: u64) {
+    pub fn spent(&mut self, now: UnixTime, fetch_secs: f64, scan_secs: f64, tx_scans: u64) {
         self.time.push_back(TimeSpent {
-            unix: now_unix,
+            unix: now,
             fetch_secs,
             scan_secs,
             tx_scans,
@@ -166,37 +169,37 @@ impl ScanProgress {
         while self
             .time
             .front()
-            .is_some_and(|t| t.unix < now_unix.saturating_sub(RECENT_SECS))
+            .is_some_and(|t| t.unix < now.saturating_sub(RECENT))
         {
             self.time.pop_front();
         }
     }
 
     /// The block cache let go of `bytes` before any scan read them.
-    pub fn discarded(&mut self, bytes: u64, now_unix: i64) {
+    pub fn discarded(&mut self, bytes: u64, now: UnixTime) {
         if bytes == 0 {
             return;
         }
         self.discarded_cache_bytes = self.discarded_cache_bytes.saturating_add(bytes);
-        self.discarded_recent.push_back((now_unix, bytes));
+        self.discarded_recent.push_back((now, bytes));
         while self.discarded_recent.len() > MAX_SAMPLES {
             self.discarded_recent.pop_front();
         }
         while self
             .discarded_recent
             .front()
-            .is_some_and(|(unix, _)| *unix < now_unix.saturating_sub(RECENT_SECS))
+            .is_some_and(|(unix, _)| *unix < now.saturating_sub(RECENT))
         {
             self.discarded_recent.pop_front();
         }
     }
 
-    pub fn cache_bytes(&mut self, bytes: u64, now_unix: i64) {
+    pub fn cache_bytes(&mut self, bytes: u64, now: UnixTime) {
         let stale = self
             .peak_cache
-            .is_some_and(|(at, _)| at < now_unix.saturating_sub(3600));
+            .is_some_and(|(at, _)| at < now.saturating_sub(PEAK_CACHE_KEPT));
         if stale || self.peak_cache.is_none_or(|(_, peak)| bytes >= peak) {
-            self.peak_cache = Some((now_unix, bytes));
+            self.peak_cache = Some((now, bytes));
         }
     }
 
@@ -208,14 +211,14 @@ impl ScanProgress {
         (scans > 0).then_some(secs / scans as f64)
     }
 
-    /// Figures for `/status`, as of `now_unix`.
-    pub fn report(&self, now_unix: i64) -> ScanReport {
+    /// Figures for `/status`, as of `now`.
+    pub fn report(&self, now: UnixTime) -> ScanReport {
         let recent = self
             .recent
             .iter()
-            .filter(|b| b.finished_unix >= now_unix.saturating_sub(RECENT_SECS))
+            .filter(|b| UnixTime::from_secs(b.finished_unix) >= now.saturating_sub(RECENT))
             .count();
-        let blocks_per_minute = recent as f64 / (RECENT_SECS as f64 / 60.0);
+        let blocks_per_minute = recent as f64 / (RECENT.as_secs_f64() / 60.0);
         let (fetch, scan) = self
             .time
             .iter()
@@ -233,26 +236,30 @@ impl ScanProgress {
             in_progress_secs: self
                 .in_progress
                 .as_ref()
-                .map(|b| now_unix.saturating_sub(b.started_unix).max(0)),
+                .map(|b| wire_secs(now.since(UnixTime::from_secs(b.started_unix)))),
             peak_cache_bytes: self
                 .peak_cache
-                .filter(|(at, _)| *at >= now_unix.saturating_sub(3600))
+                .filter(|(at, _)| *at >= now.saturating_sub(PEAK_CACHE_KEPT))
                 .map(|(_, bytes)| bytes),
             discarded_cache_bytes_recent: self
                 .discarded_recent
                 .iter()
-                .filter(|(unix, _)| *unix >= now_unix.saturating_sub(RECENT_SECS))
+                .filter(|(unix, _)| *unix >= now.saturating_sub(RECENT))
                 .fold(0u64, |total, (_, bytes)| total.saturating_add(*bytes)),
             round_budget_secs: Some(self.round_budget.as_secs()),
-            headers_first: self
-                .headers_first
-                .filter(|(until, _)| *until > now_unix)
-                .map(|(until, reason)| HeadersFirst {
-                    remaining_secs: until.saturating_sub(now_unix),
+            headers_first: self.headers_first.filter(|(until, _)| *until > now).map(
+                |(until, reason)| HeadersFirst {
+                    remaining_secs: wire_secs(now.until(until)),
                     reason,
-                }),
+                },
+            ),
         }
     }
+}
+
+/// A length of time as the whole seconds the wire format carries.
+fn wire_secs(duration: Duration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
 /// Whether recent block sizes are rising, falling or steady: the later
@@ -277,22 +284,30 @@ fn trend(sizes: &[u64]) -> Trend {
 mod tests {
     use super::*;
 
+    fn at(secs: i64) -> UnixTime {
+        UnixTime::from_secs(secs)
+    }
+
     /// Headers come first for an hour after the last sign that blocks may
     /// be large, and each sign starts the hour again.
     #[test]
     fn headers_come_first_for_an_hour_after_each_sign() {
         let mut progress = ScanProgress::default();
-        assert!(!progress.headers_first_on(1_000));
-        assert_eq!(progress.report(1_000).headers_first, None);
-        progress.want_headers_first(1_000, HeadersFirstReason::FailedRequest);
-        assert!(progress.headers_first_on(1_000 + HEADERS_FIRST_SECS - 1));
-        assert!(!progress.headers_first_on(1_000 + HEADERS_FIRST_SECS));
-        progress.want_headers_first(2_000, HeadersFirstReason::LargeBlock);
-        assert!(progress.headers_first_on(1_000 + HEADERS_FIRST_SECS));
+        assert!(!progress.headers_first_on(at(1_000)));
+        assert_eq!(progress.report(at(1_000)).headers_first, None);
+        progress.want_headers_first(at(1_000), HeadersFirstReason::FailedRequest);
+        assert!(progress.headers_first_on(
+            at(1_000)
+                .saturating_add(HEADERS_FIRST)
+                .saturating_sub(Duration::from_secs(1))
+        ));
+        assert!(!progress.headers_first_on(at(1_000).saturating_add(HEADERS_FIRST)));
+        progress.want_headers_first(at(2_000), HeadersFirstReason::LargeBlock);
+        assert!(progress.headers_first_on(at(1_000).saturating_add(HEADERS_FIRST)));
         assert_eq!(
-            progress.report(2_600).headers_first,
+            progress.report(at(2_600)).headers_first,
             Some(HeadersFirst {
-                remaining_secs: HEADERS_FIRST_SECS - 600,
+                remaining_secs: wire_secs(HEADERS_FIRST) - 600,
                 reason: HeadersFirstReason::LargeBlock,
             })
         );
@@ -301,19 +316,19 @@ mod tests {
     #[test]
     fn a_block_is_timed_from_its_start_to_its_commit_across_rounds() {
         let mut progress = ScanProgress::default();
-        progress.start_block(10, 1_000);
+        progress.start_block(10, at(1_000));
         // A later round carrying on with the same block keeps its start.
-        progress.start_block(10, 1_050);
+        progress.start_block(10, at(1_050));
         progress.fetched_block(10, 4_000_000);
-        let report = progress.report(1_130);
+        let report = progress.report(at(1_130));
         assert_eq!(report.in_progress_secs, Some(130));
         assert_eq!(
             report.in_progress.as_ref().unwrap().wire_bytes,
             Some(4_000_000)
         );
 
-        progress.finish_block(10, 1_140);
-        let report = progress.report(1_140);
+        progress.finish_block(10, at(1_140));
+        let report = progress.report(at(1_140));
         assert_eq!(report.in_progress, None);
         assert_eq!(
             report.largest_recent,
@@ -333,8 +348,8 @@ mod tests {
     #[test]
     fn finishing_another_block_leaves_the_one_in_progress() {
         let mut progress = ScanProgress::default();
-        progress.start_block(10, 1_000);
-        progress.finish_block(9, 1_001);
+        progress.start_block(10, at(1_000));
+        progress.finish_block(9, at(1_001));
         assert_eq!(progress.in_progress.as_ref().unwrap().height, 10);
     }
 
@@ -349,11 +364,11 @@ mod tests {
     #[test]
     fn time_is_kept_for_ten_minutes_and_gives_the_cost_of_a_scan() {
         let mut progress = ScanProgress::default();
-        progress.spent(1_000, 2.0, 1.0, 100);
-        progress.spent(1_500, 1.0, 3.0, 100);
+        progress.spent(at(1_000), 2.0, 1.0, 100);
+        progress.spent(at(1_500), 1.0, 3.0, 100);
         assert_eq!(progress.secs_per_tx_scan(), Some(0.02));
-        progress.spent(1_700, 0.0, 0.0, 0);
-        let report = progress.report(1_700);
+        progress.spent(at(1_700), 0.0, 0.0, 0);
+        let report = progress.report(at(1_700));
         assert_eq!(
             (report.fetch_secs_recent, report.scan_secs_recent),
             (1.0, 3.0),
@@ -364,16 +379,16 @@ mod tests {
     #[test]
     fn discarded_bytes_are_reported_for_the_last_ten_minutes() {
         let mut progress = ScanProgress::default();
-        progress.discarded(0, 1_000);
-        progress.discarded(500, 1_000);
-        progress.discarded(200, 1_500);
-        assert_eq!(progress.report(1_550).discarded_cache_bytes_recent, 700);
+        progress.discarded(0, at(1_000));
+        progress.discarded(500, at(1_000));
+        progress.discarded(200, at(1_500));
+        assert_eq!(progress.report(at(1_550)).discarded_cache_bytes_recent, 700);
         assert_eq!(
-            progress.report(1_700).discarded_cache_bytes_recent,
+            progress.report(at(1_700)).discarded_cache_bytes_recent,
             200,
             "the first is over ten minutes old"
         );
-        assert_eq!(progress.report(3_000).discarded_cache_bytes_recent, 0);
+        assert_eq!(progress.report(at(3_000)).discarded_cache_bytes_recent, 0);
         assert_eq!(
             progress.discarded_cache_bytes, 700,
             "the total since start stays"
@@ -383,12 +398,12 @@ mod tests {
     #[test]
     fn the_cache_peak_lasts_an_hour() {
         let mut progress = ScanProgress::default();
-        progress.cache_bytes(500, 1_000);
-        progress.cache_bytes(100, 1_100);
-        assert_eq!(progress.report(1_100).peak_cache_bytes, Some(500));
-        assert_eq!(progress.report(5_000).peak_cache_bytes, None);
-        progress.cache_bytes(100, 5_000);
-        assert_eq!(progress.report(5_000).peak_cache_bytes, Some(100));
+        progress.cache_bytes(500, at(1_000));
+        progress.cache_bytes(100, at(1_100));
+        assert_eq!(progress.report(at(1_100)).peak_cache_bytes, Some(500));
+        assert_eq!(progress.report(at(5_000)).peak_cache_bytes, None);
+        progress.cache_bytes(100, at(5_000));
+        assert_eq!(progress.report(at(5_000)).peak_cache_bytes, Some(100));
     }
 }
 

@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use clock::Clock;
 use monero::Network;
 use service_runtime::supervise::supervise_until;
 use tracing::Instrument as _;
 
 use crate::engine_settings::{Daemons, EngineSettings};
-use crate::http::now_unix;
 use crate::key_custody::{KeyCustody, LiveWallet, WalletHandles};
 use crate::scanner_status::{self, ScannerStatusMap};
 use crate::store::Db;
@@ -200,6 +200,10 @@ impl RunningNetworks {
 /// cleared, whenever node settings are saved (task 2.1).
 ///
 /// Runs for the life of the process.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the loops' genuinely independent shared handles, and the clock"
+)]
 pub async fn manage_network_loops(
     db: Db,
     key_custody: Arc<dyn KeyCustody>,
@@ -208,6 +212,7 @@ pub async fn manage_network_loops(
     scanner_status: ScannerStatusMap,
     settings: Arc<EngineSettings>,
     running: RunningNetworks,
+    clock: Clock,
 ) {
     let mut changed = settings.nodes.subscribe();
     loop {
@@ -238,7 +243,7 @@ pub async fn manage_network_loops(
             // unchecked blocks while the proof loop gets going.
             // Its own rounds turn it off if not.
             if settings.scan.load().checks_proof_of_work(network) {
-                let now = now_unix();
+                let now = clock.now();
                 if let Err(error) = db
                     .run(crate::store::db::Class::Scanner, move |s| {
                         s.enable_proof(network, now)
@@ -250,15 +255,18 @@ pub async fn manage_network_loops(
             }
             // Shared by the network's round loop and its fast mempool loop.
             let scan_state = Arc::new(
-                crate::work::ScanState::default()
+                crate::work::ScanState::new(clock.clone())
                     .with_progress(scanner_status::progress_of(&scanner_status, network))
                     .with_wakes(scanner_status::wakes_of(&scanner_status, network))
                     .with_activity(scanner_status::activity_of(&scanner_status, network)),
             );
             #[cfg(feature = "zmq")]
             {
-                let (wakes, settings) =
-                    (Arc::clone(scan_state.node_wakes()), Arc::clone(&settings));
+                let (wakes, settings, clock) = (
+                    Arc::clone(scan_state.node_wakes()),
+                    Arc::clone(&settings),
+                    clock.clone(),
+                );
                 tasks.push(supervise_until(
                     node_events_name(network),
                     stopped.clone(),
@@ -267,6 +275,7 @@ pub async fn manage_network_loops(
                             network,
                             Arc::clone(&wakes),
                             Arc::clone(&settings),
+                            clock.clone(),
                         )
                     },
                 ));
@@ -297,12 +306,13 @@ pub async fn manage_network_loops(
                 ));
             }
             {
-                let (db, daemons, settings, status, wakes) = (
+                let (db, daemons, settings, status, wakes, clock) = (
                     db.clone(),
                     daemons.clone(),
                     Arc::clone(&settings),
                     Arc::clone(&scanner_status),
                     Arc::clone(scan_state.node_wakes()),
+                    clock.clone(),
                 );
                 tasks.push(supervise_until(
                     proof_loop_name(network),
@@ -316,6 +326,7 @@ pub async fn manage_network_loops(
                             Arc::clone(&status),
                             Arc::clone(&wakes),
                             crate::proof::ProofTuning::DEFAULT,
+                            clock.clone(),
                         )
                     },
                 ));
@@ -442,7 +453,7 @@ pub async fn run_scanner_loop(
             .iter()
             .map(|(id, live)| (id.clone(), live.clone()))
             .collect();
-        let started_at = now_unix();
+        let started_at = scan_state.clock().now();
         if scan_state.activity().node_pool_due() {
             record_node_pool(scan_state.activity(), &daemon);
         }
@@ -495,7 +506,7 @@ pub async fn run_scanner_loop(
                 false,
             ),
         };
-        let finished_at = now_unix();
+        let finished_at = scan_state.clock().now();
         if let Err(e) = &result {
             telemetry::throttled!(format!("tick-failed:{network:?}"), warn, network = ?network, error = %e, "scan tick failed");
         }
@@ -517,8 +528,8 @@ pub async fn run_scanner_loop(
             scanner_status::record_tick(
                 &scanner_status,
                 network,
-                started_at,
-                finished_at,
+                started_at.as_secs(),
+                finished_at.as_secs(),
                 scanned,
                 &result,
             );
@@ -589,7 +600,7 @@ async fn record_snapshot(
         network,
         nodes,
         scan_chunk_memory_budget_mb,
-        now_unix(),
+        scan_state.clock().now(),
     )
     .await
     {
@@ -617,6 +628,7 @@ mod tests {
     use crate::store::{NewTenant, Store};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use clock::UnixTime;
     use engine_daemon::fake::FakeDaemonClient;
     use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
     use tower::ServiceExt as _;
@@ -689,6 +701,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
                 scanner_status: Arc::clone(&status),
             },
             activity_stream: crate::activity::StreamTuning::DEFAULT,
+            clock: crate::node_test_support::clock(),
         };
         let router = crate::http::build_router(state, 1 << 20);
         let db = Db::over_shared(Arc::clone(&store));
@@ -701,6 +714,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
             Arc::clone(&status),
             settings,
             running.clone(),
+            crate::node_test_support::clock(),
         ));
 
         let save = |body: serde_json::Value| {
@@ -802,7 +816,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
             }])),
         )]));
         let status = scanner_status::new_scanner_status_map();
-        let scan_state: Arc<crate::work::ScanState> = Arc::default();
+        let scan_state = Arc::new(crate::node_test_support::scan_state());
         let scan_loop = tokio::spawn(run_scanner_loop(
             Arc::clone(&scan_state),
             Db::over_shared(Store::open_in_memory().unwrap().into_shared()),
@@ -906,7 +920,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
-                1,
+                UnixTime::from_secs(1),
             )
             .unwrap()
             .tenant;
@@ -923,7 +937,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
         let wallet_handles: Arc<WalletHandles> = Arc::default();
         let key_custody: Arc<dyn KeyCustody> = Arc::<CustodyRouter>::clone(&router);
         let scan_loop = tokio::spawn(run_scanner_loop(
-            Arc::default(),
+            Arc::new(crate::node_test_support::scan_state()),
             Db::over_shared(store),
             key_custody,
             Network::Stagenet,

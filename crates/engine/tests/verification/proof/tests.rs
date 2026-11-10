@@ -169,7 +169,9 @@ impl World {
     }
 
     async fn round_at(&mut self, now: i64) -> RoundReport {
-        self.follower.round(&self.db, &self.client, true, now).await
+        self.follower
+            .round(&self.db, &self.client, true, UnixTime::from_secs(now))
+            .await
     }
 
     fn status(&self) -> ProofStatus {
@@ -633,7 +635,12 @@ async fn turning_checking_off_lets_every_node_back_and_on_again_carries_on() {
 
     world
         .follower
-        .round(&world.db, &world.client, false, TEST_NOW)
+        .round(
+            &world.db,
+            &world.client,
+            false,
+            UnixTime::from_secs(TEST_NOW),
+        )
         .await;
     assert_eq!(world.follower.status(), None);
     assert!(!world.client.is_excluded(0));
@@ -885,7 +892,7 @@ async fn a_block_below_the_difficulty_floor_is_caught() {
         .contains("floor"));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_failed_anchor_is_not_retried_at_once() {
     let chain = base_chain();
     let mut world = World::with_tuning(
@@ -924,7 +931,7 @@ async fn a_failed_anchor_is_not_retried_at_once() {
     world.nodes[2].set_online(false);
     world.round().await;
     world.nodes[1].set_online(true);
-    tokio::time::sleep(Duration::from_millis(5)).await;
+    tokio::time::advance(Duration::from_millis(5)).await;
     world.round().await;
     assert!(world
         .store
@@ -1012,7 +1019,7 @@ mod settlement {
                 custody,
                 tenants: vec![(tenant, live)],
                 order,
-                state: ScanState::default(),
+                state: crate::node_test_support::scan_state(),
             }
         }
 

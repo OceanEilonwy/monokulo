@@ -9,7 +9,7 @@ use proptest::test_runner::Config;
 
 use super::{fixture_tenant_shared, fixture_tx, inputs, unrelated_tx, FlakyKeyCustody, TempDb};
 use crate::status::OrderStatus;
-use crate::work::{run_round_at, ScanState, ScanTuning};
+use crate::work::{run_round_at, ScanTuning};
 use engine_daemon::fake::tx_id_hex;
 use std::time::Duration;
 
@@ -290,7 +290,7 @@ async fn tenant_failure_history(
         |index| 1 + index % (tenant_count - 1),
     );
     harness.custody.fail(harness.tenants[failed].1.handle);
-    harness.state = ScanState::default()
+    harness.state = crate::node_test_support::scan_state()
         .with_tuning(ScanTuning {
             group_page,
             blocks_per_unit: 1,
@@ -305,7 +305,7 @@ async fn tenant_failure_history(
         harness.tick().await.into_result().unwrap();
         if step == restart_at {
             harness.restart();
-            harness.state = ScanState::default()
+            harness.state = crate::node_test_support::scan_state()
                 .with_tuning(ScanTuning {
                     group_page,
                     blocks_per_unit: 1,

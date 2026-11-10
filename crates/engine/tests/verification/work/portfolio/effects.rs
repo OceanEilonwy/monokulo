@@ -10,6 +10,7 @@ use super::{inputs, Invoice, NETWORK};
 use crate::node_test_support::{AdversarialNode, Behavior, Rpc};
 use crate::store::{db::Class, Db, SharedStore, Store, TenantId};
 use crate::work::{fast_pass, run_round_at, ScanState};
+use clock::UnixTime;
 use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
 use engine_daemon::{KeyImageStatus, MoneroDaemonClient as _};
 use std::{
@@ -70,7 +71,7 @@ impl World {
                 })
                 .collect(),
         );
-        let now = crate::now_unix();
+        let now = crate::node_test_support::TEST_NOW.as_secs();
         Self {
             client,
             nodes,
@@ -246,7 +247,7 @@ impl World {
             .map(|b| (b.height, hex::encode(b.id)))
             .collect();
         db.run(Class::Scanner, move |s| {
-            s.enable_proof(NETWORK, 1000)?;
+            s.enable_proof(NETWORK, UnixTime::from_secs(1000))?;
             if window.is_empty() {
                 return s.forget_anchor(NETWORK);
             }
@@ -258,7 +259,7 @@ impl World {
                     window,
                     seeds: vec![],
                 },
-                1000,
+                UnixTime::from_secs(1000),
             )
         })
         .await
@@ -299,7 +300,7 @@ impl World {
                             confirmations_required: Some(0),
                             order_expiry_seconds: None,
                         },
-                        1000,
+                        UnixTime::from_secs(1000),
                     )?
                     .tenant
                     .id;
@@ -334,7 +335,7 @@ impl World {
             .cloned()
             .collect();
         self.set_mempool(vec![tx.clone()]);
-        let cold = ScanState::default();
+        let cold = crate::node_test_support::scan_state();
         let input = inputs(db, custody, self, &control);
         let cancellations: usize = self
             .nodes
@@ -345,7 +346,12 @@ impl World {
             n.behavior.lock().hangs = Rpc::Tip.bit() | Rpc::Pool.bit();
         }
         tokio::time::pause();
-        let timeout = run_round_at(&cold, &input, Duration::ZERO, self.now.get());
+        let timeout = run_round_at(
+            &cold,
+            &input,
+            Duration::ZERO,
+            UnixTime::from_secs(self.now.get()),
+        );
         tokio::pin!(timeout);
         let early =
             tokio::select! { biased; r=&mut timeout => Some(r), ()=tokio::task::yield_now()=>None };
@@ -389,7 +395,9 @@ impl World {
             .get(&handle)
             .copied()
             .unwrap_or_default();
-        let report = fast_pass(&ScanState::default(), &input).await.unwrap();
+        let report = fast_pass(&crate::node_test_support::scan_state(), &input)
+            .await
+            .unwrap();
         assert!(report.scanned > 0, "BOUNDARY: engine-custody-scan");
         assert!(
             custody
@@ -427,10 +435,10 @@ impl World {
                 .await
                 .unwrap();
             let report = run_round_at(
-                &ScanState::default(),
+                &crate::node_test_support::scan_state(),
                 &input,
                 Duration::ZERO,
-                self.now.get(),
+                UnixTime::from_secs(self.now.get()),
             )
             .await;
             db.run(Class::Admin, |s| {
@@ -461,7 +469,9 @@ impl World {
             }
             self.hit("sql-denial-reached");
         }
-        let recovery = fast_pass(&ScanState::default(), &input).await.unwrap();
+        let recovery = fast_pass(&crate::node_test_support::scan_state(), &input)
+            .await
+            .unwrap();
         assert!(recovery.scanned > 0, "BOUNDARY: fault-recovery-scan");
         let payments = store.lock().get_all_payments(&order).unwrap();
         assert_eq!(payments.len(), 1, "BOUNDARY: fault-recovery-money");
@@ -501,7 +511,7 @@ impl World {
             state,
             &inputs(db, custody, self, tenants),
             Duration::ZERO,
-            self.now.get(),
+            UnixTime::from_secs(self.now.get()),
         )
         .await;
         for (i, (t, _)) in tenants.iter().enumerate() {

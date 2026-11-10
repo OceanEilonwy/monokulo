@@ -24,6 +24,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
+use clock::{Clock, UnixTime};
 use engine_protocol::proof::{
     AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus,
 };
@@ -314,7 +315,7 @@ impl Follower {
         db: &Db,
         client: &FallbackDaemonClient,
         enabled: bool,
-        now: i64,
+        now: UnixTime,
     ) -> RoundReport {
         if !enabled {
             self.turn_off(db, client).await;
@@ -332,7 +333,7 @@ impl Follower {
                 );
                 let status = self.status.get_or_insert_with(Default::default);
                 status.summary = format!("The last check failed: {error}. It is retried.");
-                status.checked_at = Some(now);
+                status.checked_at = Some(now.as_secs());
                 RoundReport::default()
             }
         }
@@ -372,7 +373,7 @@ impl Follower {
         &mut self,
         db: &Db,
         client: &FallbackDaemonClient,
-        now: i64,
+        now: UnixTime,
     ) -> Result<RoundReport, ProofError> {
         self.known_off = false;
         let mut state = self.db(db, Store::proof_network).await?;
@@ -455,7 +456,7 @@ impl Follower {
                         ceiling: Some(0),
                         hashing: Some(hashing(&hasher)),
                         blocks_checked: self.blocks_checked,
-                        checked_at: Some(now),
+                        checked_at: Some(now.as_secs()),
                         ..Default::default()
                     });
                     return Ok(RoundReport::default());
@@ -531,7 +532,7 @@ impl Follower {
         hash: Option<String>,
         hasher: &Hasher,
         budget: &mut u64,
-        now: i64,
+        now: UnixTime,
     ) -> Result<Finding, ProofError> {
         let tuning = self.tuning.clone();
         // Its tip was found lighter or caught and hasn't changed: nothing
@@ -569,7 +570,7 @@ impl Follower {
         tuning: &ProofTuning,
         hasher: &Hasher,
         budget: &mut u64,
-        now: i64,
+        now: UnixTime,
     ) -> Result<Finding, ProofError> {
         let ours = self
             .db(db, Store::proven_tip)
@@ -694,7 +695,7 @@ impl Follower {
         ours: ProvenBlock,
         hasher: &Hasher,
         budget: &mut u64,
-        now: i64,
+        now: UnixTime,
     ) -> Result<Finding, ProofError> {
         let window_blocks = self
             .db(db, move |s, network| {
@@ -718,7 +719,6 @@ impl Follower {
         let floor = self.tuning.min_difficulty(self.network);
         let mut heaviest = ours.cumulative_difficulty;
         let mut branch: Vec<ProvenBlock> = Vec::new();
-        let now_secs = u64::try_from(now).unwrap_or(0);
         let mut next = parent_height + 1;
         while next <= height {
             if *budget == 0 {
@@ -852,7 +852,7 @@ impl Follower {
             for ((i, difficulty, block), hash) in pending.into_iter().zip(&pow_hashes) {
                 let candidate = &fresh[i];
                 let checked = engine_pow::accept(&window, candidate, difficulty, hash)
-                    .and_then(|_| engine_pow::check_time(candidate, now_secs));
+                    .and_then(|_| engine_pow::check_time(candidate, now));
                 if let Err(rejection) = checked {
                     broken = Some(rejection);
                     break;
@@ -1027,7 +1027,7 @@ impl Follower {
         nodes: &[NodeRef<'_>],
         findings: Vec<Finding>,
         hasher: &Hasher,
-        now: i64,
+        now: UnixTime,
     ) -> ProofStatus {
         let reachable: Vec<&Finding> = findings
             .iter()
@@ -1104,7 +1104,7 @@ impl Follower {
                 .collect(),
             blocks_checked: self.blocks_checked,
             hashing: Some(hashing(hasher)),
-            checked_at: Some(now),
+            checked_at: Some(now.as_secs()),
         }
     }
 }
@@ -1127,6 +1127,10 @@ fn hashing(hasher: &Hasher) -> Hashing {
 /// on, so the setting applies from the next round; off, the `RandomX`
 /// memory is freed.
 #[expect(
+    clippy::too_many_arguments,
+    reason = "the loop's genuinely independent shared handles, and the clock"
+)]
+#[expect(
     clippy::infinite_loop,
     reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
@@ -1138,6 +1142,7 @@ pub async fn run_loop(
     status: crate::scanner_status::ScannerStatusMap,
     wakes: Arc<crate::node_events::NodeWakes>,
     tuning: ProofTuning,
+    clock: Clock,
 ) {
     let mut follower = match Follower::new(network, tuning) {
         Ok(follower) => follower,
@@ -1154,9 +1159,7 @@ pub async fn run_loop(
             continue;
         };
         let enabled = scan.checks_proof_of_work(network);
-        let report = follower
-            .round(&db, &client, enabled, crate::now_unix())
-            .await;
+        let report = follower.round(&db, &client, enabled, clock.now()).await;
         // Not for a network being stopped: its status row was removed.
         if let Some(entry) = status.write().get_mut(&network) {
             entry.proof = follower.status();

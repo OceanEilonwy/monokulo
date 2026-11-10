@@ -2,8 +2,10 @@
 //! the reorg job, the recompute schedule, and rotation positions. Every
 //! read here is a bounded page; every multi-row write is one transaction.
 
-use super::{OrderId, Piconero, TenantId};
+use super::{grace_cutoff, OrderId, Piconero, TenantId};
+use clock::UnixTime;
 use rusqlite::{params, OptionalExtension as _};
+use std::time::Duration;
 
 use super::{OrderPaymentRow, Result, Store, StoreError};
 
@@ -220,11 +222,11 @@ pub mod position {
 /// retries are due at once (the scheduler still tries a candidate at most
 /// once a round), so a blip costs nothing; after that the wait doubles from
 /// one second, up to about four minutes.
-pub(super) fn reorg_retry_delay(attempts: u32) -> i64 {
-    match attempts {
+pub(super) fn reorg_retry_delay(attempts: u32) -> Duration {
+    Duration::from_secs(match attempts {
         0..=2 => 0,
-        n => 1i64 << (n - 3).min(8),
-    }
+        n => 1u64 << (n - 3).min(8),
+    })
 }
 
 fn phase_from_row(phase: &str, after_height: u64, after_id: i64) -> rusqlite::Result<ReorgPhase> {
@@ -271,12 +273,15 @@ impl Store {
         &self,
         network: monero::Network,
         synchronized: bool,
-        now: i64,
+        now: UnixTime,
     ) -> Result<()> {
         let since = self.scheduler_position::<position::NodeUnsynchronized>(network)?;
         match (synchronized, since) {
             (false, None) => {
-                self.set_scheduler_position::<position::NodeUnsynchronized>(network, &now)?;
+                self.set_scheduler_position::<position::NodeUnsynchronized>(
+                    network,
+                    &now.as_secs(),
+                )?;
             }
             (true, Some(_)) => {
                 self.conn.execute(
@@ -298,7 +303,7 @@ impl Store {
         &self,
         network: monero::Network,
         tip: u64,
-        now: i64,
+        now: UnixTime,
     ) -> Result<Option<ExpiryHold>> {
         let (orders, overdue_since, behind_tip): (i64, Option<i64>, Option<i64>) =
             self.conn.query_row(
@@ -314,7 +319,7 @@ impl Store {
                 rusqlite::named_params! {
                     ":network": engine_protocol::network::SqlNetwork(network),
                     ":tip": sql_height(tip)?,
-                    ":now": now,
+                    ":now": now.as_secs(),
                 },
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
@@ -387,7 +392,7 @@ impl Store {
         &self,
         network: monero::Network,
         fork_height: u64,
-        now: i64,
+        now: UnixTime,
     ) -> Result<OpenedReorg> {
         self.in_transaction(|s| {
             let max_id: i64 = s.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM order_payments", [], |r| r.get(0))?;
@@ -398,7 +403,7 @@ impl Store {
                         "INSERT INTO reorg_jobs (network, fork_height, phase, candidate_max_id,
                              collect_after_height, collect_after_id, created_at_utc, updated_at_utc)
                          VALUES (?1, ?2, 'collect_confirmed', ?3, ?2, 0, ?4, ?4)",
-                        params![engine_protocol::network::SqlNetwork(network), Unsigned(fork_height), max_id, now],
+                        params![engine_protocol::network::SqlNetwork(network), Unsigned(fork_height), max_id, now.as_secs()],
                     )?;
                     Ok(OpenedReorg::Created)
                 }
@@ -408,7 +413,7 @@ impl Store {
                         "UPDATE reorg_jobs SET fork_height = ?2, phase = 'collect_confirmed', candidate_max_id = ?3,
                              collect_after_height = ?2, collect_after_id = 0, updated_at_utc = ?4
                          WHERE network = ?1",
-                        params![engine_protocol::network::SqlNetwork(network), Unsigned(fork_height), max_id.max(job.candidate_max_id), now],
+                        params![engine_protocol::network::SqlNetwork(network), Unsigned(fork_height), max_id.max(job.candidate_max_id), now.as_secs()],
                     )?;
                     Ok(OpenedReorg::Deepened { from: job.fork_height })
                 }
@@ -463,7 +468,7 @@ impl Store {
         network: monero::Network,
         height: u64,
         hash: &str,
-        now: i64,
+        now: UnixTime,
     ) -> Result<()> {
         self.in_transaction(|s| {
             let job = s.reorg_job(network)?.ok_or(StoreError::NotFound)?;
@@ -472,7 +477,7 @@ impl Store {
                      candidate_max_id = MAX(candidate_max_id, (SELECT COALESCE(MAX(id), 0) FROM order_payments)),
                      collect_after_height = fork_height, collect_after_id = 0, updated_at_utc = ?2
                  WHERE network = ?1",
-                params![engine_protocol::network::SqlNetwork(network), now],
+                params![engine_protocol::network::SqlNetwork(network), now.as_secs()],
             )?;
             s.conn.execute("DELETE FROM reorg_work WHERE network = ?1", [engine_protocol::network::SqlNetwork(network)])?;
             s.set_scheduler_position::<position::ReorgBranchHeight>(network, &height)?;
@@ -491,7 +496,7 @@ impl Store {
         &self,
         network: monero::Network,
         limit: usize,
-        now: i64,
+        now: UnixTime,
     ) -> Result<ReorgPhase> {
         self.in_transaction(|s| {
             let job = s.reorg_job(network)?.ok_or(StoreError::NotFound)?;
@@ -546,7 +551,7 @@ impl Store {
             s.conn.execute(
                 "UPDATE reorg_jobs SET phase = ?2, collect_after_height = ?3, collect_after_id = ?4, updated_at_utc = ?5
                  WHERE network = ?1",
-                params![engine_protocol::network::SqlNetwork(network), phase, Unsigned(after_height), after_id, now],
+                params![engine_protocol::network::SqlNetwork(network), phase, Unsigned(after_height), after_id, now.as_secs()],
             )?;
             Ok(next)
         })
@@ -556,7 +561,7 @@ impl Store {
     pub fn due_reorg_candidates(
         &self,
         network: monero::Network,
-        now: i64,
+        now: UnixTime,
         limit: usize,
     ) -> Result<Vec<ReorgCandidate>> {
         self.rows(
@@ -566,7 +571,7 @@ impl Store {
              ORDER BY w.next_attempt_at_utc, w.payment_id LIMIT ?3",
             params![
                 engine_protocol::network::SqlNetwork(network),
-                now,
+                now.as_secs(),
                 Unsigned(limit)
             ],
             |row| {
@@ -608,7 +613,7 @@ impl Store {
         &self,
         network: monero::Network,
         payment_id: i64,
-        now: i64,
+        now: UnixTime,
     ) -> Result<()> {
         let attempts: Option<u32> = self
             .conn
@@ -622,7 +627,7 @@ impl Store {
             let attempts = attempts.saturating_add(1);
             self.conn.execute(
                 "UPDATE reorg_work SET attempts = ?3, next_attempt_at_utc = ?4 WHERE network = ?1 AND payment_id = ?2",
-                params![engine_protocol::network::SqlNetwork(network), payment_id, attempts, now + reorg_retry_delay(attempts)],
+                params![engine_protocol::network::SqlNetwork(network), payment_id, attempts, now.saturating_add(reorg_retry_delay(attempts)).as_secs()],
             )?;
         }
         Ok(())
@@ -723,7 +728,7 @@ impl Store {
     pub fn due_order_ids(
         &self,
         network: monero::Network,
-        now: i64,
+        now: UnixTime,
         tip: u64,
         limit: usize,
     ) -> Result<Vec<OrderId>> {
@@ -733,7 +738,7 @@ impl Store {
                 "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.scan_tenant_id
                  WHERE o.next_due_at_utc IS NOT NULL AND o.next_due_at_utc <= ?2 AND t.network = ?1
                  ORDER BY o.next_due_at_utc, o.id LIMIT ?3",
-                now,
+                now.as_secs(),
             ),
             (
                 "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.scan_tenant_id
@@ -1139,7 +1144,7 @@ impl Store {
         cursor: u64,
         excluding: &[TenantId],
         registered: &[TenantId],
-        since: i64,
+        since: UnixTime,
         grace_period_seconds: i64,
     ) -> Result<bool> {
         Ok(self.conn.query_row(
@@ -1156,7 +1161,7 @@ impl Store {
                 ":cursor": Unsigned(cursor),
                 ":excluding": json_array(excluding),
                 ":registered": json_array(registered),
-                ":since_minus_grace": since.saturating_sub(grace_period_seconds),
+                ":since_minus_grace": grace_cutoff(since, grace_period_seconds),
             },
             |row| row.get(0),
         )?)
@@ -1172,7 +1177,7 @@ impl Store {
     pub fn scan_windows(
         &self,
         tenant_ids: &[TenantId],
-        since: i64,
+        since: UnixTime,
         grace_period_seconds: i64,
     ) -> Result<std::collections::HashMap<TenantId, Vec<u32>>> {
         let ids = json_array(tenant_ids);
@@ -1181,7 +1186,7 @@ impl Store {
                 "SELECT scan_tenant_id, minor_index FROM orders WHERE id IN ({}) ORDER BY scan_tenant_id, minor_index",
                 super::scan_window_orders("o.scan_tenant_id IN (SELECT value FROM json_each(:ids))")
             ),
-            rusqlite::named_params! { ":ids": ids, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
+            rusqlite::named_params! { ":ids": ids, ":since_minus_grace": grace_cutoff(since, grace_period_seconds) },
             |row| Ok((row.get::<_, TenantId>(0)?, unsigned::<u32>(row, 1)?)),
         )?;
         let mut windows: std::collections::HashMap<TenantId, Vec<u32>> =
@@ -1203,7 +1208,7 @@ impl Store {
         network: monero::Network,
         from: u64,
         to: u64,
-        since: i64,
+        since: UnixTime,
         grace_period_seconds: i64,
     ) -> Result<Movement> {
         let moved = self.conn.execute(
@@ -1217,7 +1222,7 @@ impl Store {
                 ":network": engine_protocol::network::SqlNetwork(network),
                 ":from": Unsigned(from),
                 ":to": Unsigned(to),
-                ":since_minus_grace": since.saturating_sub(grace_period_seconds),
+                ":since_minus_grace": grace_cutoff(since, grace_period_seconds),
             },
         )?;
         Ok(Movement::of(moved))
@@ -1260,7 +1265,7 @@ impl Store {
     pub fn active_tenants_page(
         &self,
         network: monero::Network,
-        now: i64,
+        now: UnixTime,
         grace_period_seconds: i64,
         after: &str,
         limit: usize,
@@ -1276,7 +1281,7 @@ impl Store {
                 ":network": engine_protocol::network::SqlNetwork(network),
                 ":after": after,
                 ":limit": Unsigned(limit),
-                ":since_minus_grace": now - grace_period_seconds,
+                ":since_minus_grace": grace_cutoff(now, grace_period_seconds),
             },
             |row| {
                 Ok((
@@ -1314,7 +1319,7 @@ impl Store {
     pub fn activity_facts(
         &self,
         network: monero::Network,
-        now: i64,
+        now: UnixTime,
         tip: Option<u64>,
         groups: usize,
     ) -> Result<ActivityFacts> {
@@ -1365,12 +1370,12 @@ impl Store {
             orders_due: count(
                 "SELECT COUNT(*) FROM orders o JOIN tenants t ON t.id = o.scan_tenant_id
                  WHERE o.next_due_at_utc IS NOT NULL AND o.next_due_at_utc <= ?2 AND t.network = ?1",
-                &[&net, &now],
+                &[&net, &now.as_secs()],
             )? + count(
                 "SELECT COUNT(*) FROM orders o JOIN tenants t ON t.id = o.scan_tenant_id
                  WHERE o.next_due_height IS NOT NULL AND o.next_due_height <= ?2 AND t.network = ?1
                    AND (o.next_due_at_utc IS NULL OR o.next_due_at_utc > ?3)",
-                &[&net, &tip, &now],
+                &[&net, &tip, &now.as_secs()],
             )?,
         })
     }

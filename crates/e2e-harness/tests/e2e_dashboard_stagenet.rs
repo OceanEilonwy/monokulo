@@ -57,8 +57,9 @@ use monero::Network;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
+use clock::Clock;
 use engine::http::rate_limit::ApiRateLimits;
-use engine::http::{build_router as build_engine_router, now_unix, AppState as EngineAppState};
+use engine::http::{build_router as build_engine_router, AppState as EngineAppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, WalletHandles};
 use engine::network::network_str;
 use engine::scanner::run_scan_tick;
@@ -198,6 +199,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         db: engine::store::Database::inline(Arc::clone(&store)),
         rate_limits: Arc::new(ApiRateLimits::new(10_000, Some(10_000))),
         activity_stream: engine::activity::StreamTuning::DEFAULT,
+        clock: Clock::System,
         log_store: None,
         engine_token: Arc::new(
             credentials::auth::RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN).hash(),
@@ -260,7 +262,10 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let cp_router = build_monokulo_router(cp_state);
 
     // ---- 1. create a real monokulo account ----
-    let email = format!("e2e-dashboard-{}@example.com", now_unix());
+    let email = format!(
+        "e2e-dashboard-{}@example.com",
+        Clock::System.now().as_secs()
+    );
     let password = "correct horse battery staple";
     let signup_response = cp_router
         .clone()
@@ -444,6 +449,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
             .map(|(id, live)| (id.clone(), live.handle))
             .collect();
         run_scan_tick(
+            Clock::System,
             &store,
             key_custody.as_ref(),
             daemon.as_ref(),

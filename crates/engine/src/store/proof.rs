@@ -2,6 +2,7 @@
 //! networks check, each one's anchor, its proven chain and the `RandomX` keys
 //! below it, and the settlement ceiling those give.
 
+use clock::UnixTime;
 use engine_protocol::network::SqlNetwork;
 use rusqlite::{params, OptionalExtension as _};
 
@@ -85,11 +86,11 @@ impl Store {
     /// proven blocks. Nothing changes if it is on already. Turned on again
     /// after being off, it carries on from the anchor and proven chain it
     /// kept, as it does after the engine was stopped.
-    pub fn enable_proof(&self, network: monero::Network, now: i64) -> Result<()> {
+    pub fn enable_proof(&self, network: monero::Network, now: UnixTime) -> Result<()> {
         self.conn.execute(
             "INSERT INTO proof_networks (network, enabled_at) VALUES (?1, ?2)
              ON CONFLICT (network) DO UPDATE SET enabled = 1, enabled_at = ?2 WHERE enabled = 0",
-            params![SqlNetwork(network), now],
+            params![SqlNetwork(network), now.as_secs()],
         )?;
         Ok(())
     }
@@ -162,7 +163,7 @@ impl Store {
         &self,
         network: monero::Network,
         anchor: &NewAnchor,
-        now: i64,
+        now: UnixTime,
     ) -> Result<()> {
         let Some(top) = anchor.window.last() else {
             return Err(StoreError::NotFound);
@@ -178,7 +179,7 @@ impl Store {
                     hash_hex(&top.id),
                     anchor.agreed,
                     anchor.nodes,
-                    now
+                    now.as_secs()
                 ],
             )?;
             if updated == 0 {
@@ -474,7 +475,7 @@ mod tests {
     }
 
     fn anchored(store: &Store, from: u64, to: u64) {
-        store.enable_proof(NET, 1).unwrap();
+        store.enable_proof(NET, UnixTime::from_secs(1)).unwrap();
         store
             .write_anchor(
                 NET,
@@ -484,7 +485,7 @@ mod tests {
                     window: (from..=to).map(|h| block(h, 0)).collect(),
                     seeds: vec![(2048, [9; 32])],
                 },
-                5,
+                UnixTime::from_secs(5),
             )
             .unwrap();
     }
@@ -493,7 +494,7 @@ mod tests {
     fn checking_holds_settlement_from_the_moment_it_is_on() {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(store.proof_ceiling(NET).unwrap(), None, "off: no ceiling");
-        store.enable_proof(NET, 1).unwrap();
+        store.enable_proof(NET, UnixTime::from_secs(1)).unwrap();
         assert_eq!(
             store.proof_ceiling(NET).unwrap(),
             Some(0),
@@ -501,7 +502,7 @@ mod tests {
         );
         let state = store.proof_network(NET).unwrap().unwrap();
         assert_eq!((state.enabled_at, state.anchor), (1, None));
-        store.enable_proof(NET, 7).unwrap();
+        store.enable_proof(NET, UnixTime::from_secs(7)).unwrap();
         assert_eq!(
             store.proof_network(NET).unwrap().unwrap().enabled_at,
             1,
@@ -544,7 +545,7 @@ mod tests {
                     window: vec![block(1, 0)],
                     seeds: vec![]
                 },
-                1
+                UnixTime::from_secs(1)
             )
             .is_err());
         assert_eq!(other.proven_tip(NET).unwrap(), None);
@@ -637,7 +638,7 @@ mod tests {
         assert_eq!(store.proof_network(NET).unwrap(), None, "off");
         assert_eq!(store.proven_tip(NET).unwrap(), Some(block(113, 0)), "kept");
         // On again: the same anchor and chain, and the ceiling they give.
-        store.enable_proof(NET, 9).unwrap();
+        store.enable_proof(NET, UnixTime::from_secs(9)).unwrap();
         let state = store.proof_network(NET).unwrap().unwrap();
         assert_eq!(state.enabled_at, 9);
         assert_eq!(state.anchor.map(|a| a.height), Some(110));
@@ -659,7 +660,7 @@ mod tests {
                     confirmations_required: Some(10),
                     order_expiry_seconds: None,
                 },
-                1000,
+                UnixTime::from_secs(1000),
             )
             .unwrap();
         let index = store.allocate_minor_index(&tenant.tenant.id).unwrap();

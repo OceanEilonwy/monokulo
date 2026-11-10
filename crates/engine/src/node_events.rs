@@ -140,6 +140,8 @@ mod subscriber {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use clock::Clock;
+
     use super::NodeWakes;
     use crate::engine_settings::EngineSettings;
 
@@ -172,6 +174,7 @@ mod subscriber {
         network: monero::Network,
         wakes: Arc<NodeWakes>,
         settings: Arc<EngineSettings>,
+        clock: Clock,
     ) {
         let mut saved = settings.nodes.subscribe();
         loop {
@@ -179,7 +182,7 @@ mod subscriber {
             wakes.listen_to(&configured);
             let listeners: Vec<_> = configured
                 .into_iter()
-                .map(|(_, endpoint)| listen(network, endpoint, Arc::clone(&wakes)))
+                .map(|(_, endpoint)| listen(network, endpoint, Arc::clone(&wakes), clock.clone()))
                 .collect();
             // Each listener runs until the settings change; with none, this
             // only waits for that.
@@ -201,15 +204,20 @@ mod subscriber {
     /// Listens to one publisher, connecting again (after a growing pause)
     /// whenever it can't be reached or the connection fails. Never returns.
     #[expect(clippy::infinite_loop, reason = "listens for the life of the process")]
-    pub(super) async fn listen(network: monero::Network, endpoint: String, wakes: Arc<NodeWakes>) {
+    pub(super) async fn listen(
+        network: monero::Network,
+        endpoint: String,
+        wakes: Arc<NodeWakes>,
+        clock: Clock,
+    ) {
         let mut retry = FIRST_RETRY;
         loop {
-            let error = session(network, &endpoint, &wakes, &mut retry).await;
+            let error = session(network, &endpoint, &wakes, &clock, &mut retry).await;
             wakes.publisher(&endpoint, |p| {
                 p.connected = false;
                 p.connected_since = None;
                 p.last_error = Some(error.clone());
-                p.last_error_at = Some(service_runtime::time::now_unix());
+                p.last_error_at = Some(clock.now().as_secs());
             });
             telemetry::throttled!(
                 format!("zmq-failed:{endpoint}"),
@@ -229,6 +237,7 @@ mod subscriber {
         network: monero::Network,
         endpoint: &str,
         wakes: &NodeWakes,
+        clock: &Clock,
         retry: &mut Duration,
     ) -> String {
         // One connection per session: when it ends, for whatever reason,
@@ -242,7 +251,7 @@ mod subscriber {
         *retry = FIRST_RETRY;
         wakes.publisher(endpoint, |p| {
             p.connected = true;
-            p.connected_since = Some(service_runtime::time::now_unix());
+            p.connected_since = Some(clock.now().as_secs());
             p.connections += 1;
         });
         tracing::info!(network = ?network, endpoint = %endpoint, "listening to the node's ZMQ announcements");
@@ -265,7 +274,7 @@ mod subscriber {
                     Announcement::Pool => p.pool_announcements += 1,
                     Announcement::Chain => p.block_announcements += 1,
                 }
-                p.last_announcement_at = Some(service_runtime::time::now_unix());
+                p.last_announcement_at = Some(clock.now().as_secs());
             });
             match announced {
                 Announcement::Pool => wakes.pool_changed(),
@@ -435,6 +444,7 @@ mod tests {
                 monero::Network::Stagenet,
                 Arc::clone(&wakes),
                 settings,
+                crate::node_test_support::clock(),
             ));
             assert!(
                 wakes.chain_or(Duration::from_secs(5)).await,
@@ -486,6 +496,7 @@ mod tests {
                 monero::Network::Stagenet,
                 endpoint,
                 Arc::clone(&wakes),
+                crate::node_test_support::clock(),
             ));
             // Connecting wakes both, for whatever was missed meanwhile.
             assert!(wakes.pool_or(Duration::from_secs(5)).await);

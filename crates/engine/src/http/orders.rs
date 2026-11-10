@@ -11,7 +11,7 @@ use crate::key_custody::{KeyCustodyError, SubaddressIndex};
 use crate::store::{NewOrder, NextIndex, Piconero, Tenant};
 
 use super::{
-    forget_wallet_handle, now_unix, resolve_wallet_handle_held, ApiError, AppState, AuthedTenant,
+    forget_wallet_handle, resolve_wallet_handle_held, ApiError, AppState, AuthedTenant,
     UNKNOWN_WALLET_RETRIES,
 };
 
@@ -92,7 +92,7 @@ async fn create_order_for_tenant(
     // A losing racer re-derives against the next index; it never burns one, so the
     // loop cannot walk the counter forward on contention. The bound only exists so a
     // pathological hot tenant can't spin here forever.
-    let now = now_unix();
+    let now = state.clock.now();
     let mut created = None;
     for _ in 0..8 {
         let id = tenant.id.clone();
@@ -155,8 +155,10 @@ async fn create_order_for_tenant(
             address: address.to_string(),
             xmr_amount_piconero: req.xmr_amount_piconero,
             description: req.description.clone(),
-            created_at: now,
-            expires_at: now + tenant.order_expiry_seconds,
+            created_at: now.as_secs(),
+            expires_at: now
+                .saturating_add(crate::duration_secs(tenant.order_expiry_seconds))
+                .as_secs(),
         };
         let order = state
             .db
