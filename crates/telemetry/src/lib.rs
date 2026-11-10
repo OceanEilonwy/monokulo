@@ -40,7 +40,9 @@ use std::io::IsTerminal;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+use clock::{Clock, UnixTime};
 
 use live_settings::{FieldError, Reloadable, Section, Warning};
 use opentelemetry::trace::TracerProvider as _;
@@ -170,12 +172,6 @@ fn dev_filter(level: &str) -> String {
     filter
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// A Unix time as `2026-09-28 14:00 UTC`, for messages.
 pub fn format_unix_utc(unix: u64) -> String {
     let Ok(at) = time::OffsetDateTime::from_unix_timestamp(i64::try_from(unix).unwrap_or(i64::MAX))
@@ -217,6 +213,8 @@ pub struct Telemetry {
     /// Bumped on every apply, so an expiry timer from an older apply does
     /// nothing.
     generation: AtomicU64,
+    /// What time development mode ends by.
+    clock: Clock,
 }
 
 static GLOBAL: OnceLock<Arc<Telemetry>> = OnceLock::new();
@@ -228,12 +226,17 @@ static GLOBAL: OnceLock<Arc<Telemetry>> = OnceLock::new();
 /// by the settings like any other rather than quietly replaced.
 ///
 /// Calling it again (tests) returns the first process-wide controls.
-pub fn init_with(service: &'static str, level: &str, format: Format) -> Arc<Telemetry> {
+pub fn init_with(
+    service: &'static str,
+    level: &str,
+    format: Format,
+    clock: Clock,
+) -> Arc<Telemetry> {
     if let Some(existing) = GLOBAL.get() {
         return existing.clone();
     }
     let ansi = format == Format::Pretty && std::io::stderr().is_terminal();
-    let (telemetry, subscriber) = build(service, format, ansi, level, std::io::stderr);
+    let (telemetry, subscriber) = build(service, format, ansi, level, std::io::stderr, clock);
     let telemetry = Arc::new(telemetry);
     // Fails only if something else installed a subscriber first; then the
     // first one keeps its place and these controls do nothing.
@@ -253,6 +256,7 @@ pub fn build<W>(
     ansi: bool,
     level: &str,
     writer: W,
+    clock: Clock,
 ) -> (
     Telemetry,
     impl Subscriber + Send + Sync + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
@@ -318,6 +322,7 @@ where
             dev_mode: false,
         }),
         generation: AtomicU64::new(0),
+        clock,
     };
     (telemetry, subscriber)
 }
@@ -494,8 +499,9 @@ impl Telemetry {
     /// tokio runtime to time it; a Tokio-less caller has to apply again).
     pub fn apply(self: &Arc<Self>, config: &LogConfig) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let now = now_unix();
-        let dev_mode = config.dev_mode_until > now;
+        let now = self.clock.now();
+        let until = UnixTime::from_secs(i64::try_from(config.dev_mode_until).unwrap_or(i64::MAX));
+        let dev_mode = until > now;
         self.set(config, dev_mode);
         if dev_mode {
             tracing::info!(until = %format_unix_utc(config.dev_mode_until), "development logging is on");
@@ -504,7 +510,7 @@ impl Telemetry {
             };
             let this = Arc::clone(self);
             let config = config.clone();
-            let wait = Duration::from_secs(config.dev_mode_until - now);
+            let wait = now.until(until);
             runtime.spawn(async move {
                 tokio::time::sleep(wait).await;
                 if this.generation.load(Ordering::SeqCst) == generation {

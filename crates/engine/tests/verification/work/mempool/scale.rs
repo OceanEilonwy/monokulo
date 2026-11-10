@@ -41,14 +41,14 @@ async fn sustained_arrivals(wave: usize, rounds: usize) {
         scan_chunk_memory_budget_mb: 16,
         order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     // It pays an address allocated AFTER the successful initial scan. Merely
     // deduplicating it forever would miss real money.
     let old = transaction(71, &[(&recorded_pair(), 2, 1234)]);
     let mut pool = vec![old];
     daemon.set_mempool(pool.clone());
     assert_eq!(fast_pass(&state, &inputs).await.unwrap().scanned, 1);
-    crate::work::run_round_at(&state, &inputs, Duration::ZERO, 1000)
+    crate::work::run_round_at(&state, &inputs, Duration::ZERO, UnixTime::from_secs(1000))
         .await
         .into_result()
         .unwrap();
@@ -73,10 +73,15 @@ async fn sustained_arrivals(wave: usize, rounds: usize) {
         pool.extend((round * wave..(round + 1) * wave).map(foreign));
         daemon.set_mempool(pool.clone());
         fast_pass(&state, &inputs).await.unwrap();
-        crate::work::run_round_at(&state, &inputs, Duration::ZERO, 1000 + round as i64)
-            .await
-            .into_result()
-            .unwrap();
+        crate::work::run_round_at(
+            &state,
+            &inputs,
+            Duration::ZERO,
+            UnixTime::from_secs(1000 + round as i64),
+        )
+        .await
+        .into_result()
+        .unwrap();
     }
     let payments = store.get_all_payments(&second.id).unwrap();
     assert_eq!(
@@ -117,7 +122,7 @@ async fn large_pool(count: usize) {
         scan_chunk_memory_budget_mb: 16,
         order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let mut pool: Vec<_> = (0..count - 1).map(foreign).collect();
     let payer = fixture_tx();
     let payer_id = engine_daemon::fake::tx_id_hex(&payer);
@@ -172,7 +177,7 @@ async fn large_pool(count: usize) {
                 .sum::<usize>()
         );
     }
-    crate::work::run_round_at(&state, &inputs, Duration::ZERO, 1000)
+    crate::work::run_round_at(&state, &inputs, Duration::ZERO, UnixTime::from_secs(1000))
         .await
         .into_result()
         .unwrap();
@@ -303,7 +308,7 @@ async fn transaction_tenant_matrix(count: usize, transactions: usize) {
         scan_chunk_memory_budget_mb: 16,
         order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     for _ in 0..transactions {
         fast_pass(&state, &inputs).await.unwrap();
     }
@@ -331,10 +336,15 @@ async fn transaction_tenant_matrix(count: usize, transactions: usize) {
     }
     let bound = transactions * count.div_ceil(TENANTS_PER_TX) + count.div_ceil(16) + 10;
     for round in 0..bound {
-        crate::work::run_round_at(&state, &inputs, Duration::ZERO, 1000 + round as i64)
-            .await
-            .into_result()
-            .unwrap();
+        crate::work::run_round_at(
+            &state,
+            &inputs,
+            Duration::ZERO,
+            UnixTime::from_secs(1000 + round as i64),
+        )
+        .await
+        .into_result()
+        .unwrap();
         if orders
             .iter()
             .all(|order| store.get_all_payments(&order.id).unwrap().len() == transactions)

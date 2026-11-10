@@ -122,7 +122,7 @@ mod tests {
             "a@example.com",
             "hash",
             false,
-            0,
+            clock::UnixTime::from_secs(0),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(

@@ -324,13 +324,10 @@ pub fn silent_url() -> (std::net::TcpListener, String) {
     (listener, url)
 }
 
-/// Seconds since the Unix epoch, as the Bell's clock reads them.
-pub fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-}
+/// What time every test Bell thinks it is, pinned so the times a test
+/// reads off it (a ding's token expiry, the status's `at`) are exact.
+pub const NOW_SECS: i64 = 1_800_000_000;
+pub const NOW: clock::UnixTime = clock::UnixTime::from_secs(NOW_SECS);
 
 /// The public key of [`VAPID_HEX`]: the key every ding is signed with.
 pub fn vapid_public_key() -> push::VapidPublicKey {
@@ -439,7 +436,9 @@ impl TestBell {
         let store_path = PathBuf::from(&stored["bell.store_path"]);
         let env = live_settings::Env::fixed(vars);
         let config = settings::load(stored, env).await.unwrap().bell;
-        let bell = Bell::start(&config).await.unwrap();
+        let bell = Bell::start(&config, clock::Clock::Fixed(NOW))
+            .await
+            .unwrap();
         TestBell {
             router: bell.router(),
             bell,

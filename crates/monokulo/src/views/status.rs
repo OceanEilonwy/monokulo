@@ -598,7 +598,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/status")
+        PageChrome::from_user(None, "/status", clock::Clock::System.now())
     }
 
     fn empty() -> StatusPageViewModel {

@@ -101,7 +101,11 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
 
         // The figures are the engine's sums over every order, not over the
         // page of latest orders listed below.
-        let day_ago = crate::now_unix() - 24 * 3600;
+        let day_ago = state
+            .clock
+            .now()
+            .saturating_sub(std::time::Duration::from_secs(24 * 3600))
+            .as_secs();
         if let Ok(totals) = state.engine.client.order_totals(&sk, day_ago).await {
             let received = u128::from(totals.received_piconero.get());
             store.orders_last_day = totals.orders_since;

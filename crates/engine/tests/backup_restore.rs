@@ -20,6 +20,7 @@
     reason = "an integration test crate is all test code"
 )]
 
+use clock::UnixTime;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -101,7 +102,7 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
                 confirmations_required: None,
                 order_expiry_seconds: None,
             },
-            1_000,
+            UnixTime::from_secs(1_000),
         )
         .unwrap();
 

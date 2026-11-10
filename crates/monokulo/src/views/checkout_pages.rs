@@ -4,6 +4,7 @@
 use checkout_template::{format_size, Place, Problem, BUDGET};
 use engine_protocol::order_status::OrderStatus;
 use maud::{html, Markup};
+use std::time::Duration;
 
 use super::checkout::CheckoutViewModel;
 use super::checkout_layouts::Layout;
@@ -87,7 +88,7 @@ pub fn sample_order(
     state: &PreviewState,
     store_name: &str,
     style_hash: Option<String>,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Result<CheckoutViewModel, qrcode::types::QrError> {
     let awaiting = matches!(state.status, OrderStatus::Pending | OrderStatus::Partial);
     let received = match state.status {
@@ -129,12 +130,14 @@ pub fn sample_order(
         progress_percent: (confirmations * 10) as u8,
         // As a real one, so a preview shows the words a customer first sees.
         is_terminal: matches!(state.status, OrderStatus::Paid | OrderStatus::Overpaid),
-        double_spend_detected_at: state.reversed.then_some(now - 300),
+        double_spend_detected_at: state
+            .reversed
+            .then_some(now.saturating_sub(Duration::from_secs(300)).as_secs()),
         clock: super::time::Clock::utc(now),
         local_times: false,
         expires_in_display: if awaiting { "14m 32s" } else { "" }.to_string(),
-        created_at: now - 300,
-        expires_at: now + 872,
+        created_at: now.saturating_sub(Duration::from_secs(300)).as_secs(),
+        expires_at: now.saturating_add(Duration::from_secs(872)).as_secs(),
         refund_address: None,
         refund_address_locked: false,
         refund_address_error: None,
@@ -803,7 +806,8 @@ mod tests {
     #[test]
     fn a_sample_order_cant_be_paid() {
         for state in &PREVIEW_STATES {
-            let order = sample_order(state, "Shop", None, 1_000).unwrap();
+            let order =
+                sample_order(state, "Shop", None, clock::UnixTime::from_secs(1_000)).unwrap();
             assert!(monero_address_is_rejected(&order.address));
             assert_eq!(order.payment_uri, "#");
         }

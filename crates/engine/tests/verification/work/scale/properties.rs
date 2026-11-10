@@ -43,7 +43,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
                     confirmations_required: Some(1),
                     order_expiry_seconds: None,
                 },
-                1000,
+                UnixTime::from_secs(1000),
             )
             .unwrap()
             .tenant
@@ -116,7 +116,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
             .unwrap();
     }
     let mut db = Db::open(&path, &store).unwrap();
-    let mut state = ScanState::default();
+    let mut state = crate::node_test_support::scan_state();
     let mut converged = false;
     let mut failed_attempts = 0;
     let outage_rounds = outage_rounds + 2;
@@ -154,7 +154,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
             &state,
             &inputs(&db, &custody, &daemon, &tenants),
             Duration::ZERO,
-            1000 + round as i64 * 61,
+            UnixTime::from_secs(1000 + round as i64 * 61),
         )
         .await;
         if round == 0 {
@@ -185,7 +185,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
         // Reopen both executor and scheduler after partial persisted progress.
         if round == outage_rounds + 1 {
             db = Db::open(&path, &store).unwrap();
-            state = ScanState::default();
+            state = crate::node_test_support::scan_state();
         }
         let snapshot = snapshot(
             &state,
@@ -193,7 +193,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
             monero::Network::Mainnet,
             vec![],
             16,
-            1000 + round as i64 * 61,
+            UnixTime::from_secs(1000 + round as i64 * 61),
         )
         .await
         .unwrap();

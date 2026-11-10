@@ -23,6 +23,7 @@ e2e = [
     "dep:domain-proof",
     "dep:cli-wallet",
     "dep:credentials",
+    "dep:clock",
     "dep:axum",
     "dep:http-body-util",
     "dep:monero",
@@ -39,6 +40,9 @@ e2e = [
 
 [dependencies]
 engine = { path = "../engine", optional = true }
+# The system clock the engine under test tells time by, and e2e email
+# names and tenant creation.
+clock = { path = "../clock", optional = true }
 # The node client the harness watches the chain with.
 engine-daemon = { path = "../engine-daemon", optional = true }
 monokulo = { path = "../monokulo", optional = true }

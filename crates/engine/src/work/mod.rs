@@ -21,6 +21,7 @@ mod upkeep;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use clock::{Clock, UnixTime};
 use tokio::time::Instant;
 
 use crate::key_custody::{KeyCustody, LiveWallet};
@@ -32,7 +33,7 @@ use engine_daemon::MoneroDaemonClient;
 pub use blocks::ScannedBlock;
 use engine_protocol::activity::{Event, UnitProgress, Work};
 pub use engine_protocol::activity::{Tier, TierOutcome, Wait};
-pub use mempool::{fast_pass, FastReport};
+pub use mempool::{fast_pass, fast_pass_at, FastReport};
 pub use observe::snapshot;
 pub use tuning::{ScanTuning, TierShares, TuningError};
 
@@ -261,8 +262,10 @@ impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
 /// What a network's scheduler keeps in memory between rounds. Everything
 /// here can be lost (a restart, a panic) at the cost of some repeated work:
 /// the durable state is in SQLite.
-#[derive(Default)]
 pub struct ScanState {
+    /// What time it is: read once at the start of each round or fast pass,
+    /// which then passes that moment down.
+    clock: Clock,
     /// Wakes the network's loops when its node announces a block or a pool
     /// transaction.
     node_wakes: std::sync::Arc<crate::node_events::NodeWakes>,
@@ -282,6 +285,27 @@ pub struct ScanState {
 }
 
 impl ScanState {
+    /// A state with nothing remembered yet, taking the time from `clock`.
+    pub fn new(clock: Clock) -> Self {
+        Self {
+            clock,
+            node_wakes: std::sync::Arc::default(),
+            mempool: mempool::MempoolState::default(),
+            blocks: blocks::BlockState::default(),
+            settlement: settlement::SettlementState::default(),
+            upkeep: upkeep::UpkeepState::default(),
+            backoff: Backoff::default(),
+            order_backoff: Backoff::default(),
+            tuning: ScanTuning::default(),
+            activity: std::sync::Arc::default(),
+        }
+    }
+
+    /// What time it is, for the loops that run rounds on this state.
+    pub fn clock(&self) -> &Clock {
+        &self.clock
+    }
+
     /// This state, keeping its block scan's progress in `progress`, which
     /// `/status` reads.
     #[must_use = "the state with progress reporting is returned, not changed in place"]
@@ -358,6 +382,7 @@ impl ScanState {
     #[must_use = "the copy is returned; this state is left as it was"]
     pub(crate) fn fork_for_tests(&self) -> Self {
         let Self {
+            clock,
             node_wakes,
             mempool,
             blocks,
@@ -369,6 +394,7 @@ impl ScanState {
             activity,
         } = self;
         Self {
+            clock: clock.clone(),
             node_wakes: std::sync::Arc::clone(node_wakes),
             mempool: mempool.fork(),
             blocks: blocks.fork(),
@@ -387,7 +413,7 @@ impl ScanState {
 pub(crate) struct Round<'a> {
     pub inputs: &'a RoundInputs<'a>,
     pub state: &'a ScanState,
-    pub now: i64,
+    pub now: UnixTime,
     /// The node's chain height. `None` if it couldn't be read: nothing that
     /// depends on the chain runs this round.
     pub tip: Option<u64>,
@@ -452,7 +478,7 @@ pub async fn run_round(
     inputs: &RoundInputs<'_>,
     budget: Duration,
 ) -> RoundReport {
-    run_round_at(state, inputs, budget, crate::now_unix()).await
+    run_round_at(state, inputs, budget, state.clock.now()).await
 }
 
 // Explicit Unix time lets generated histories advance persisted retry deadlines
@@ -461,7 +487,7 @@ async fn run_round_at(
     state: &ScanState,
     inputs: &RoundInputs<'_>,
     budget: Duration,
-    now: i64,
+    now: UnixTime,
 ) -> RoundReport {
     let started = Instant::now();
     let mut laps = Laps::new(started);
@@ -528,7 +554,7 @@ async fn run_round_at(
             .collect(),
         pool_txids: None,
         chain: chain::ChainRound::default(),
-        blocks: blocks::BlocksRound::resume(&state.blocks, inputs),
+        blocks: blocks::BlocksRound::resume(&state.blocks, inputs, now),
         mempool: mempool::MempoolRound::starting(watching, polled),
         settlement: settlement::SettlementRound::default(),
         upkeep: upkeep::UpkeepRound::default(),

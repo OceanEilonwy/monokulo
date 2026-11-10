@@ -56,17 +56,17 @@ fn compare_blocking_and_yielding_cache_mutexes() {
                     tasks.push(tokio::spawn(async move {
                         let mut samples = Vec::new();
                         for step in 0..256 {
-                            let requested = std::time::Instant::now();
+                            let requested = Instant::now();
                             let (mut ids,wait,hold) = match lock.as_ref() {
                                 CacheLock::Blocking(lock) => {
                                     let mut guard = lock.lock();
-                                    let acquired = std::time::Instant::now();
+                                    let acquired = Instant::now();
                                     let ids = operation(&mut guard,step+task,&tx,size);
                                     (ids,acquired.duration_since(requested),acquired.elapsed())
                                 }
                                 CacheLock::Yielding(lock) => {
                                     let mut guard = lock.lock().await;
-                                    let acquired = std::time::Instant::now();
+                                    let acquired = Instant::now();
                                     let ids = operation(&mut guard,step+task,&tx,size);
                                     (ids,acquired.duration_since(requested),acquired.elapsed())
                                 }

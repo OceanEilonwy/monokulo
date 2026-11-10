@@ -34,7 +34,14 @@ impl Drop for TempDir {
 
 fn setup(level: &str) -> Setup {
     let dir = TempDir::new();
-    let (telemetry, subscriber) = build("engine", Format::Json, false, level, std::io::sink);
+    let (telemetry, subscriber) = build(
+        "engine",
+        Format::Json,
+        false,
+        level,
+        std::io::sink,
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
+    );
     let guard = tracing::subscriber::set_default(subscriber);
     let telemetry = Arc::new(telemetry);
     let store = telemetry.open_store(&dir.0.join("logs.db")).unwrap();
@@ -136,8 +143,8 @@ fn pages_follow_the_cursor_both_ways_and_time_ranges_apply() {
         // Each line on a later clock reading than the one before: the time
         // ranges below select by timestamp, and on a coarse clock two lines
         // logged back to back could share one.
-        let before = std::time::SystemTime::now();
-        while std::time::SystemTime::now() <= before {
+        let before = now_nanos();
+        while now_nanos() <= before {
             std::hint::spin_loop();
         }
         tracing::info!("line {n}");
@@ -212,7 +219,14 @@ async fn flush_returns_once_every_line_logged_so_far_is_stored() {
 #[test]
 fn lines_logged_before_the_store_opens_are_kept() {
     let dir = TempDir::new();
-    let (telemetry, subscriber) = build("monokulo", Format::Json, false, "info", std::io::sink);
+    let (telemetry, subscriber) = build(
+        "monokulo",
+        Format::Json,
+        false,
+        "info",
+        std::io::sink,
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
+    );
     let _guard = tracing::subscriber::set_default(subscriber);
     tracing::info!("starting");
     let store = telemetry.open_store(&dir.0.join("logs.db")).unwrap();
@@ -398,7 +412,14 @@ fn a_store_made_before_session_ids_were_indexed_gets_the_column_and_finds_by_it(
         .unwrap();
     assert!(plan.contains("logs_session"), "{plan}");
     drop(conn);
-    let (telemetry, subscriber) = build("monokulo", Format::Json, false, "info", std::io::sink);
+    let (telemetry, subscriber) = build(
+        "monokulo",
+        Format::Json,
+        false,
+        "info",
+        std::io::sink,
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
+    );
     let _guard = tracing::subscriber::set_default(subscriber);
     let store = telemetry.open_store(&path).unwrap();
     assert_eq!(

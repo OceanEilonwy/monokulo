@@ -40,6 +40,7 @@ use std::time::Duration;
 
 use axum::extract::State;
 use axum::response::Json;
+use clock::UnixTime;
 use engine_protocol::admin_api::{
     CustodyBackendStatus, EngineStatusResponse, ExpiryHeldView, LoopRestarts, NetworkStatus,
     NodeStatus, ScannerStatusView, SnpTrustStatus, UnservedReason, UnservedTenant,
@@ -115,16 +116,14 @@ async fn probe_node(
 /// loop well before an operator would otherwise notice only via a merchant
 /// complaint (the exact failure mode `main.rs::supervise`'s own doc comment
 /// names as the reason that function exists at all).
-fn is_stale(now: i64, last_tick_finished_at: i64, poll_interval_secs: u64) -> bool {
-    let staleness_threshold = (poll_interval_secs as i64).saturating_mul(5).max(15);
-    now.saturating_sub(last_tick_finished_at) > staleness_threshold
+fn is_stale(now: UnixTime, last_tick_finished_at: i64, poll_interval_secs: u64) -> bool {
+    let staleness_threshold = Duration::from_secs(poll_interval_secs.saturating_mul(5).max(15));
+    now.since(UnixTime::from_secs(last_tick_finished_at)) > staleness_threshold
 }
 
 pub(super) async fn status_page(
     State(state): State<AppState>,
 ) -> Result<Json<EngineStatusResponse>, ApiError> {
-    let now = crate::now_unix();
-
     let mut networks: Vec<(Network, _)> = state
         .networks
         .daemons
@@ -147,6 +146,9 @@ pub(super) async fn status_page(
         )
     }))
     .await;
+    // After the probes: they take as long as the slowest node, and the
+    // page is as of when they answered.
+    let now = state.clock.now();
     let mut network_views = Vec::with_capacity(networks.len());
     for ((network, daemon), probes) in networks.into_iter().zip(probes) {
         let current_index = daemon.current_index();
@@ -185,7 +187,7 @@ pub(super) async fn status_page(
                 is_stale: true,
             },
             Some(s) => {
-                let finished_at = s.last_tick_finished_at.unwrap_or(now);
+                let finished_at = s.last_tick_finished_at.unwrap_or(now.as_secs());
                 ScannerStatusView {
                     ever_ticked: true,
                     last_tick_started_at: s.last_tick_started_at,
@@ -274,7 +276,7 @@ pub(super) async fn status_page(
     Ok(Json(EngineStatusResponse {
         networks: network_views,
         poll_interval_secs,
-        generated_at: now,
+        generated_at: now.as_secs(),
         loop_restarts,
         unserved_tenants,
         key_custody_default: (!key_custody.is_empty())
@@ -477,7 +479,7 @@ mod tests {
             max_blocks_behind: 0,
             expiry_held: None,
             scaling: Some(engine_protocol::scaling::NetworkScaling {
-                scan: crate::scaling::ScanProgress::default().report(0),
+                scan: crate::scaling::ScanProgress::default().report(UnixTime::from_secs(0)),
                 blocks_behind: 0,
                 catch_up_secs: None,
                 pace: engine_protocol::scaling::Pace::CaughtUp,
@@ -517,31 +519,31 @@ mod tests {
     fn is_stale_uses_five_times_the_configured_poll_interval_with_a_15s_floor() {
         // 2s interval -> 5x = 10s, below the 15s floor, so the floor wins.
         assert!(
-            !is_stale(1000, 990, 2),
+            !is_stale(UnixTime::from_secs(1000), 990, 2),
             "10s since the last tick, below the 15s floor - not stale yet"
         );
         assert!(
-            is_stale(1000, 984, 2),
+            is_stale(UnixTime::from_secs(1000), 984, 2),
             "16s since the last tick, above the 15s floor - genuinely stale"
         );
         // A large enough interval that 5x actually exceeds the floor.
         assert!(
-            !is_stale(1000, 970, 10),
+            !is_stale(UnixTime::from_secs(1000), 970, 10),
             "30s since the last tick, 10s interval x5 = 50s threshold - not stale yet"
         );
         assert!(
-            is_stale(1000, 940, 10),
+            is_stale(UnixTime::from_secs(1000), 940, 10),
             "60s since the last tick, 10s interval x5 = 50s threshold - genuinely stale"
         );
         assert!(
-            !is_stale(1000, 1000, 0),
+            !is_stale(UnixTime::from_secs(1000), 1000, 0),
             "a poll_interval of 0 must still get the 15s floor, not read as instantly stale"
         );
         // The bug the floor fixed: the dev config's 2s interval against a
         // real, observed 7-8s tick cadence on live remote nodes read as
         // stale under the old 3x-with-no-floor threshold.
         assert!(
-            !is_stale(1008, 1000, 2),
+            !is_stale(UnixTime::from_secs(1008), 1000, 2),
             "8s since the last tick at a 2s configured interval must not be stale"
         );
     }

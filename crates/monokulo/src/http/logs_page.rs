@@ -216,8 +216,6 @@ impl LogsParams {
 
 const LOGS: &str = "/admin/logs";
 
-use service_runtime::time::now_unix_nanos as now_nanos;
-
 /// Where times are shown: the browser's zone when it said one this server
 /// knows, UTC otherwise.
 /// The zone the admin chose (`users.timezone`), else the browser's, else UTC.
@@ -274,9 +272,9 @@ fn parse_local(text: &str, zone: &jiff::tz::TimeZone) -> Option<i64> {
 fn time_range(
     params: &LogsParams,
     zone: &jiff::tz::TimeZone,
-    now: i64,
+    now_nanos: i64,
 ) -> Result<(Option<i64>, Option<i64>), String> {
-    let back = |seconds: i64| Ok((Some(now - seconds * NANOS_PER_SECOND), None));
+    let back = |seconds: i64| Ok((Some(now_nanos - seconds * NANOS_PER_SECOND), None));
     let end = |text: &str, which: &str| {
         if text.trim().is_empty() {
             return Ok(None);
@@ -629,7 +627,7 @@ async fn build(
     tz: &Timezone,
 ) -> LogsViewModel {
     let (zone, _) = zone(tz, admin);
-    let now = now_nanos();
+    let now = state.clock.now_nanos();
     let range = time_range(params, &zone, now);
     let search = params.search_only();
     let sources = Sources::from_state(state).await;
@@ -882,7 +880,7 @@ pub async fn tail(
         .and_then(TailCursor::parse);
     let start = resume.unwrap_or_else(|| {
         let cursor = Cursor::parse(&params.after).unwrap_or(Cursor {
-            ts: now_nanos(),
+            ts: state.clock.now_nanos(),
             service: String::new(),
             id: 0,
         });
@@ -1538,7 +1536,7 @@ pub async fn export(
     Query(params): Query<LogsParams>,
 ) -> Response {
     let (zone, _) = zone(&tz, &admin);
-    let (from, to) = match time_range(&params, &zone, now_nanos()) {
+    let (from, to) = match time_range(&params, &zone, state.clock.now_nanos()) {
         Ok(range) => range,
         Err(problem) => return (StatusCode::BAD_REQUEST, problem).into_response(),
     };
@@ -1661,6 +1659,7 @@ pub async fn save_search(
         };
     }
     let (admin_id, name, saved_query) = (admin.id.clone(), name.to_string(), query_string.clone());
+    let now = state.clock.now();
     let created = state
         .db
         .write(move |db| {
@@ -1669,7 +1668,7 @@ pub async fn save_search(
                 &admin_id,
                 &name,
                 &saved_query,
-                crate::now_unix(),
+                now,
                 MAX_SAVED,
             )
         })

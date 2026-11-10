@@ -4,6 +4,8 @@
 //! (migration 0053): queued with each sale event, in the event's own
 //! transaction, and sent by the delivery worker (`crate::push::delivery`).
 
+use std::time::Duration;
+
 use rusqlite::{params, OptionalExtension as _};
 use sqlite::Unsigned;
 
@@ -251,7 +253,7 @@ pub struct UnreadablePush {
 /// One attempt at a push, for [`Db::record_push_attempt`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushAttempt {
-    pub at: i64,
+    pub at: clock::UnixTime,
     /// The push service's status code; `None` when nothing answered.
     pub status: Option<u16>,
     /// How long it took, from the request to the answer (or to giving up
@@ -416,12 +418,12 @@ pub struct TestPush<'a> {
     pub target_id: &'a PushTargetId,
     /// The sale event it is a test of.
     pub event: SaleKind,
-    pub at: i64,
+    pub at: clock::UnixTime,
     /// How long it is worth delivering: as a sale's end's push.
     pub ttl: ::push::Ttl,
     /// When the worker may send it, should the caller's own attempt never
     /// be recorded.
-    pub due_at: i64,
+    pub due_at: clock::UnixTime,
 }
 
 /// What [`Db::push_deliveries_of_app`] and [`Db::push_delivery_of_app`]
@@ -558,7 +560,11 @@ impl Db {
     /// while the app has fewer than [`MAX_TARGETS_PER_APP`]. Its store is
     /// the app's. Either way it is now the last registered, the one pushed
     /// of the store's targets on its endpoint.
-    pub fn register_push_target(&self, new: &NewPushTarget<'_>, now: i64) -> Result<Registration> {
+    pub fn register_push_target(
+        &self,
+        new: &NewPushTarget<'_>,
+        now: clock::UnixTime,
+    ) -> Result<Registration> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
@@ -597,7 +603,7 @@ impl Db {
                      SET next_attempt_at_utc = NULL, gave_up_at_utc = ?2, last_error = ?3
                      WHERE push_target_id = ?1 AND next_attempt_at_utc IS NOT NULL
                        AND (?4 OR event_type NOT IN (SELECT value FROM json_each(?5)))",
-                    params![id, now, REREGISTERED, reshaped, events],
+                    params![id, now.as_secs(), REREGISTERED, reshaped, events],
                 )?;
                 tx.execute(
                     "UPDATE push_targets SET kind = ?2, endpoint = ?3, p256dh = ?4, auth = ?5,
@@ -645,7 +651,7 @@ impl Db {
                         auth,
                         events,
                         include_payment_uri,
-                        now
+                        now.as_secs()
                     ],
                 )?;
                 if made == 0 {
@@ -704,7 +710,7 @@ impl Db {
     pub(super) fn queue_pushes_for_event(
         &self,
         event: &LoggedEvent,
-        at: i64,
+        now: clock::UnixTime,
         queueing: &Queueing,
     ) -> Result<usize> {
         let Some(order) = self.app_order(&event.order_id)? else {
@@ -717,7 +723,7 @@ impl Db {
             seq: event.seq,
             id: &event.event_id,
         };
-        self.queue_sale_pushes(&order, &sale, event, None, at, queueing)
+        self.queue_sale_pushes(&order, &sale, event, None, now, queueing)
     }
 
     /// Queues the `sale.waiting` pushes of `order`, which an app just made,
@@ -728,7 +734,7 @@ impl Db {
     pub fn queue_waiting_push(
         &self,
         order: &AppOrder,
-        at: i64,
+        now: clock::UnixTime,
         queueing: &Queueing,
     ) -> Result<usize> {
         let event_id = format!("evt_{}", uuid::Uuid::new_v4().simple());
@@ -737,7 +743,7 @@ impl Db {
             id: &event_id,
         };
         let sale = SaleEvent::waiting(order);
-        self.queue_sale_pushes(order, &sale, event, Some(&order.app_id), at, queueing)
+        self.queue_sale_pushes(order, &sale, event, Some(&order.app_id), now, queueing)
     }
 
     /// Queues `sale`'s pushes for every target of `order`'s store that
@@ -745,16 +751,16 @@ impl Db {
     /// `except`'s, once per endpoint: records it as the order's latest,
     /// then one push per target, each superseding that target's unsent
     /// push about the same order. Its TTL runs from when the sale event
-    /// happened, not from `at`, when it is queued: an event read late (a
+    /// happened, not from `now`, when it is queued: an event read late (a
     /// backlog after monokulo was down) is worth no more for it, and one
-    /// whose TTL ended before `at` supersedes but queues nothing.
+    /// whose TTL ended before `now` supersedes but queues nothing.
     fn queue_sale_pushes(
         &self,
         order: &AppOrder,
         sale: &SaleEvent,
         event: Logged<'_>,
         except: Option<&AppId>,
-        at: i64,
+        now: clock::UnixTime,
         queueing: &Queueing,
     ) -> Result<usize> {
         let (event_seq, event_id) = (event.seq, event.id);
@@ -778,10 +784,11 @@ impl Db {
         }
         let urgency = policy::urgency(sale.event);
         // An engine clock ahead of this one doesn't lengthen it.
-        let happened = sale.at.min(at);
+        let happened = clock::UnixTime::from_secs(sale.at).min(now);
         let ttl = policy::ttl(sale.event, sale.expires_at, happened, queueing.default_ttl);
-        let expires_at = happened.saturating_add(i64::from(ttl.as_secs()));
-        let stale = expires_at <= at;
+        let expires_at =
+            happened.saturating_add(std::time::Duration::from_secs(u64::from(ttl.as_secs())));
+        let stale = expires_at <= now;
         // Each made once, for the targets that take it.
         let mut encrypted: Option<String> = None;
         let mut waiting_count: Option<u64> = None;
@@ -793,7 +800,7 @@ impl Db {
                 "UPDATE push_deliveries SET superseded_at_utc = ?3, next_attempt_at_utc = NULL
                  WHERE push_target_id = ?1 AND topic = ?2 AND next_attempt_at_utc IS NOT NULL
                    AND event_id <> ?4",
-                params![target.id, topic.as_str(), at, event_id],
+                params![target.id, topic.as_str(), now.as_secs(), event_id],
             )?;
             if stale {
                 continue;
@@ -807,7 +814,7 @@ impl Db {
                 } => {
                     let waiting = match waiting_count {
                         Some(count) => count,
-                        None => *waiting_count.insert(self.waiting_app_orders(order, at)?),
+                        None => *waiting_count.insert(self.waiting_app_orders(order, now)?),
                     };
                     LiveActivityState::of(sale, waiting, include_payment_uri).to_json()
                 }
@@ -827,8 +834,8 @@ impl Db {
                     topic.as_str(),
                     urgency.header_value(),
                     payload,
-                    expires_at,
-                    at
+                    expires_at.as_secs(),
+                    now.as_secs()
                 ],
             )?;
         }
@@ -849,7 +856,7 @@ impl Db {
     /// The orders of `order`'s app still waiting for a payment at `now`:
     /// none seen yet, or only part, and not expired. A Live Activity's
     /// `waitingCount`: its island shows only its own app's sales.
-    fn waiting_app_orders(&self, order: &AppOrder, now: i64) -> Result<u64> {
+    fn waiting_app_orders(&self, order: &AppOrder, now: clock::UnixTime) -> Result<u64> {
         Ok(self
             .conn
             .query_row(
@@ -858,7 +865,7 @@ impl Db {
                      WHERE store_id = ?1 AND app_id = ?2 AND expires_at > ?3
                        AND (last_sale_event IS NULL OR last_sale_event IN {STILL_WAITING})"
                 ),
-                params![order.store_id, order.app_id, now],
+                params![order.store_id, order.app_id, now.as_secs()],
                 |row| row.get::<_, Unsigned<u64>>(0),
             )?
             .0)
@@ -873,7 +880,7 @@ impl Db {
     /// is its newest.
     pub fn due_push_deliveries(
         &self,
-        now: i64,
+        now: clock::UnixTime,
         limit: u32,
     ) -> Result<Vec<std::result::Result<DuePush, UnreadablePush>>> {
         let mut stmt = self.conn.prepare_cached(
@@ -892,7 +899,7 @@ impl Db {
              LIMIT ?2",
         )?;
         let rows = stmt
-            .query_map(params![now, limit], due_from_row)?
+            .query_map(params![now.as_secs(), limit], due_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -918,14 +925,14 @@ impl Db {
             rusqlite::TransactionBehavior::Immediate,
         )?;
         let (error, retry_at, delivered_at, gave_up_at) = match &attempt.result {
-            PushResult::Delivered => (None, None, Some(attempt.at), None),
+            PushResult::Delivered => (None, None, Some(attempt.at.as_secs()), None),
             PushResult::Failed {
                 error, retry_at, ..
             } => (
                 Some(error.as_str()),
                 *retry_at,
                 None,
-                retry_at.is_none().then_some(attempt.at),
+                retry_at.is_none().then_some(attempt.at.as_secs()),
             ),
         };
         self.conn.execute(
@@ -940,7 +947,7 @@ impl Db {
             params![
                 id,
                 retry_at,
-                attempt.at,
+                attempt.at.as_secs(),
                 attempt.status,
                 error,
                 delivered_at,
@@ -953,7 +960,7 @@ impl Db {
                 self.conn.execute(
                     "UPDATE push_targets SET failures = 0, last_ok_at_utc = ?3
                      WHERE id = ?1 AND registered_seq = ?2",
-                    params![target.id, target.registered_seq, attempt.at],
+                    params![target.id, target.registered_seq, attempt.at.as_secs()],
                 )?;
                 TargetAfter::Kept
             }
@@ -1000,12 +1007,12 @@ impl Db {
     /// Gives up on the push `id` without an attempt, saying why: it expired
     /// unsent ([`EXPIRED_UNSENT`]), has no attempts left, would expire
     /// before its store's next minute of pushes, or can't be sent.
-    pub fn give_up_push(&self, id: i64, at: i64, error: &str) -> Result<()> {
+    pub fn give_up_push(&self, id: i64, at: clock::UnixTime, error: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE push_deliveries SET next_attempt_at_utc = NULL, gave_up_at_utc = ?2,
                  last_error = ?3
              WHERE id = ?1 AND next_attempt_at_utc IS NOT NULL",
-            params![id, at, error],
+            params![id, at.as_secs(), error],
         )?;
         Ok(())
     }
@@ -1271,8 +1278,12 @@ impl Db {
             return Ok(None);
         };
         let event_id = format!("test_{}", uuid::Uuid::new_v4().simple());
-        let expires_at = test.at.saturating_add(i64::from(test.ttl.as_secs()));
-        let payload = crate::push::payload::test_payload(kind, test.event, test.at, expires_at);
+        let expires_at = test
+            .at
+            .saturating_add(Duration::from_secs(u64::from(test.ttl.as_secs())))
+            .as_secs();
+        let payload =
+            crate::push::payload::test_payload(kind, test.event, test.at.as_secs(), expires_at);
         let topic = policy::test_topic(test.target_id, &event_id);
         self.conn.execute(
             "INSERT INTO push_deliveries
@@ -1287,8 +1298,8 @@ impl Db {
                 policy::urgency(test.event).header_value(),
                 payload,
                 expires_at,
-                test.at,
-                test.due_at
+                test.at.as_secs(),
+                test.due_at.as_secs()
             ],
         )?;
         Ok(Some(self.conn.last_insert_rowid()))

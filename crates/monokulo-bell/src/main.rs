@@ -22,7 +22,6 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::Instant;
 
 use live_settings::{Env, OptionsFile, Snapshot};
 use monokulo_bell::settings::{self, LOGGING_FORMAT, LOGGING_LEVEL, Loaded};
@@ -114,6 +113,7 @@ fn main() {
         "monokulo-bell",
         &early.get(&LOGGING_LEVEL),
         telemetry::Format::chosen(early.get(&LOGGING_FORMAT)),
+        clock::Clock::System,
     );
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -134,7 +134,7 @@ fn main() {
         } = settings::load(values, start.env)
             .await
             .unwrap_or_else(|e| stop(e));
-        let bell = Bell::start(&config)
+        let bell = Bell::start(&config, clock::Clock::System)
             .await
             .unwrap_or_else(|e| stop(didnt_start(e)));
         let listener = bind(config.listen, "").await;
@@ -144,7 +144,7 @@ fn main() {
             None => None,
         };
         tracing::info!(server.address = %address, "the Bell is listening");
-        let started_at = service_runtime::time::now_unix();
+        let started_at = clock::Clock::System.now();
         // On SIGTERM or Ctrl-C: stop accepting connections, and let
         // requests in flight and the dings they started finish, for up to
         // the grace period together.
@@ -170,9 +170,9 @@ fn main() {
             tokio::spawn(async move { bell.serve(listener, stopping.cancelled_owned()).await })
         };
         stopping.cancelled().await;
-        let deadline = Instant::now() + GRACE;
+        let deadline = tokio::time::Instant::now() + GRACE;
         tracing::info!(grace = ?GRACE, "shutting down: finishing requests and dings in flight");
-        let finished = tokio::time::timeout_at(deadline.into(), async {
+        let finished = tokio::time::timeout_at(deadline, async {
             let served = serving.await;
             bell.dings_sent().await;
             if let Some(status) = status_serving {

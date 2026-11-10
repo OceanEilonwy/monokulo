@@ -73,6 +73,8 @@ engine-protocol = { path = "../engine-protocol", features = ["admin-api", "schem
 engine-view = { path = "../engine-view" }
 sqlite = { path = "../sqlite" }
 credentials = { path = "../credentials" }
+# What time it is (`AppState::clock`).
+clock = { path = "../clock" }
 service-runtime = { path = "../service-runtime" }
 rate-limit = { path = "../rate-limit" }
 # XMR amounts and the exchange-rate providers orders are priced with.

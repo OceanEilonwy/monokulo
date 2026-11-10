@@ -96,6 +96,8 @@ pub struct Tor {
 
 #[derive(Default)]
 struct Inner {
+    /// What time the status is stamped with.
+    clock: clock::Clock,
     status: parking_lot::RwLock<Option<TorStatus>>,
     /// The router to serve, once `main` has built it.
     router: OnceLock<axum::Router>,
@@ -123,6 +125,22 @@ pub struct Wanted {
 }
 
 impl Tor {
+    /// A handle stamping its status with `clock`; `Tor::default()` is the
+    /// system's.
+    pub fn with_clock(clock: clock::Clock) -> Self {
+        Tor {
+            inner: Arc::new(Inner {
+                clock,
+                ..Inner::default()
+            }),
+        }
+    }
+
+    /// What time it is, by this handle's clock.
+    pub(crate) fn now(&self) -> i64 {
+        self.inner.clock.now().as_secs()
+    }
+
     /// What Tor inside monokulo is doing now.
     pub fn status(&self) -> TorStatus {
         self.inner.status.read().clone().unwrap_or(TorStatus::Off)
@@ -146,14 +164,17 @@ impl Tor {
         }
     }
 
-    /// A handle that says Tor is reachable at `address`, with nothing
-    /// running: for tests of what depends on the onion address.
+    /// A handle that says Tor is reachable at `address` since `clock`'s
+    /// time, with nothing running: for tests of what depends on the onion
+    /// address.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn running_at(address: &str) -> Self {
-        Tor::with_status(TorStatus::Running {
+    pub fn running_at(address: &str, clock: clock::Clock) -> Self {
+        let tor = Tor::with_clock(clock);
+        tor.set_status(TorStatus::Running {
             address: address.to_string(),
-            since: service_runtime::time::now_unix(),
-        })
+            since: tor.now(),
+        });
+        tor
     }
 
     /// A handle that says Tor is doing `status`, with nothing running: for
@@ -200,7 +221,7 @@ impl Tor {
         // without Tor ([`BUILT_IN`]).
         self.set_status(TorStatus::Failed {
             error: "This monokulo was built without Tor inside it.".to_string(),
-            since: service_runtime::time::now_unix(),
+            since: self.now(),
         });
     }
 

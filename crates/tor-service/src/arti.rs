@@ -22,7 +22,6 @@ use super::{
     HOSTNAME_FILE, NICKNAME,
 };
 use abuse::proxy_protocol::OnionPeer;
-use service_runtime::time::now_unix;
 
 /// How long after an error the service starts again.
 const RETRY: Duration = Duration::from_secs(30);
@@ -67,7 +66,7 @@ pub async fn run(
         tracing::warn!(error = %error, retry = ?RETRY, "tor: the onion service stopped, starting it again");
         tor.set_status(TorStatus::Failed {
             error,
-            since: now_unix(),
+            since: tor.now(),
         });
         tokio::select! {
             () = tokio::time::sleep(RETRY) => {}
@@ -227,7 +226,7 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
                         address: address.clone(),
                         since: match tor.status() {
                             TorStatus::Running { since, .. } => since,
-                            _ => now_unix(),
+                            _ => tor.now(),
                         },
                     },
                     State::Bootstrapping => TorStatus::Publishing {

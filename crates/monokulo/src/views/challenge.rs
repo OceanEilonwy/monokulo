@@ -112,7 +112,11 @@ mod tests {
             wait_url: "/api/v1/checkout/o1?monokulo_wait=tok".to_string(),
             error: None,
         };
-        let html = challenge_page(&PageChrome::from_user(None, "/"), &view).into_string();
+        let html = challenge_page(
+            &PageChrome::from_user(None, "/", clock::Clock::System.now()),
+            &view,
+        )
+        .into_string();
         assert!(
             html.contains(
                 r#"<meta http-equiv="refresh" content="10;url=/api/v1/checkout/o1?monokulo_wait=tok">"#

@@ -802,9 +802,10 @@ pub async fn rename(
         }
     };
     let (user_id, wallet_id, new_name) = (user.id.clone(), wallet.id.clone(), name.clone());
+    let now = state.clock.now();
     match state
         .db
-        .write(move |db| db.rename_wallet(&user_id, &wallet_id, &new_name, crate::now_unix()))
+        .write(move |db| db.rename_wallet(&user_id, &wallet_id, &new_name, now))
         .await
     {
         Ok(_) => crate::base::see_other(format!("/account/wallets/{}?renamed=1", wallet.id)),
@@ -1050,7 +1051,9 @@ pub async fn retire(
     let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
     match state
         .db
-        .write(move |db| db.retire_wallet(&user_id, &wallet_id, retired_at))
+        .write(move |db| {
+            db.retire_wallet(&user_id, &wallet_id, clock::UnixTime::from_secs(retired_at))
+        })
         .await
     {
         Ok(true) => crate::base::see_other(format!("/account/wallets/{}", wallet.id)),
@@ -1139,9 +1142,10 @@ pub async fn restore(
         }
     }
     let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
+    let now = state.clock.now();
     if let Err(e) = state
         .db
-        .write(move |db| db.restore_wallet(&user_id, &wallet_id, crate::now_unix()))
+        .write(move |db| db.restore_wallet(&user_id, &wallet_id, now))
         .await
     {
         tracing::error!(error = %e, wallet = %wallet.id, "the engine brought a wallet back but it couldn't be recorded");

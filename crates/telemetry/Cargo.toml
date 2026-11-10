@@ -10,6 +10,8 @@ description = "Structured logging for monokulo, the engine and the key-custody s
 axum = ["dep:axum"]
 
 [dependencies]
+# What time it is, for development mode's end (`Telemetry::apply`).
+clock = { path = "../clock" }
 axum = { version = "0.8.9", default-features = false, features = ["matched-path", "tokio"], optional = true }
 live-settings = { path = "../live-settings" }
 # The IPv4 address inside an IPv6 one, judged as the outbound guard judges

@@ -160,7 +160,12 @@ pub fn inputs(data: &[u8]) {
         );
     }
     let _ = url::Url::parse(&text);
-    let _ = credentials::webhook_sign::verify_signature("fuzz-secret", data, &text, 0);
+    let _ = credentials::webhook_sign::verify_signature(
+        "fuzz-secret",
+        data,
+        &text,
+        clock::UnixTime::EPOCH,
+    );
 }
 
 #[cfg(test)]

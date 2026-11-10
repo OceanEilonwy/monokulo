@@ -57,7 +57,7 @@ fn open_orders(
     clock: &crate::views::time::Clock,
 ) -> Option<OpenOrders> {
     let orders = listed?;
-    let now = crate::now_unix();
+    let now = clock.now();
     let open: Vec<_> = orders
         .iter()
         .filter(|o| only.is_none_or(|ids| ids.contains(&o.order_id)))
@@ -67,7 +67,7 @@ fn open_orders(
         until: open
             .iter()
             .map(|o| o.expires_at)
-            .filter(|at| *at > now)
+            .filter(|at| clock::UnixTime::from_secs(*at) > now)
             .max()
             .map(|at| clock.text(at)),
     })
@@ -321,16 +321,11 @@ pub async fn disconnect_submit(
     );
     let new_hash = new_sk.hash();
     let (store_id, integration_id) = (row.id.clone(), integration.clone());
+    let now = state.clock.now();
     let written = state
         .db
         .write(move |db| {
-            db.disconnect_integration(
-                &store_id,
-                &integration_id,
-                &encrypted,
-                &new_hash,
-                crate::now_unix(),
-            )
+            db.disconnect_integration(&store_id, &integration_id, &encrypted, &new_hash, now)
         })
         .await;
     // The engine refuses the old key now, written or not: what was opened

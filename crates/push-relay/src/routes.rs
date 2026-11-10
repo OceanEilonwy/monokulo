@@ -21,6 +21,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use clock::UnixTime;
 use push::vapid::{self, VapidError};
 use push::wire::{PushRequest, WireError};
 use push::VapidPublicKey;
@@ -68,7 +69,7 @@ async fn register(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ProblemDetails> {
-    let now = service_runtime::time::now_unix();
+    let now = shared.clock.now();
     let client = abuse::identity::client_address(peer.ip(), &headers, &shared.trusted_proxies);
     shared.limits.register(client, now).map_err(rate_limited)?;
 
@@ -127,7 +128,7 @@ async fn push(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ProblemDetails> {
-    let now = service_runtime::time::now_unix();
+    let now = shared.clock.now();
     // Not a handle of this relay's making: as unknown as an expired one.
     let id: HandleId = handle.parse().map_err(|_| unknown_handle())?;
     let body = read(body, push::MAX_BODY).await?;
@@ -150,9 +151,9 @@ async fn push(
         .push(&handle.sender, &handle.id, now)
         .map_err(rate_limited)?;
 
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let delivery = hand_on(&shared, &handle, &request, now).await?;
-    shared.last_delivery.record(delivery.into());
+    shared.last_delivery.record(delivery.into(), now);
     // How long APNs or FCM took to take it: with the Bell's "dings sent",
     // where a slow push's time went before it reached the device.
     tracing::info!(
@@ -196,7 +197,7 @@ async fn hand_on(
     shared: &Shared,
     handle: &Handle,
     request: &PushRequest,
-    now: i64,
+    now: UnixTime,
 ) -> Result<Delivery, ProblemDetails> {
     // The app's settings, as they are now: an app taken out of
     // `handles.apps`, or out of a platform, takes no more pushes.
@@ -218,7 +219,7 @@ async fn hand_on(
                         Problem::InvalidRequest.detail(error.to_string())
                     }
                 })?;
-            Ok(apns.send(handle, &push).await)
+            Ok(apns.send(handle, &push, &shared.clock, now).await)
         }
         Platform::Fcm => {
             let (Some(fcm), Some(project)) = (
@@ -233,7 +234,7 @@ async fn hand_on(
                 }
                 fcm::TranslateError::WrongBody => Problem::InvalidRequest.detail(error.to_string()),
             })?;
-            Ok(fcm.send(handle, project, &push, now).await)
+            Ok(fcm.send(handle, project, &push, &shared.clock, now).await)
         }
     }
 }

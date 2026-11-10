@@ -32,7 +32,6 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     thread,
-    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub(crate) const HELP: &str = "\
@@ -280,9 +279,7 @@ fn db_error(e: rusqlite::Error) -> io::Error {
 
 /// Records one run and its tests, all or nothing.
 fn record(db: &mut Connection, label: &Label, rows: &[Row], info: &RunInfo) -> io::Result<()> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = u64::try_from(clock::Clock::System.now().as_secs()).unwrap_or(0);
     let cpus = thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let tx = db.transaction().map_err(db_error)?;
     tx.execute(
@@ -333,7 +330,7 @@ fn record(db: &mut Connection, label: &Label, rows: &[Row], info: &RunInfo) -> i
 /// Runs a command, timing it; its exit code, or none when a signal ended it.
 fn timed(command: &mut Command) -> io::Result<(f64, Option<i32>)> {
     eprintln!("+ {command:?}");
-    let start = Instant::now();
+    let start = crate::support::instant();
     let status = command.status()?;
     Ok((start.elapsed().as_secs_f64(), status.code()))
 }

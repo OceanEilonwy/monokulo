@@ -52,14 +52,14 @@ pub fn ends_the_sale(kind: SaleKind) -> bool {
 /// `default_ttl`; a step of a sale in progress until the sale expires,
 /// within [`MIN_TTL`] and `default_ttl`. From the event, not from when it
 /// is queued: one read late is worth no more for it.
-pub fn ttl(kind: SaleKind, expires_at: i64, now: i64, default_ttl: Ttl) -> Ttl {
+pub fn ttl(kind: SaleKind, expires_at: i64, now: clock::UnixTime, default_ttl: Ttl) -> Ttl {
     if ends_the_sale(kind) {
         return default_ttl;
     }
-    let left = expires_at.saturating_sub(now);
+    let left = now.until(clock::UnixTime::from_secs(expires_at)).as_secs();
     let clamped = left.clamp(
-        i64::from(MIN_TTL.as_secs()),
-        i64::from(default_ttl.as_secs().max(MIN_TTL.as_secs())),
+        u64::from(MIN_TTL.as_secs()),
+        u64::from(default_ttl.as_secs().max(MIN_TTL.as_secs())),
     );
     Ttl::seconds(u32::try_from(clamped).unwrap_or(default_ttl.as_secs()))
 }
@@ -113,7 +113,7 @@ mod tests {
                 (
                     kind,
                     urgency(kind),
-                    ttl(kind, expires_at, now, DEFAULT).as_secs(),
+                    ttl(kind, expires_at, clock::UnixTime::from_secs(now), DEFAULT).as_secs(),
                 )
             })
             .collect();
@@ -149,15 +149,35 @@ mod tests {
             (i64::MAX, 1800),
         ] {
             assert_eq!(
-                ttl(SaleKind::Confirming, expires_at, now, DEFAULT).as_secs(),
+                ttl(
+                    SaleKind::Confirming,
+                    expires_at,
+                    clock::UnixTime::from_secs(now),
+                    DEFAULT
+                )
+                .as_secs(),
                 secs,
                 "expiring at {expires_at}"
             );
         }
-        assert_eq!(ttl(SaleKind::Paid, now - 3_600, now, DEFAULT), DEFAULT);
+        assert_eq!(
+            ttl(
+                SaleKind::Paid,
+                now - 3_600,
+                clock::UnixTime::from_secs(now),
+                DEFAULT
+            ),
+            DEFAULT
+        );
         // The setting's own bounds: 60 seconds at least.
         assert_eq!(
-            ttl(SaleKind::Seen, now + 7_200, now, Ttl::seconds(60)).as_secs(),
+            ttl(
+                SaleKind::Seen,
+                now + 7_200,
+                clock::UnixTime::from_secs(now),
+                Ttl::seconds(60)
+            )
+            .as_secs(),
             60
         );
     }

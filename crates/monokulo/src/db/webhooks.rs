@@ -321,21 +321,21 @@ impl Db {
             .unwrap_or_default())
     }
 
-    fn save_order_event_position(&self, after: &LogPosition, at: i64) -> Result<()> {
+    fn save_order_event_position(&self, after: &LogPosition, now: clock::UnixTime) -> Result<()> {
         self.conn.execute(
             "INSERT INTO order_event_position (id, after_seq, after_event_id, updated_at_utc)
              VALUES (1, ?1, ?2, ?3)
              ON CONFLICT (id) DO UPDATE
              SET after_seq = ?1, after_event_id = ?2, updated_at_utc = ?3",
-            params![after.seq, after.event_id, at],
+            params![after.seq, after.event_id, now.as_secs()],
         )?;
         Ok(())
     }
 
     /// Moves the position without queueing anything: the engine said the
     /// events before `after` are gone, or the event at it can't be read.
-    pub fn skip_order_events_to(&self, after: i64, at: i64) -> Result<()> {
-        self.save_order_event_position(&LogPosition::at(after), at)
+    pub fn skip_order_events_to(&self, after: i64, now: clock::UnixTime) -> Result<()> {
+        self.save_order_event_position(&LogPosition::at(after), now)
     }
 
     /// Queues `event` for each of its store's webhooks, with the
@@ -348,7 +348,7 @@ impl Db {
     pub fn queue_order_event(
         &self,
         event: &LoggedEvent,
-        at: i64,
+        now: clock::UnixTime,
         queueing: &crate::push::Queueing,
         body: impl Fn(&super::StoreConnectionRow, Option<&super::OrderCurrencyMetadataRow>) -> String,
     ) -> Result<Queued> {
@@ -379,19 +379,19 @@ impl Db {
                             event.kind.as_str(),
                             event.order_id,
                             body,
-                            at
+                            now.as_secs()
                         ],
                     )?;
                 }
             }
-            queued.pushes = self.queue_pushes_for_event(event, at, queueing)?;
+            queued.pushes = self.queue_pushes_for_event(event, now, queueing)?;
         }
         self.save_order_event_position(
             &LogPosition {
                 seq: event.seq,
                 event_id: Some(event.event_id.clone()),
             },
-            at,
+            now,
         )?;
         tx.commit()?;
         Ok(queued)
@@ -444,7 +444,12 @@ impl Db {
     ///   an earlier one; a given-up delivery holds nothing back;
     /// - at most `per_store` per store, so one store's backlog or slow
     ///   endpoint can't fill the batch.
-    pub fn due_deliveries(&self, now: i64, per_store: u32, limit: u32) -> Result<Vec<DueDelivery>> {
+    pub fn due_deliveries(
+        &self,
+        now: clock::UnixTime,
+        per_store: u32,
+        limit: u32,
+    ) -> Result<Vec<DueDelivery>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, webhook_id, store_id, order_id, event_id, event_type, body, attempt_count,
                     url, extra_headers, signing_secret_encrypted
@@ -466,7 +471,7 @@ impl Db {
              LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(params![now, per_store, limit], |row| {
+            .query_map(params![now.as_secs(), per_store, limit], |row| {
                 Ok(DueDelivery {
                     delivery_id: row.get(0)?,
                     webhook_id: row.get(1)?,
@@ -550,11 +555,11 @@ impl Db {
 
     /// Gives up on a delivery whose schedule ran out without another
     /// attempt (the most attempts allowed was lowered).
-    pub fn give_up_delivery(&self, delivery_id: i64, at: i64) -> Result<()> {
+    pub fn give_up_delivery(&self, delivery_id: i64, at: clock::UnixTime) -> Result<()> {
         self.conn.execute(
             "UPDATE webhook_deliveries SET next_attempt_at_utc = NULL, gave_up_at_utc = ?2
              WHERE id = ?1 AND next_attempt_at_utc IS NOT NULL",
-            params![delivery_id, at],
+            params![delivery_id, at.as_secs()],
         )?;
         Ok(())
     }
@@ -567,7 +572,7 @@ impl Db {
         store_id: &ConnectionId,
         webhook_id: &WebhookId,
         delivery_id: i64,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE webhook_deliveries
@@ -575,7 +580,7 @@ impl Db {
                  next_attempt_at_utc = ?4, delivered_at_utc = NULL, gave_up_at_utc = NULL
              WHERE id = ?3 AND webhook_id = ?2
                AND EXISTS (SELECT 1 FROM webhooks WHERE id = ?2 AND store_id = ?1)",
-            params![store_id, webhook_id, delivery_id, now],
+            params![store_id, webhook_id, delivery_id, now.as_secs()],
         )?;
         Ok(changed == 1)
     }
@@ -586,14 +591,14 @@ impl Db {
         &self,
         store_id: &ConnectionId,
         webhook_id: &WebhookId,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<usize> {
         Ok(self.conn.execute(
             "UPDATE webhook_deliveries
              SET attempt_count = 0, next_attempt_at_utc = ?3, gave_up_at_utc = NULL
              WHERE webhook_id = ?2 AND gave_up_at_utc IS NOT NULL
                AND EXISTS (SELECT 1 FROM webhooks WHERE id = ?2 AND store_id = ?1)",
-            params![store_id, webhook_id, now],
+            params![store_id, webhook_id, now.as_secs()],
         )?)
     }
 

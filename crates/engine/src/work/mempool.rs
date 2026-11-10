@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use clock::UnixTime;
 use monero::Transaction;
 use tokio::time::Instant;
 
@@ -332,7 +333,10 @@ impl MempoolRound {
 
 /// Whether there is anything to look for in the pool: a store with an
 /// order in scope, or a payment waiting for a block.
-pub(super) async fn watching(inputs: &RoundInputs<'_>, now: i64) -> Result<bool, ScannerError> {
+pub(super) async fn watching(
+    inputs: &RoundInputs<'_>,
+    now: UnixTime,
+) -> Result<bool, ScannerError> {
     let (network, grace) = (inputs.network, inputs.grace_period_seconds);
     inputs
         .db
@@ -402,7 +406,8 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         if due.is_empty() {
             continue;
         }
-        let outcome = scan_and_record(round.state, round.inputs, tx, txid, &due, None).await;
+        let outcome =
+            scan_and_record(round.state, round.inputs, tx, txid, &due, None, round.now).await;
         record_match(round.state, PoolPath::Round, txid, &outcome);
         failed.extend(outcome.failed);
         if let Some(error) = outcome.store_error {
@@ -465,10 +470,20 @@ pub struct FastReport {
 /// scope, and records and settles what they pay, straight away (see the
 /// module doc). Returns `None` if the pool couldn't be read.
 pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<FastReport> {
+    fast_pass_at(state, inputs, state.clock().now()).await
+}
+
+/// [`fast_pass`] at the moment `now`, which the pass reads once: the scan
+/// windows it loads and the time its matches are stamped with agree.
+pub async fn fast_pass_at(
+    state: &ScanState,
+    inputs: &RoundInputs<'_>,
+    now: UnixTime,
+) -> Option<FastReport> {
     let mut report = FastReport::default();
     // Who to scan for comes first: with no store to scan for, the pool
     // isn't asked about at all (several times a second, otherwise).
-    let tenants = match all_windows(state, inputs).await {
+    let tenants = match all_windows(state, inputs, now).await {
         Ok(tenants) => tenants,
         Err(error) => {
             tracing::warn!(network = ?inputs.network, error = %error, "loading scan windows for the mempool failed (retried)");
@@ -502,7 +517,7 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
     let mut failed = HashSet::new();
     for (txid, tx) in &pool {
         let due = mempool.due(txid, &tenants, &failed);
-        let outcome = scan_and_record(state, inputs, tx, txid, &due, tip).await;
+        let outcome = scan_and_record(state, inputs, tx, txid, &due, tip, now).await;
         record_match(state, PoolPath::Fast, txid, &outcome);
         report.scanned += usize::from(outcome.attempted);
         report.paid_orders += outcome.touched;
@@ -539,6 +554,7 @@ async fn scan_and_record(
     txid: &str,
     due: &[&TenantWindow],
     tip: Option<u64>,
+    now: UnixTime,
 ) -> ScanOutcome {
     let mut outcome = ScanOutcome::default();
     let (mut claims, due) = state.mempool.claim(txid, due);
@@ -550,10 +566,6 @@ async fn scan_and_record(
         .iter()
         .map(|(id, _, w)| (id.as_str(), w.generation()))
         .collect();
-    // When the scan began: when what it finds was seen. (A store that
-    // changed wallet since is told by the wallet the scan's keys are of,
-    // `record_scan_match`, not by this.)
-    let scanned_at = crate::now_unix();
     for (tenant_id, result) in scan_for_tenants(
         inputs.custody,
         txid,
@@ -582,7 +594,7 @@ async fn scan_and_record(
             claims.complete(&tenant_id, generation);
             continue;
         };
-        let (id, now) = (tenant_id.clone(), scanned_at);
+        let id = tenant_id.clone();
         let recorded = inputs
             .db
             .run(Class::Scanner, move |s| {
@@ -802,6 +814,7 @@ async fn tenant_page(round: &Round<'_>, txid: &str) -> Result<Vec<TenantWindow>,
 async fn all_windows(
     state: &ScanState,
     inputs: &RoundInputs<'_>,
+    now: UnixTime,
 ) -> Result<Vec<TenantWindow>, ScannerError> {
     let cached = state
         .mempool
@@ -813,11 +826,7 @@ async fn all_windows(
     let windows = if let Some(windows) = cached {
         windows
     } else {
-        let (network, grace, now) = (
-            inputs.network,
-            inputs.grace_period_seconds,
-            crate::now_unix(),
-        );
+        let (network, grace) = (inputs.network, inputs.grace_period_seconds);
         let loaded = inputs
             .db
             .run(

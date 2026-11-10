@@ -48,6 +48,7 @@
 //! for the same reasons (see its doc comment).
 
 use crate::exchange_rate::{piconero_per_unit_from_price, ExchangeRateError};
+use clock::Clock;
 
 /// CoinMarketCap's own id for Monero (`GET /v1/cryptocurrency/map?symbol=XMR`
 /// also lists an unrelated "Monero AI" token under the same symbol).
@@ -192,6 +193,8 @@ pub struct CoinMarketCapRateProvider {
     key_problem: parking_lot::Mutex<Option<String>>,
     client: reqwest_middleware::ClientWithMiddleware,
     rates: crate::exchange_rate::RateCache,
+    /// What time it is, for a `Retry-After` date.
+    clock: Clock,
 }
 
 impl CoinMarketCapRateProvider {
@@ -199,13 +202,14 @@ impl CoinMarketCapRateProvider {
     /// (`"https://pro-api.coinmarketcap.com/public-api"` in production) - a
     /// parameter so a test can point at a local server and an operator can
     /// use a proxy.
-    pub fn new(base_url: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, clock: Clock) -> Self {
         CoinMarketCapRateProvider {
             base_url: base_url.into(),
             api_key: None,
             key_problem: parking_lot::Mutex::new(None),
             client: crate::exchange_rate::rates_client(),
             rates: crate::exchange_rate::RateCache::default(),
+            clock,
         }
     }
 
@@ -264,7 +268,7 @@ impl CoinMarketCapRateProvider {
                 return Err(ExchangeRateError::KeyRejected { status, message });
             }
         }
-        let response = crate::exchange_rate::checked(response)?;
+        let response = crate::exchange_rate::checked(response, self.clock.now())?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         if self.api_key.is_some() {
             *self.key_problem.lock() = None;
@@ -328,6 +332,12 @@ impl CoinMarketCapRateProvider {
 
 #[cfg(test)]
 mod tests {
+    /// The time every provider in these tests reads: pinned, so a date's
+    /// wait is exact and nothing depends on when the test runs.
+    fn pinned() -> clock::Clock {
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000))
+    }
+
     use super::*;
     use axum::extract::{Query, State};
     use axum::response::{IntoResponse, Response};
@@ -397,7 +407,7 @@ mod tests {
     async fn a_successful_fetch_inverts_the_price_into_piconero_per_unit() {
         // 1e12 / 149.23 rounded - same hand-computed figure as the Coingecko test.
         let (url, _) = spawn_server(|convert, _| quote(convert, "149.23")).await;
-        let rate = CoinMarketCapRateProvider::new(url)
+        let rate = CoinMarketCapRateProvider::new(url, pinned())
             .piconero_per_unit_cached("USD", TTL)
             .await
             .unwrap();
@@ -407,7 +417,7 @@ mod tests {
     #[tokio::test]
     async fn currency_lookups_are_case_insensitive() {
         let (url, _) = spawn_server(|convert, _| quote(convert, "149.23")).await;
-        let provider = CoinMarketCapRateProvider::new(url);
+        let provider = CoinMarketCapRateProvider::new(url, pinned());
         assert_eq!(
             provider.piconero_per_unit_cached("usd", TTL).await.unwrap(),
             Some(6_701_065_469)
@@ -418,7 +428,7 @@ mod tests {
     async fn a_quote_for_another_currency_is_none() {
         let (url, _) = spawn_server(|_, _| quote("EUR", "150.0")).await;
         assert_eq!(
-            CoinMarketCapRateProvider::new(url)
+            CoinMarketCapRateProvider::new(url, pinned())
                 .piconero_per_unit_cached("USD", TTL)
                 .await
                 .unwrap(),
@@ -429,7 +439,7 @@ mod tests {
     #[tokio::test]
     async fn a_code_that_cannot_be_fiat_is_none_without_any_request() {
         let (url, calls) = spawn_server(|convert, _| quote(convert, "1.0")).await;
-        let provider = CoinMarketCapRateProvider::new(url);
+        let provider = CoinMarketCapRateProvider::new(url, pinned());
         for code in ["USDT-ERC20", "US", "", "U$D", "1INCH"] {
             assert_eq!(
                 provider.piconero_per_unit_cached(code, TTL).await.unwrap(),
@@ -448,7 +458,7 @@ mod tests {
             r#"{"status":{"error_code":1005,"error_message":"An API Key is required for this call."}}"#,
         ] {
             let (url, _) = spawn_server(move |_, _| json_body(body)).await;
-            let err = CoinMarketCapRateProvider::new(url)
+            let err = CoinMarketCapRateProvider::new(url, pinned())
                 .piconero_per_unit_cached("USD", TTL)
                 .await
                 .unwrap_err();
@@ -470,7 +480,7 @@ mod tests {
                 .into_response()
         })
         .await;
-        let err = CoinMarketCapRateProvider::new(url)
+        let err = CoinMarketCapRateProvider::new(url, pinned())
             .piconero_per_unit_cached("USD", TTL)
             .await
             .unwrap_err();
@@ -482,14 +492,14 @@ mod tests {
 
         let (url, _) =
             spawn_server(|_, _| (axum::http::StatusCode::FORBIDDEN, "no").into_response()).await;
-        let err = CoinMarketCapRateProvider::new(url)
+        let err = CoinMarketCapRateProvider::new(url, pinned())
             .piconero_per_unit_cached("USD", TTL)
             .await
             .unwrap_err();
         assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
 
         let (url, _) = spawn_server(|_, _| json_body("[1, 2, 3]")).await;
-        let err = CoinMarketCapRateProvider::new(url)
+        let err = CoinMarketCapRateProvider::new(url, pinned())
             .piconero_per_unit_cached("USD", TTL)
             .await
             .unwrap_err();
@@ -499,7 +509,7 @@ mod tests {
         );
 
         let (url, _) = spawn_server(|_, _| json_body("not json at all")).await;
-        assert!(CoinMarketCapRateProvider::new(url)
+        assert!(CoinMarketCapRateProvider::new(url, pinned())
             .piconero_per_unit_cached("USD", TTL)
             .await
             .is_err());
@@ -510,7 +520,7 @@ mod tests {
         for price in ["0", "0.0", "-5.0"] {
             let (url, _) = spawn_server(move |convert, _| quote(convert, price)).await;
             assert_eq!(
-                CoinMarketCapRateProvider::new(url)
+                CoinMarketCapRateProvider::new(url, pinned())
                     .piconero_per_unit_cached("USD", TTL)
                     .await
                     .unwrap(),
@@ -522,10 +532,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_base_url_is_a_clean_error() {
-        let provider = CoinMarketCapRateProvider::new(format!(
-            "http://{}",
-            service_runtime::unreachable::address()
-        ));
+        let provider = CoinMarketCapRateProvider::new(
+            format!("http://{}", service_runtime::unreachable::address()),
+            pinned(),
+        );
         assert!(provider.piconero_per_unit_cached("USD", TTL).await.is_err());
     }
 
@@ -534,7 +544,7 @@ mod tests {
         let (url, calls) =
             spawn_server(|convert, call| quote(convert, if call == 0 { "100.0" } else { "200.0" }))
                 .await;
-        let provider = CoinMarketCapRateProvider::new(url);
+        let provider = CoinMarketCapRateProvider::new(url, pinned());
         assert_eq!(
             provider.piconero_per_unit_cached("USD", TTL).await.unwrap(),
             Some(10_000_000_000)
@@ -562,7 +572,7 @@ mod tests {
             _ => quote(convert, "0"),
         })
         .await;
-        let provider = CoinMarketCapRateProvider::new(url);
+        let provider = CoinMarketCapRateProvider::new(url, pinned());
         assert_eq!(
             provider.piconero_per_unit_cached("USD", TTL).await.unwrap(),
             Some(10_000_000_000)
@@ -672,13 +682,13 @@ mod tests {
     #[tokio::test]
     async fn with_a_key_the_keyed_base_and_header_are_used_and_without_one_neither() {
         let (base, seen) = spawn_keyed_server(|_, _| quote("USD", "149.23")).await;
-        let keyed =
-            CoinMarketCapRateProvider::new(base.clone()).with_api_key(Some(ApiKey::new(KEY)));
+        let keyed = CoinMarketCapRateProvider::new(base.clone(), pinned())
+            .with_api_key(Some(ApiKey::new(KEY)));
         assert_eq!(
             keyed.piconero_per_unit_cached("USD", TTL).await.unwrap(),
             Some(6_701_065_469)
         );
-        let keyless = CoinMarketCapRateProvider::new(base);
+        let keyless = CoinMarketCapRateProvider::new(base, pinned());
         assert_eq!(
             keyless.piconero_per_unit_cached("USD", TTL).await.unwrap(),
             Some(6_701_065_469)
@@ -710,7 +720,8 @@ mod tests {
                 _ => quote("USD", "100.0"),
             })
             .await;
-        let provider = CoinMarketCapRateProvider::new(base).with_api_key(Some(ApiKey::new(KEY)));
+        let provider =
+            CoinMarketCapRateProvider::new(base, pinned()).with_api_key(Some(ApiKey::new(KEY)));
         let rate = Some(10_000_000_000);
         assert_eq!(
             provider.piconero_per_unit_cached("USD", TTL).await.unwrap(),
@@ -736,7 +747,7 @@ mod tests {
         assert!(!problem.contains(KEY));
 
         // Refused with nothing usable: the error says so, without the key.
-        let fresh = CoinMarketCapRateProvider::new(provider.base_url.clone())
+        let fresh = CoinMarketCapRateProvider::new(provider.base_url.clone(), pinned())
             .with_api_key(Some(ApiKey::new(KEY)));
         let error = fresh
             .piconero_per_unit_cached("USD", TTL)
@@ -767,7 +778,8 @@ mod tests {
                 .into_response()
         })
         .await;
-        let provider = CoinMarketCapRateProvider::new(base).with_api_key(Some(ApiKey::new(KEY)));
+        let provider =
+            CoinMarketCapRateProvider::new(base, pinned()).with_api_key(Some(ApiKey::new(KEY)));
         let error = provider
             .piconero_per_unit_cached("USD", TTL)
             .await
@@ -879,13 +891,13 @@ mod tests {
                 "keyless API"
             }
         );
-        let provider = CoinMarketCapRateProvider::new(BASE).with_api_key(key);
+        let provider = CoinMarketCapRateProvider::new(BASE, pinned()).with_api_key(key);
         // The keyless API's rate pool is shared by everyone on an address,
         // and a CI runner's address is shared by many. CoinMarketCap's advice
         // for its 429 is to back off exponentially (1, 2, 4, 8 s); a
         // `Retry-After`, when it sends one, is waited out in full.
         let mut backoff = std::time::Duration::from_secs(1);
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
         for attempt in 1..=TRIES {
             let error = match provider.piconero_per_unit_cached("USD", TTL).await {
                 Ok(rate) => {

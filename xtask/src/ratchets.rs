@@ -8,11 +8,15 @@
 //!   which pins presentation rather than behaviour;
 //! - a gallery group the coverage run requires that no spec photographs any
 //!   more, which only the coverage run would notice.
+//! - a library choosing the system's clock, or a moment kept as a bare
+//!   `i64` (`clock`).
 //!
 //! The first two keep a baseline of what was already there, which can only
 //! shrink: a new finding fails, and so does a fixed one still in the
 //! baseline, until `cargo xtask ratchets --prune` drops it. A finding that
 //! is right stays out of both through the reasoned lists below.
+
+mod clock;
 
 use crate::support::{at, files_under, read_json, root, write_json, Exit};
 use regex::Regex;
@@ -30,7 +34,8 @@ use syn::{
 pub(crate) const HELP: &str = "\
         ratchets [--prune]\n\
                       Check no test was added that only finds text in markup or reads styles, and that\n\
-                      every required gallery group has a spec; --prune drops fixed baseline entries";
+                      every required gallery group has a spec, that time comes from a clock passed in;\n\
+                      --prune drops fixed baseline entries";
 
 const HTML_BASELINE: &str = "xtask/ratchets/markup-only-tests.json";
 const STYLE_BASELINE: &str = "xtask/ratchets/e2e-style-reads.json";
@@ -526,6 +531,7 @@ fn problems(root: &Path, prune: bool) -> io::Result<Vec<String>> {
     problems.extend(unfed_gallery_groups(root)?.into_iter().map(|g| {
         format!("the coverage run requires gallery group {g}, which no spec it runs photographs")
     }));
+    problems.extend(clock::problems(root)?);
     Ok(problems)
 }
 

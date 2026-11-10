@@ -27,13 +27,21 @@ async fn competing_scans(boundary: u8) {
         scan_chunk_memory_budget_mb: 16,
         order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let tx = fixture_tx();
     let txid = engine_daemon::fake::tx_id_hex(&tx);
     let window = (id.clone(), tenants[0].1.clone(), ScanIndices::range(0..3));
     let due = [&window];
     custody.scan_mode.store(2, Ordering::SeqCst);
-    let mut first = Box::pin(scan_and_record(&state, &inputs, &tx, &txid, &due, None));
+    let mut first = Box::pin(scan_and_record(
+        &state,
+        &inputs,
+        &tx,
+        &txid,
+        &due,
+        None,
+        crate::node_test_support::TEST_NOW,
+    ));
     tokio::time::timeout(Duration::from_secs(10), async {
         tokio::select! {
             () = custody.scan_entered.notified() => {}
@@ -44,7 +52,16 @@ async fn competing_scans(boundary: u8) {
     .unwrap();
     // Both callers may have selected this tenant before either reserved it.
     // The losing caller returns immediately and does not contact custody.
-    let duplicate = scan_and_record(&state, &inputs, &tx, &txid, &due, None).await;
+    let duplicate = scan_and_record(
+        &state,
+        &inputs,
+        &tx,
+        &txid,
+        &due,
+        None,
+        crate::node_test_support::TEST_NOW,
+    )
+    .await;
     assert_eq!(duplicate.touched, 0);
     assert_eq!(custody.scans.load(Ordering::SeqCst), 1);
     assert!(
@@ -72,9 +89,17 @@ async fn competing_scans(boundary: u8) {
             state.mempool.forget();
             state.mempool.retain_pool(&HashSet::new());
             assert!(
-                !scan_and_record(&state, &inputs, &tx, &txid, &due, None)
-                    .await
-                    .attempted
+                !scan_and_record(
+                    &state,
+                    &inputs,
+                    &tx,
+                    &txid,
+                    &due,
+                    None,
+                    crate::node_test_support::TEST_NOW
+                )
+                .await
+                .attempted
             );
         }
         let mut blocker = if boundary == 3 {
@@ -100,9 +125,17 @@ async fn competing_scans(boundary: u8) {
                 "scan held the cache mutex across database await"
             );
             assert_eq!(
-                scan_and_record(&state, &inputs, &tx, &txid, &due, None)
-                    .await
-                    .touched,
+                scan_and_record(
+                    &state,
+                    &inputs,
+                    &tx,
+                    &txid,
+                    &due,
+                    None,
+                    crate::node_test_support::TEST_NOW
+                )
+                .await
+                .touched,
                 0
             );
             drop(first); // accepted job can still commit: retry must be safe
@@ -126,7 +159,16 @@ async fn competing_scans(boundary: u8) {
     }
     assert!(state.mempool.inner.lock().in_flight.is_empty());
     custody.scan_mode.store(0, Ordering::SeqCst);
-    let retry = scan_and_record(&state, &inputs, &tx, &txid, &due, None).await;
+    let retry = scan_and_record(
+        &state,
+        &inputs,
+        &tx,
+        &txid,
+        &due,
+        None,
+        crate::node_test_support::TEST_NOW,
+    )
+    .await;
     assert!(retry.failed.is_empty());
     assert!(retry.store_error.is_none());
     assert_eq!(
@@ -137,9 +179,17 @@ async fn competing_scans(boundary: u8) {
     assert!(!payments.is_empty());
     let identities: Vec<_> = payments.iter().map(|p| p.id).collect();
     assert_eq!(
-        scan_and_record(&state, &inputs, &tx, &txid, &due, None)
-            .await
-            .touched,
+        scan_and_record(
+            &state,
+            &inputs,
+            &tx,
+            &txid,
+            &due,
+            None,
+            crate::node_test_support::TEST_NOW
+        )
+        .await
+        .touched,
         0
     );
     assert_eq!(
@@ -300,7 +350,7 @@ async fn entry_point_contention(fast_first: bool, cancel: bool, competitors: usi
         scan_chunk_memory_budget_mb: 16,
         order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     // Bootstrap before holding custody so the rendezvous belongs to a mempool
     // scan, rather than chain initialization or any block scan.
     super::super::run_round(&state, &inputs, Duration::ZERO)
@@ -405,7 +455,7 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     if let Some(sql) = &trigger {
         store.execute_raw_for_test(sql).unwrap();
     }
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let tx = fixture_tx();
     let txid = engine_daemon::fake::tx_id_hex(&tx);
     let good = (a.clone(), tenants[0].1.clone(), ScanIndices::range(0..3));
@@ -427,7 +477,16 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     } else {
         [&good, &impaired]
     };
-    let outcome = scan_and_record(&state, &inputs, &tx, &txid, &batch, Some(1)).await;
+    let outcome = scan_and_record(
+        &state,
+        &inputs,
+        &tx,
+        &txid,
+        &batch,
+        Some(1),
+        crate::node_test_support::TEST_NOW,
+    )
+    .await;
     assert_eq!(outcome.touched, 1);
     assert_eq!(outcome.failed.len(), usize::from(failure == 0));
     assert_eq!(outcome.store_error.is_some(), matches!(failure, 1 | 3 | 4));
@@ -451,9 +510,17 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     assert_eq!(custody.scans.load(Ordering::SeqCst), 2);
     if failure == 2 {
         assert!(
-            !scan_and_record(&state, &inputs, &tx, &txid, &batch, Some(1))
-                .await
-                .attempted,
+            !scan_and_record(
+                &state,
+                &inputs,
+                &tx,
+                &txid,
+                &batch,
+                Some(1),
+                crate::node_test_support::TEST_NOW
+            )
+            .await
+            .attempted,
             "empty results should complete the original window"
         );
         assert_eq!(custody.scans.load(Ordering::SeqCst), 2);
@@ -464,7 +531,16 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
             .unwrap();
     }
     let repaired = (b.clone(), tenants[1].1.clone(), ScanIndices::range(0..3));
-    let retry = scan_and_record(&state, &inputs, &tx, &txid, &[&good, &repaired], Some(1)).await;
+    let retry = scan_and_record(
+        &state,
+        &inputs,
+        &tx,
+        &txid,
+        &[&good, &repaired],
+        Some(1),
+        crate::node_test_support::TEST_NOW,
+    )
+    .await;
     assert_eq!(retry.touched, 1);
     assert!(retry.failed.is_empty());
     assert!(retry.store_error.is_none());
@@ -490,9 +566,17 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     );
     for _ in 0..repeats {
         assert!(
-            !scan_and_record(&state, &inputs, &tx, &txid, &[&good, &repaired], Some(1))
-                .await
-                .attempted
+            !scan_and_record(
+                &state,
+                &inputs,
+                &tx,
+                &txid,
+                &[&good, &repaired],
+                Some(1),
+                crate::node_test_support::TEST_NOW
+            )
+            .await
+            .attempted
         );
     }
     assert_eq!(custody.scans.load(Ordering::SeqCst), 3);

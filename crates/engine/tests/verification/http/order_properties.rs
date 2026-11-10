@@ -2,6 +2,7 @@
 use super::*;
 use crate::property_support::{config, custody_arc, runtime, GateCustody, TempFile};
 use crate::store::{Database, Db, ReadStorePool, SharedStore, TenantId};
+use clock::UnixTime;
 use proptest::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::Ordering;
@@ -476,13 +477,13 @@ mod properties {
                 let other=monero::ViewPair { view:PrivateKey::from_slice(&other_view).unwrap(), spend:PublicKey::from_private_key(&PrivateKey::from_slice(&valid_scalar_bytes(42)).unwrap()) };
                 let at=|minor| monero::cryptonote::subaddress::get_subaddress(&other,crate::key_custody::SubaddressIndex{major:0,minor},Some(Network::Mainnet)).to_string();
                 let sealed=w.custody.inner.seal(&crate::key_custody::WalletMaterial::new(other_view,other.spend.to_bytes())).await.unwrap();
-                let wallet=w.store.lock().create_wallet(&crate::store::NewWallet{key_custody_backend:CustodyBackend::Plain,sealed_key_material:sealed,primary_address:at(0),network: Network::Mainnet},1).unwrap();
+                let wallet=w.store.lock().create_wallet(&crate::store::NewWallet{key_custody_backend:CustodyBackend::Plain,sealed_key_material:sealed,primary_address:at(0),network: Network::Mainnet},UnixTime::from_secs(1)).unwrap();
                 w.store.lock().conn_for_test().execute("UPDATE wallets SET next_minor_index=5 WHERE id=?1",[&wallet.id]).unwrap();
                 w.custody.mode.store(2,Ordering::Relaxed);
                 let task=tokio::spawn(request(w.router.clone(),w.tenants[0].secret_token.clone(),body(Some("disabled".to_owned()),amount,0,None)));
                 tokio::time::timeout(std::time::Duration::from_secs(5),w.custody.entered.notified()).await.unwrap();
                 let changing=(action==2).then(|| tokio::spawn(w.router.clone().oneshot(json_request("PUT","/api/v1/admin/tenant/wallet",Some(&w.tenants[0].secret_token),&serde_json::json!({"wallet_id":wallet.id})))));
-                match action { 0=>w.store.lock().disable_tenant(&w.ids[0],1).unwrap(), 1=>{w.store.lock().change_tenant_wallet(&w.ids[0],&wallet.id,1).unwrap();}, _=>{} }
+                match action { 0=>w.store.lock().disable_tenant(&w.ids[0],UnixTime::from_secs(1)).unwrap(), 1=>{w.store.lock().change_tenant_wallet(&w.ids[0],&wallet.id,UnixTime::from_secs(1)).unwrap();}, _=>{} }
                 w.custody.mode.store(0,Ordering::Relaxed);w.custody.release.notify_one();
                 let (status,reply)=task.await.unwrap();
                 if let Some(changing)=changing { assert_eq!(changing.await.unwrap().unwrap().status(),StatusCode::OK); }

@@ -45,6 +45,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use abuse::{ClientIdentity, TrustedProxies};
+use clock::Clock;
 use outbound::Reach;
 use push::{Sender, Topic, VapidKey};
 use rate_limit::RateLimiter;
@@ -135,6 +136,8 @@ pub(crate) struct Shared {
     registrations: RateLimiter<ClientIdentity>,
     store: RegistrationStore,
     dings: Arc<Dings>,
+    /// What time it is, read once per request.
+    clock: Clock,
 }
 
 /// A Bell, ready to serve.
@@ -266,7 +269,7 @@ impl Bell {
 
     /// [`Bell::check`]s the settings, then opens the registrations'
     /// database at `bell.store_path` (making it if need be).
-    pub async fn start(config: &BellConfig) -> Result<Bell, StartError> {
+    pub async fn start(config: &BellConfig, clock: Clock) -> Result<Bell, StartError> {
         let Checked {
             public_uri,
             adapters,
@@ -302,6 +305,7 @@ impl Bell {
             reach,
             config.registration_failure_limit,
             config.dings_per_merchant_per_minute,
+            clock.clone(),
         );
         tracing::info!(vapid_public_key = %vapid_key.public(), "the Bell is ready");
         Ok(Bell {
@@ -314,6 +318,7 @@ impl Bell {
                 registrations: RateLimiter::new(config.registrations_per_minute),
                 store,
                 dings: Arc::new(dings),
+                clock,
             }),
         })
     }

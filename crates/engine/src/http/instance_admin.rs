@@ -16,6 +16,7 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
+use clock::Clock;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
@@ -233,6 +234,7 @@ const NODE_INFO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3)
 async fn nodes_that_cannot_work(
     submitted: &BTreeMap<String, Option<serde_json::Value>>,
     current: &crate::engine_settings::NodeConfig,
+    clock: &Clock,
 ) -> Vec<live_settings::FieldError> {
     use crate::settings::MoneroNodeSetting;
     use engine_daemon::MoneroDaemonClient as _;
@@ -285,6 +287,7 @@ async fn nodes_that_cannot_work(
                     node.port,
                     node.ssl,
                     node.accept_self_signed_certs,
+                    clock.clone(),
                 )
                 .ok()?;
                 let info = tokio::time::timeout(NODE_INFO_TIMEOUT, client.get_info())
@@ -410,6 +413,7 @@ fn registry_of(settings: &EngineSettings) -> Result<&live_settings::Registry, Re
 /// refuses exactly what a save would.
 async fn changes_from(
     settings: &EngineSettings,
+    clock: &Clock,
     req: UpdateSettingsRequest,
 ) -> Result<live_settings::Changes, Refusal> {
     if settings.embedded {
@@ -433,7 +437,7 @@ async fn changes_from(
     // check (`settings::check_node`) refuses one on an onion address.
     let mut changes: live_settings::Changes =
         req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
-    let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
+    let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes, clock).await;
     if !cannot_work.is_empty() {
         return Err(Refusal::Fields(cannot_work));
     }
@@ -544,13 +548,14 @@ pub async fn update_settings(
     State(networks): State<Networks>,
     State(settings): State<Arc<EngineSettings>>,
     State(custody): State<super::Custody>,
+    State(clock): State<Clock>,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> axum::response::Response {
     let registry = match registry_of(&settings) {
         Ok(registry) => registry,
         Err(refusal) => return refusal.into_response(),
     };
-    let changes = match changes_from(&settings, req).await {
+    let changes = match changes_from(&settings, &clock, req).await {
         Ok(changes) => changes,
         Err(refusal) => return refusal.into_response(),
     };
@@ -572,13 +577,14 @@ pub async fn update_settings(
 /// they're on, as a save asks them.
 pub async fn check_settings(
     State(settings): State<Arc<EngineSettings>>,
+    State(clock): State<Clock>,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> axum::response::Response {
     let registry = match registry_of(&settings) {
         Ok(registry) => registry,
         Err(refusal) => return refusal.into_response(),
     };
-    let changes = match changes_from(&settings, req).await {
+    let changes = match changes_from(&settings, &clock, req).await {
         Ok(changes) => changes,
         Err(refusal) => return refusal.into_response(),
     };

@@ -16,6 +16,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use clock::{Clock, UnixTime};
 use tokio::time::Instant;
 
 use axum::http::StatusCode;
@@ -39,10 +40,10 @@ use crate::upstream::{self, Delivery};
 const SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 
 /// How long the assertion asks for a token for: Google's maximum.
-const ASSERTION_LIFETIME: i64 = 3600;
+const ASSERTION_LIFETIME: Duration = Duration::from_secs(3600);
 
 /// A token is renewed this long before it expires.
-pub const RENEW_BEFORE: i64 = 5 * 60;
+pub const RENEW_BEFORE: Duration = Duration::from_secs(5 * 60);
 
 /// Seconds a failed token exchange is remembered: pushes meanwhile are
 /// answered 503, to come back once it has passed, rather than each
@@ -159,7 +160,7 @@ impl ServiceAccount {
     }
 
     /// The signed assertion asking for a token at `now`.
-    fn assertion(&self, now: i64) -> Result<String, serde_json::Error> {
+    fn assertion(&self, now: UnixTime) -> Result<String, serde_json::Error> {
         #[derive(Serialize)]
         struct Header<'a> {
             alg: &'static str,
@@ -183,8 +184,8 @@ impl ServiceAccount {
             iss: &self.client_email,
             scope: SCOPE,
             aud: self.token_uri.url().as_str(),
-            iat: now,
-            exp: now.saturating_add(ASSERTION_LIFETIME),
+            iat: now.as_secs(),
+            exp: now.saturating_add(ASSERTION_LIFETIME).as_secs(),
         })?;
         let input = format!(
             "{}.{}",
@@ -257,7 +258,7 @@ pub fn translate(handle: &Handle, request: &PushRequest) -> Result<FcmPush, Tran
 /// An access token, and when it stops working (Unix seconds).
 struct AccessToken {
     value: String,
-    expires_at: i64,
+    expires_at: UnixTime,
 }
 
 /// What the relay knows of its access token.
@@ -268,7 +269,7 @@ enum TokenState {
     /// The last exchange failed; none is tried before `retry_at` (Unix
     /// seconds).
     Failed {
-        retry_at: i64,
+        retry_at: UnixTime,
     },
 }
 
@@ -352,21 +353,26 @@ impl Fcm {
         })
     }
 
-    /// An access token good at `now`, by `deadline`: the last one until
-    /// [`RENEW_BEFORE`] its expiry, else a new one from the token endpoint,
-    /// unless the last exchange failed under [`FAILURE_HOLD`] ago. An
-    /// exchange that fails or runs past `deadline` is remembered as failed.
-    async fn access_token(&self, now: i64, deadline: Instant) -> Result<String, TokenError> {
+    /// An access token good now, as `clock` reads it, by `deadline`: the
+    /// last one until [`RENEW_BEFORE`] its expiry, else a new one from the
+    /// token endpoint, unless the last exchange failed under
+    /// [`FAILURE_HOLD`] ago. An exchange that fails or runs past `deadline`
+    /// is remembered as failed. The clock is read once the lock is held,
+    /// not when the push came in: a push that waited for another's
+    /// exchange would otherwise judge the token, and time a failure's
+    /// retry, from a moment before the exchange ran.
+    async fn access_token(&self, clock: &Clock, deadline: Instant) -> Result<String, TokenError> {
         let mut state = tokio::time::timeout_at(deadline, self.token.lock())
             .await
             .map_err(|_| TokenError::Waited)?;
+        let now = clock.now();
         match &*state {
-            TokenState::Held(token) if now < token.expires_at - RENEW_BEFORE => {
+            TokenState::Held(token) if now < token.expires_at.saturating_sub(RENEW_BEFORE) => {
                 return Ok(token.value.clone());
             }
             TokenState::Failed { retry_at } if now < *retry_at => {
                 return Err(TokenError::Failing {
-                    retry_after: retry_at.abs_diff(now),
+                    retry_after: now.until(*retry_at).as_secs(),
                 });
             }
             _ => {}
@@ -382,7 +388,7 @@ impl Fcm {
             }
             Err(error) => {
                 *state = TokenState::Failed {
-                    retry_at: now.saturating_add_unsigned(FAILURE_HOLD),
+                    retry_at: now.saturating_add(Duration::from_secs(FAILURE_HOLD)),
                 };
                 Err(error)
             }
@@ -391,7 +397,7 @@ impl Fcm {
 
     /// A new access token from the token endpoint, for an assertion signed
     /// at `now`.
-    async fn exchange(&self, now: i64) -> Result<AccessToken, TokenError> {
+    async fn exchange(&self, now: UnixTime) -> Result<AccessToken, TokenError> {
         let assertion = self
             .account
             .assertion(now)
@@ -418,7 +424,9 @@ impl Fcm {
             .map_err(|error| TokenError::Answer(error.to_string()))?;
         Ok(AccessToken {
             value: answer.access_token,
-            expires_at: now.saturating_add(answer.expires_in),
+            expires_at: now.saturating_add(Duration::from_secs(
+                u64::try_from(answer.expires_in).unwrap_or(0),
+            )),
         })
     }
 
@@ -437,10 +445,11 @@ impl Fcm {
         handle: &Handle,
         project: &ProjectId,
         push: &FcmPush,
-        now: i64,
+        clock: &Clock,
+        now: UnixTime,
     ) -> Delivery {
         let deadline = Instant::now() + self.timeout;
-        let token = match self.access_token(now, deadline).await {
+        let token = match self.access_token(clock, deadline).await {
             Ok(token) => token,
             Err(error) => {
                 tracing::warn!(handle = %handle.id.tag(), error = %error, "no FCM access token");
@@ -474,7 +483,7 @@ impl Fcm {
         if status.is_success() {
             return Delivery::Delivered;
         }
-        let retry_after = upstream::retry_after(response.headers(), std::time::SystemTime::now());
+        let retry_after = upstream::retry_after(response.headers(), now);
         let (reason, code) =
             match serde_json::from_slice::<ErrorAnswer>(&upstream::error_body(response).await) {
                 Ok(answer) => (
@@ -540,7 +549,12 @@ mod tests {
     use rsa::signature::Verifier as _;
     use serde_json::Value;
 
-    const NOW: i64 = 1_800_000_000;
+    const NOW_SECS: i64 = 1_800_000_000;
+    const NOW: UnixTime = UnixTime::from_secs(NOW_SECS);
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
 
     fn handle() -> Handle {
         Handle {
@@ -549,7 +563,7 @@ mod tests {
             app: AppName::try_from("monokular".to_owned()).unwrap(),
             token: DeviceToken::parse(Platform::Fcm, "fcm:device-1").unwrap(),
             sender: VapidKey::generate().public(),
-            expires_at: NOW + 60,
+            expires_at: NOW_SECS + 60,
         }
     }
 
@@ -657,8 +671,8 @@ mod tests {
                 "iss": "relay@monokular-test.iam.gserviceaccount.com",
                 "scope": "https://www.googleapis.com/auth/firebase.messaging",
                 "aud": "https://oauth2.googleapis.com/token",
-                "iat": NOW,
-                "exp": NOW + 3600,
+                "iat": NOW_SECS,
+                "exp": NOW_SECS + 3600,
             })
         );
         let signature =
@@ -770,28 +784,41 @@ mod tests {
         let held = || {
             TokenState::Held(AccessToken {
                 value: "cached".into(),
-                expires_at: NOW + 3600,
+                expires_at: NOW.saturating_add(secs(3600)),
             })
         };
-        let token = |now: i64| fcm.access_token(now, Instant::now() + Duration::from_millis(200));
+        let fcm = &fcm;
+        let token = |now: UnixTime| async move {
+            fcm.access_token(
+                &Clock::Fixed(now),
+                Instant::now() + Duration::from_millis(200),
+            )
+            .await
+        };
         *fcm.token.lock().await = held();
         assert_eq!(token(NOW).await.unwrap(), "cached");
         assert_eq!(
-            token(NOW + 3600 - RENEW_BEFORE - 1).await.unwrap(),
+            token(
+                NOW.saturating_add(secs(3600))
+                    .saturating_sub(RENEW_BEFORE)
+                    .saturating_sub(secs(1))
+            )
+            .await
+            .unwrap(),
             "cached"
         );
-        let renewal = NOW + 3600 - RENEW_BEFORE;
+        let renewal = NOW.saturating_add(secs(3600)).saturating_sub(RENEW_BEFORE);
         assert!(matches!(
             token(renewal).await,
             Err(TokenError::Unreachable(_))
         ));
         assert!(matches!(
-            token(renewal + 10).await,
+            token(renewal.saturating_add(secs(10))).await,
             Err(TokenError::Failing { retry_after: 20 })
         ));
-        let hold = i64::try_from(FAILURE_HOLD).unwrap();
+        let hold = secs(FAILURE_HOLD);
         assert!(matches!(
-            token(renewal + hold).await,
+            token(renewal.saturating_add(hold)).await,
             Err(TokenError::Unreachable(_))
         ));
         *fcm.token.lock().await = held();

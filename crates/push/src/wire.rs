@@ -200,7 +200,7 @@ mod tests {
             .authorization(
                 &Origin::parse("https://relay.example.net").unwrap(),
                 None,
-                1_800_000_000,
+                clock::UnixTime::from_secs(1_800_000_000),
             )
             .unwrap()
     }
@@ -494,7 +494,7 @@ mod tests {
         let relay = Origin::parse("https://relay.example.net").unwrap();
         let sender = VapidKey::generate();
         let message = encrypted();
-        let now = 1_800_000_000;
+        let now = clock::UnixTime::from_secs(1_800_000_000);
         let parse_and_verify = |authorization: &Authorization, at: &Origin| {
             let headers = headers(&message, &options(), authorization);
             let request = PushRequest::parse(&headers, message.body()).unwrap();
@@ -525,7 +525,7 @@ mod tests {
         ));
 
         let stale = sender
-            .authorization(&relay, None, now - crate::vapid::EXPIRY.as_secs() as i64)
+            .authorization(&relay, None, now.saturating_sub(crate::vapid::EXPIRY))
             .unwrap();
         assert!(matches!(
             parse_and_verify(&stale, &relay),

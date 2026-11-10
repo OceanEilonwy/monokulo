@@ -508,7 +508,7 @@ async fn links_carry_the_path_monokulo_is_served_under() {
             &code.hash(),
             &crate::db::ConnectionId::new(fixture.store_id.clone()),
             "nonce",
-            crate::now_unix(),
+            fixture.state.clock.now(),
         )
         .unwrap();
     let finish = |code: &str| {

@@ -7,10 +7,7 @@
 //! sweep weighs scan time against link time, and a debug build's scan time
 //! isn't the engine's.
 
-use std::{
-    fs, io,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, io};
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -56,10 +53,7 @@ pub fn run() -> io::Result<bool> {
     let hardware = profile(&output);
     write_json(&output.join("hardware.json"), &hardware)?;
     let cpu = pinned_cpu(&hardware)?;
-    let started_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let started_at = u64::try_from(clock::Clock::System.now().as_secs()).unwrap_or(0);
     let budgets = scenario["round_budgets_ms"]
         .as_array()
         .ok_or_else(|| io::Error::other("scenario has no round budgets"))?;

@@ -17,6 +17,7 @@
 //! replaces the official key for an instance that runs its own signed engine
 //! image, and says so loudly.
 
+use clock::UnixTime;
 use key_custody::transport::{self, Anchor, Bundle, TcbFloor, TrustPolicy, Verified, KEYS_LEN};
 use zeroize::Zeroizing;
 
@@ -98,7 +99,7 @@ pub fn parse_keys(
 
 /// Checks `bundle` under `policy` (against AMD's chain, at `now`) and
 /// returns what to encrypt to.
-pub fn check(bundle: &Bundle, policy: &TrustPolicy, now: i64) -> Result<Verified, String> {
+pub fn check(bundle: &Bundle, policy: &TrustPolicy, now: UnixTime) -> Result<Verified, String> {
     transport::verify_bundle(bundle, policy, &Anchor::Amd, now).map_err(|e| match e {
         transport::TransportError::Version { got } => format!(
             "this key-custody-cli ({VERSION}) reads bundle format {}, and this bundle is format {got}: download \
@@ -204,7 +205,7 @@ mod tests {
             min_guest_svn: 0,
             min_tcb: TcbFloor::default(),
         };
-        let error = check(&bundle, &policy, 0).unwrap_err();
+        let error = check(&bundle, &policy, UnixTime::EPOCH).unwrap_err();
         assert!(
             error.contains("download the key-custody-cli release that matches"),
             "{error}"

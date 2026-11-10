@@ -182,7 +182,7 @@ pub struct Connecting {
     pub version: String,
     /// Where it wants the store's events sent, already checked.
     pub webhook_url: Option<String>,
-    pub at: i64,
+    pub at: clock::UnixTime,
 }
 
 /// What [`connect`] made.
@@ -215,7 +215,7 @@ pub async fn connect(
     let (webhook_id, webhook_signing_secret) = match &webhook_url {
         Some(url) => {
             let created =
-                crate::webhooks::create(db, key, &store_id, url, &Default::default()).await?;
+                crate::webhooks::create(db, key, &store_id, url, &Default::default(), at).await?;
             (
                 Some(created.webhook.id.to_string()),
                 Some(created.signing_secret),

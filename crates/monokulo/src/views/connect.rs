@@ -199,7 +199,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "")
+        PageChrome::from_user(None, "", clock::Clock::System.now())
     }
 
     fn request() -> PluginRequestView {

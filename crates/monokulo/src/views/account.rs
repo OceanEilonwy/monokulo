@@ -432,7 +432,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/account")
+        PageChrome::from_user(None, "/account", clock::Clock::System.now())
     }
 
     fn profile() -> Profile {

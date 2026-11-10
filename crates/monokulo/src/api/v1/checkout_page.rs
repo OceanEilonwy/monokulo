@@ -44,7 +44,7 @@ pub(crate) struct Body {
 pub(crate) fn body_of(
     page: crate::db::PublishedCheckoutPage,
     domains: &[crate::db::StoreDomainRow],
-    now: i64,
+    now: clock::UnixTime,
 ) -> Body {
     let standing = standing(&page, domains, now);
     let status = match &standing {
@@ -62,7 +62,9 @@ pub(crate) fn body_of(
         waiting_on: waiting_on(&page, domains, now),
         last_checked_at: page.last_checked_at.unwrap_or(page.published_at),
         stops_showing_at: match standing {
-            PageStanding::Failing { since } => Some(since + domain_proof::GRACE_SECS),
+            PageStanding::Failing { since } => {
+                Some(since.saturating_add(domain_proof::GRACE).as_secs())
+            }
             _ => None,
         },
         template: page.template,
@@ -83,6 +85,7 @@ pub(crate) fn body_of(
 #[get(sk, problems = [NotFound, Internal])]
 async fn get(store: Store, instance: Instance) -> api::Result<Body> {
     let (id, state) = (store.id.clone(), instance.0);
+    let now = state.clock.now();
     let found = state
         .db
         .read(move |db| {
@@ -93,7 +96,7 @@ async fn get(store: Store, instance: Instance) -> api::Result<Body> {
         })
         .await;
     match found {
-        Ok((Some(page), domains)) => Ok(body_of(page, &domains, crate::now_unix())),
+        Ok((Some(page), domains)) => Ok(body_of(page, &domains, now)),
         Ok((None, _)) => Err(Problem::NotFound.detail("This store has no custom page in use.")),
         Err(_) => Err(internal()),
     }

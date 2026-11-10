@@ -16,6 +16,11 @@ const GOOD: &str = "<h1>Fern and Wire's own page</h1>{{status}}{{qr}}<p>{{amount
 const CUSTOM: &str = "Fern and Wire's own page";
 use crate::checkout_pages::TEMPLATE;
 
+/// A span as the whole seconds a stored column holds.
+fn secs(span: std::time::Duration) -> i64 {
+    i64::try_from(span.as_secs()).unwrap()
+}
+
 struct Wizard {
     state: AppState,
     router: Router,
@@ -161,7 +166,7 @@ impl Wizard {
         self.state
             .db
             .lock()
-            .checkout_page_draft(&self.store, crate::now_unix())
+            .checkout_page_draft(&self.store, self.state.clock.now())
             .unwrap()
     }
 }
@@ -196,7 +201,7 @@ async fn wizard(email: &str, verified: bool) -> Wizard {
             &domain_proof::VERIFY.record_name(&row.domain),
             &domain_proof::VERIFY.value(&row.token),
         );
-        crate::embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
+        crate::embed_domains::check_and_record(&state.db, &state.proofs, &row, state.clock.now())
             .await
             .unwrap();
     }
@@ -490,8 +495,11 @@ async fn saving_is_limited_per_store_and_a_draft_expires_and_can_be_discarded() 
     assert!(html.contains("a lot of saves"), "{html}");
     assert!(html.contains("what I typed"), "{html}");
 
-    let now = crate::now_unix();
-    let later = now + crate::db::DRAFT_SECS + 1;
+    let later = wizard
+        .state
+        .clock
+        .now()
+        .saturating_add(crate::db::DRAFT_LIFETIME + std::time::Duration::from_secs(1));
     assert!(wizard.draft().is_some());
     let expired = wizard
         .state
@@ -521,7 +529,7 @@ async fn saving_is_limited_per_store_and_a_draft_expires_and_can_be_discarded() 
 async fn only_stylesheets_nothing_links_are_pruned() {
     let wizard = wizard("prune@example.com", true).await;
     let (store, day) = (wizard.store.clone(), 24 * 60 * 60);
-    let start = crate::now_unix();
+    let start = wizard.state.clock.now();
     use crate::views::checkout_style::{CheckoutStyle, Roles};
     let replaced = CheckoutStyle {
         transparent: true,
@@ -540,8 +548,12 @@ async fn only_stylesheets_nothing_links_are_pruned() {
     db.set_store_checkout_style(&store, &replaced, start)
         .unwrap();
     // Replaced a little later: a page may still be open with the old one.
-    db.set_store_checkout_style(&store, &style, start + day)
-        .unwrap();
+    db.set_store_checkout_style(
+        &store,
+        &style,
+        start.saturating_add(std::time::Duration::from_secs(day)),
+    )
+    .unwrap();
     assert!(
         db.checkout_stylesheet(&old).unwrap().is_some(),
         "still open somewhere"
@@ -552,7 +564,7 @@ async fn only_stylesheets_nothing_links_are_pruned() {
         "",
         "#checkout-root c{}",
         "t3",
-        start + 9 * day,
+        start.saturating_add(std::time::Duration::from_secs(9 * day)),
     )
     .unwrap();
     assert_eq!(db.checkout_stylesheet(&old).unwrap(), None);
@@ -568,7 +580,7 @@ async fn only_stylesheets_nothing_links_are_pruned() {
 async fn a_store_holds_one_drafts_stylesheet() {
     let wizard = wizard("one-sheet@example.com", true).await;
     let store = wizard.store.clone();
-    let now = crate::now_unix();
+    let now = wizard.state.clock.now();
     let db = wizard.state.db.lock();
     let (first, second) = ("#checkout-root a{}", "#checkout-root b{}");
     db.save_checkout_page_draft(&store, GOOD, "", first, "t1", now)
@@ -797,42 +809,62 @@ async fn a_pages_proof_is_checked_with_a_grace_period_and_no_answer_means_nothin
                 &store,
                 &["store-home.example".to_string()],
                 &token,
-                at,
+                clock::UnixTime::from_secs(at),
             )
             .await
             .unwrap()
         }
     };
-    let now = crate::now_unix();
-    let at = |wizard: &Wizard, when: i64| standing(&wizard.published().unwrap(), &domains, when);
+    let now = wizard.state.clock.now();
+    let at = |wizard: &Wizard, when: i64| {
+        standing(
+            &wizard.published().unwrap(),
+            &domains,
+            clock::UnixTime::from_secs(when),
+        )
+    };
 
     // An outage, longer than the grace period: still working.
     wizard.dns.fail(&name, "timed out");
-    check(now).await;
-    let later = now + domain_proof::GRACE_SECS * 2;
-    check(later).await;
-    assert_eq!(at(&wizard, later), PageStanding::Working);
+    check(now.as_secs()).await;
+    let later = now.saturating_add(std::time::Duration::from_secs(
+        (secs(domain_proof::GRACE) * 2).unsigned_abs(),
+    ));
+    check(later.as_secs()).await;
+    assert_eq!(at(&wizard, later.as_secs()), PageStanding::Working);
     assert!(wizard.published().unwrap().last_error.is_some());
 
     // Gone: failing, then not showing.
     wizard.dns.remove(&name);
-    check(later).await;
-    assert_eq!(at(&wizard, later), PageStanding::Failing { since: later });
+    check(later.as_secs()).await;
     assert_eq!(
-        at(&wizard, later + domain_proof::GRACE_SECS),
+        at(&wizard, later.as_secs()),
+        PageStanding::Failing { since: later }
+    );
+    assert_eq!(
+        at(&wizard, later.saturating_add(domain_proof::GRACE).as_secs()),
         PageStanding::NotShowing
     );
     // An outage doesn't stop the clock it didn't start.
     wizard.dns.fail(&name, "timed out");
-    check(later + 60).await;
+    check((later.saturating_add(std::time::Duration::from_secs(60))).as_secs()).await;
     assert_eq!(
-        at(&wizard, later + 60),
+        at(
+            &wizard,
+            (later.saturating_add(std::time::Duration::from_secs(60))).as_secs()
+        ),
         PageStanding::Failing { since: later }
     );
 
     // Back: working, with nothing for the merchant to do.
     wizard.dns.publish(&name, &TEMPLATE.value(&token));
-    check(later + domain_proof::GRACE_SECS + 60).await;
+    check(
+        (later
+            .saturating_add(domain_proof::GRACE)
+            .saturating_add(std::time::Duration::from_secs(60)))
+        .as_secs(),
+    )
+    .await;
     assert_eq!(wizard.published().unwrap().failing_since, None);
     assert_eq!(wizard.published().unwrap().last_error, None);
 }
@@ -874,10 +906,10 @@ async fn an_onion_only_store_approves_with_a_file_over_tor() {
         let db = state.db.lock();
         let web = db.list_store_domains(&id).unwrap().remove(0);
         db.delete_store_domain(&id, &web.id).unwrap();
-        db.create_store_domain("o", &id, ONION, "t", 1, None)
+        db.create_store_domain("o", &id, ONION, "t", clock::UnixTime::from_secs(1), None)
             .unwrap()
             .unwrap();
-        db.record_store_domain_check("o", crate::now_unix(), None)
+        db.record_store_domain_check("o", state.clock.now(), None)
             .unwrap();
     }
     let wizard = Wizard {
@@ -1027,7 +1059,7 @@ async fn the_card_says_where_a_page_stands() {
         .state
         .db
         .lock()
-        .record_store_domain_check(&row.id, crate::now_unix(), None)
+        .record_store_domain_check(&row.id, wizard.state.clock.now(), None)
         .unwrap();
     assert!(wizard.get(&tab).await.1.contains("Create a custom page"));
     wizard.save(GOOD, "").await;
@@ -1047,8 +1079,14 @@ async fn the_card_says_where_a_page_stands() {
             .unwrap()
             .unwrap()
             .token;
-        db.record_checkout_page_check(&wizard.store, &token, crate::now_unix(), true, "gone")
-            .unwrap();
+        db.record_checkout_page_check(
+            &wizard.store,
+            &token,
+            wizard.state.clock.now(),
+            true,
+            "gone",
+        )
+        .unwrap();
     }
     assert!(wizard.get(&tab).await.1.contains("Failing"));
     wizard.post(&format!("{}/stop", wizard.page()), None).await;
@@ -1086,7 +1124,7 @@ async fn a_stream_on_an_old_version_tells_the_page_to_load_again() {
 #[tokio::test]
 async fn nothing_slow_touches_what_replaced_it() {
     let wizard = wizard("races@example.com", true).await;
-    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now());
     let db = wizard.state.db.lock();
     db.save_checkout_page_draft(&store, GOOD, "", "", "t1", now)
         .unwrap();
@@ -1106,7 +1144,7 @@ async fn nothing_slow_touches_what_replaced_it() {
     db.record_checkout_page_check(&store, "v1", now, true, "gone")
         .unwrap();
     let page = db.published_checkout_page(&store).unwrap().unwrap();
-    assert_eq!(page.failing_since, Some(now));
+    assert_eq!(page.failing_since, Some(now.as_secs()));
 }
 
 /// An open page follows its standing, not only its version: when its proof has
@@ -1116,14 +1154,19 @@ async fn an_open_page_stops_following_a_page_that_stopped_showing() {
     let wizard = wizard("open-page@example.com", true).await;
     wizard.publish().await;
     let token = wizard.published().unwrap().token;
-    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now());
     let db = wizard.state.db.lock();
     let showing = |at: i64| {
-        crate::checkout_pages::page_still_showing(&db, &store, &token, at)
-            .unwrap()
-            .is_some()
+        crate::checkout_pages::page_still_showing(
+            &db,
+            &store,
+            &token,
+            clock::UnixTime::from_secs(at),
+        )
+        .unwrap()
+        .is_some()
     };
-    assert!(showing(now));
+    assert!(showing(now.as_secs()));
     assert!(
         crate::checkout_pages::page_still_showing(&db, &store, "older", now)
             .unwrap()
@@ -1131,8 +1174,8 @@ async fn an_open_page_stops_following_a_page_that_stopped_showing() {
     );
     db.record_checkout_page_check(&store, &token, now, true, "gone")
         .unwrap();
-    assert!(showing(now), "its grace period");
-    assert!(!showing(now + domain_proof::GRACE_SECS));
+    assert!(showing(now.as_secs()), "its grace period");
+    assert!(!showing(now.saturating_add(domain_proof::GRACE).as_secs()));
 }
 
 /// A release that fixes the sanitiser reaches pages already live, from what their
@@ -1140,7 +1183,7 @@ async fn an_open_page_stops_following_a_page_that_stopped_showing() {
 #[tokio::test]
 async fn each_start_writes_a_live_pages_css_again() {
     let wizard = wizard("refresh-page@example.com", true).await;
-    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now());
     let css = "p{color:red}";
     let written = check_draft(GOOD, css).unwrap().written_css;
     let db = wizard.state.db.lock();
@@ -1180,16 +1223,16 @@ async fn a_web_domain_and_an_onion_address_must_both_approve() {
         state,
         ..wizard
     };
-    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now());
     {
         let db = wizard.state.db.lock();
-        db.create_store_domain("o", &store, ONION, "t", 1, None)
+        db.create_store_domain("o", &store, ONION, "t", clock::UnixTime::from_secs(1), None)
             .unwrap()
             .unwrap();
         db.conn_for_test()
             .execute(
                 "UPDATE store_domains SET verified_at_utc = ?1 WHERE id = 'o'",
-                [now],
+                [now.as_secs()],
             )
             .unwrap();
     }
@@ -1247,7 +1290,7 @@ async fn a_web_domain_and_an_onion_address_must_both_approve() {
     let found = check(now).await.unwrap();
     assert!(matches!(&found, crate::checkout_pages::Approved::Missing(why) if why.contains(ONION)));
     let page = wizard.published().unwrap();
-    assert_eq!(page.failing_since, Some(now));
+    assert_eq!(page.failing_since, Some(now.as_secs()));
     assert!(page.last_error.unwrap().contains(ONION));
     onion.serve(ONION, &onion_proof);
     assert_eq!(
@@ -1257,22 +1300,38 @@ async fn a_web_domain_and_an_onion_address_must_both_approve() {
     assert_eq!(wizard.published().unwrap().failing_since, None);
 
     wizard.dns.remove(&web_name);
-    let found = check(now + 1).await.unwrap();
+    let found = check(now.saturating_add(std::time::Duration::from_secs(1)))
+        .await
+        .unwrap();
     assert!(
         matches!(&found, crate::checkout_pages::Approved::Missing(why) if why.contains("store-home"))
     );
-    assert_eq!(wizard.published().unwrap().failing_since, Some(now + 1));
+    assert_eq!(
+        wizard.published().unwrap().failing_since,
+        Some(
+            now.saturating_add(std::time::Duration::from_secs(1))
+                .as_secs()
+        )
+    );
 
     // Back on the web while Tor says nothing: the clock keeps running, as an answer
     // from one says nothing about the other.
     wizard.dns.publish(&web_name, &TEMPLATE.value(&token));
     onion.fail(ONION, "timed out");
-    let found = check(now + 2).await.unwrap();
+    let found = check(now.saturating_add(std::time::Duration::from_secs(2)))
+        .await
+        .unwrap();
     assert!(matches!(
         found,
         crate::checkout_pages::Approved::NoAnswer(_)
     ));
-    assert_eq!(wizard.published().unwrap().failing_since, Some(now + 1));
+    assert_eq!(
+        wizard.published().unwrap().failing_since,
+        Some(
+            now.saturating_add(std::time::Duration::from_secs(1))
+                .as_secs()
+        )
+    );
 }
 
 /// A domain added under a live page shows the layout until it approves, says so on the
@@ -1283,16 +1342,16 @@ async fn a_domain_added_under_a_live_page_waits_for_its_own_proof() {
     const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
     let wizard = wizard("added@example.com", true).await;
     wizard.publish().await;
-    let (store, now) = (wizard.store.clone(), crate::now_unix());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now());
     {
         let db = wizard.state.db.lock();
-        db.create_store_domain("o", &store, ONION, "t", 1, None)
+        db.create_store_domain("o", &store, ONION, "t", clock::UnixTime::from_secs(1), None)
             .unwrap()
             .unwrap();
         db.conn_for_test()
             .execute(
                 "UPDATE store_domains SET verified_at_utc = ?1 WHERE id = 'o'",
-                [now],
+                [now.as_secs()],
             )
             .unwrap();
     }

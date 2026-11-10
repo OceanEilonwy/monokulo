@@ -133,16 +133,18 @@ impl Db {
         token_hash: &TokenHash,
         store_id: &ConnectionId,
         device_name: &str,
-        created_at: i64,
+        now: clock::UnixTime,
     ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM app_connect_tokens WHERE created_at_utc < ?1",
-            params![created_at.saturating_sub(24 * 60 * 60)],
+            params![now
+                .saturating_sub(std::time::Duration::from_secs(24 * 60 * 60))
+                .as_secs()],
         )?;
         self.conn.execute(
             "INSERT INTO app_connect_tokens (token_hash, store_id, device_name, created_at_utc)
              VALUES (?1, ?2, ?3, ?4)",
-            params![token_hash, store_id, device_name, created_at],
+            params![token_hash, store_id, device_name, now.as_secs()],
         )?;
         Ok(())
     }
@@ -155,8 +157,8 @@ impl Db {
     pub fn redeem_app_connect_token(
         &self,
         token_hash: &TokenHash,
-        now: i64,
-        ttl_seconds: i64,
+        now: clock::UnixTime,
+        ttl: std::time::Duration,
         new: &NewApp<'_>,
     ) -> Result<Option<AppConnection>> {
         let tx = rusqlite::Transaction::new_unchecked(
@@ -167,7 +169,12 @@ impl Db {
         let spent = tx.execute(
             "UPDATE app_connect_tokens SET consumed_at_utc = ?1, app_id = ?4
              WHERE token_hash = ?2 AND consumed_at_utc IS NULL AND created_at_utc >= ?3",
-            params![now, token_hash, now - ttl_seconds, id],
+            params![
+                now.as_secs(),
+                token_hash,
+                now.saturating_sub(ttl).as_secs(),
+                id
+            ],
         )?;
         if spent == 0 {
             return Ok(None);
@@ -195,7 +202,7 @@ impl Db {
                 new.platform,
                 new.version,
                 new.key_hash,
-                now
+                now.as_secs()
             ],
         )?;
         let app = tx.query_row(
@@ -328,12 +335,12 @@ impl Db {
     }
 
     /// An app made an order (or connected) now, with this version.
-    pub fn app_seen(&self, app_id: &AppId, version: &str, at: i64) -> Result<()> {
+    pub fn app_seen(&self, app_id: &AppId, version: &str, at: clock::UnixTime) -> Result<()> {
         self.conn.execute(
             "UPDATE app_connections SET last_seen_at_utc = ?2,
                  version = CASE WHEN ?3 = '' THEN version ELSE ?3 END
              WHERE id = ?1",
-            params![app_id, at, version],
+            params![app_id, at.as_secs(), version],
         )?;
         Ok(())
     }

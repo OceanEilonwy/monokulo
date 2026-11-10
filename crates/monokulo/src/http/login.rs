@@ -14,8 +14,6 @@
 
 use std::sync::OnceLock;
 
-use crate::now_unix;
-
 use super::AppState;
 
 /// A real Argon2id hash of a fixed, nobody-has-this-password string,
@@ -107,9 +105,10 @@ pub(super) async fn start_session(
     let raw_token = credentials::auth::generate_session_token();
     let token_hash = raw_token.hash();
     let (hash, id) = (token_hash.clone(), user_id.clone());
+    let now = state.clock.now();
     state
         .db
-        .write(move |db| db.create_session(&hash, &id, now_unix()))
+        .write(move |db| db.create_session(&hash, &id, now))
         .await
         .map_err(|_| LoginError::Internal)?;
     // The sign-in's own lines start the session's.

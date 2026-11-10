@@ -15,6 +15,8 @@ name = "key-custody-cli"
 path = "src/main.rs"
 
 [dependencies]
+# What time it is, read once when the command runs.
+clock = { path = "../clock" }
 clap = { version = "4.6.7", features = ["derive"] }
 hex = "0.4.3"
 key-custody = { path = "../key-custody", default-features = false }

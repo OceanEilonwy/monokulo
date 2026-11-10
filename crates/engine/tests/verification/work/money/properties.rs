@@ -3,7 +3,7 @@ use super::{config, runtime, Harness, NETWORK, RETRY_TIME};
 use crate::scanner::tests::{key_reusing_tx, payment_tx, FIXTURE_AMOUNT_PICONERO};
 use crate::status::OrderStatus;
 use crate::store::{NewOrder, OrderId, Store};
-use crate::work::{fast_pass, run_round_at, RoundInputs, ScanState, ScanTuning};
+use crate::work::{fast_pass_at, run_round_at, RoundInputs, ScanTuning};
 use engine_daemon::fake::tx_id_hex;
 use engine_daemon::KeyImageStatus;
 use proptest::prelude::*;
@@ -40,7 +40,7 @@ fn add_order(h: &Harness, amount: u64, threshold: u64) -> OrderId {
         address: format!("fixture-{minor}"),
         xmr_amount_piconero: crate::store::Piconero(amount),
         description: None,
-        created_at: h.now,
+        created_at: h.now.as_secs(),
         expires_at: i64::MAX,
         confirmations_required_override: Some(threshold),
         idempotency_key: None,
@@ -64,7 +64,7 @@ async fn round(
     grace: i64,
     fault: Option<usize>,
 ) {
-    h.now += RETRY_TIME.as_secs() as i64;
+    h.now = h.now.saturating_add(RETRY_TIME);
     round_at(h, orders, budget, grace, fault).await;
 }
 
@@ -525,7 +525,9 @@ async fn drain_worker(
             };
             if done {
                 let before = money_fingerprint(h, orders);
-                fast_pass(&h.state, &inputs(h, GRACE)).await.unwrap();
+                fast_pass_at(&h.state, &inputs(h, GRACE), h.now)
+                    .await
+                    .unwrap();
                 run_round_at(&h.state, &inputs(h, GRACE), Duration::ZERO, h.now)
                     .await
                     .into_result()
@@ -550,9 +552,13 @@ async fn concurrent_scan_pair(h: Harness, passes: usize) -> Harness {
     let fast = tokio::spawn(async move {
         for _ in 0..passes {
             tokio::task::yield_now().await;
-            fast_pass(&fast_state.state, &inputs(&fast_state, GRACE))
-                .await
-                .unwrap();
+            fast_pass_at(
+                &fast_state.state,
+                &inputs(&fast_state, GRACE),
+                fast_state.now,
+            )
+            .await
+            .unwrap();
         }
     });
     let round_state = std::sync::Arc::clone(&shared);
@@ -635,7 +641,7 @@ async fn late_registration_history(
     // independent of the UUIDs assigned to test fixtures.
     let healthy = all.iter().enumerate().max_by_key(|(_, p)| &p.0).unwrap().0;
     h.tenants = vec![all[healthy].clone()];
-    h.state = ScanState::default()
+    h.state = crate::node_test_support::scan_state()
         .with_tuning(ScanTuning {
             group_page,
             blocks_per_unit: 1,
@@ -1072,7 +1078,7 @@ mod properties {
     ) {
         runtime().block_on(async {
             let mut h = Harness::new().await;
-            h.state = ScanState::default()
+            h.state = crate::node_test_support::scan_state()
                 .with_tuning(ScanTuning {
                     txs_per_scan: tx_batch,
                     blocks_per_unit: block_batch,
@@ -1237,7 +1243,7 @@ mod properties {
     ) {
         runtime().block_on(async {
             let mut h = Harness::new().await;
-            let expiry = h.now + 120;
+            let expiry = h.now.saturating_add(Duration::from_secs(120)).as_secs();
             let target = if sufficient { amount } else { amount + 1 };
             configure(&h, target, Some(threshold), expiry);
             let orders = vec![h.order.clone()];
@@ -1247,7 +1253,7 @@ mod properties {
             for _ in 1..depth {
                 append(&mut h, vec![]);
             }
-            h.now = expiry + 1;
+            h.now = clock::UnixTime::from_secs(expiry + 1);
             for _ in 0..outage_rounds {
                 round(&mut h, &orders, Duration::ZERO, 0, None).await;
                 let s = h.store().lock();
@@ -1288,7 +1294,7 @@ mod properties {
     ) {
         runtime().block_on(async {
             let mut h = Harness::new().await;
-            let expiry = h.now - 1;
+            let expiry = h.now.saturating_sub(Duration::from_secs(1)).as_secs();
             configure(&h, amount, Some(0), expiry);
             let orders = vec![h.order.clone()];
             converge(&mut h, &orders, Duration::ZERO, grace, |s, h| {
@@ -1305,7 +1311,7 @@ mod properties {
                 1 => grace.max(1),
                 _ => grace + 1,
             };
-            h.now = expiry + delta;
+            h.now = clock::UnixTime::from_secs(expiry + delta);
             h.daemon.set_mempool(vec![payment_tx(1, 1, amount)]);
             for _ in 0..4 {
                 round_at(&h, &orders, Duration::ZERO, grace, None).await;
@@ -1372,13 +1378,14 @@ mod properties {
     ) {
         runtime().block_on(async {
             let mut h = Harness::new().await;
-            h.now = crate::now_unix();
             configure(&h, amount, Some(threshold), i64::MAX);
             h.daemon.set_mempool(vec![payment_tx(1, 1, amount)]);
             let orders = vec![h.order.clone()];
             for (fast, restart) in passes {
                 if fast {
-                    fast_pass(&h.state, &inputs(&h, GRACE)).await.unwrap();
+                    fast_pass_at(&h.state, &inputs(&h, GRACE), h.now)
+                        .await
+                        .unwrap();
                 } else {
                     round(&mut h, &orders, Duration::ZERO, GRACE, None).await;
                 }
@@ -1445,7 +1452,7 @@ mod properties {
             }
             let orders = vec![h.order.clone()];
             for _ in 0..rounds {
-                h.now += 61;
+                h.now = h.now.saturating_add(Duration::from_secs(61));
                 round(&mut h, &orders, Duration::ZERO, GRACE, None).await;
                 let s = h.store().lock();
                 let p = s.get_all_payments(&h.order).unwrap();
@@ -1499,7 +1506,7 @@ mod properties {
                     append(&mut h, vec![]);
                 }
                 for _ in 0..(usize::from(depth) + 4) {
-                    h.now += 61;
+                    h.now = h.now.saturating_add(Duration::from_secs(61));
                     let mut i = inputs(&h, GRACE);
                     i.tenants = &tenants;
                     run_round_at(&h.state, &i, Duration::ZERO, h.now)
@@ -1534,7 +1541,7 @@ mod properties {
                         .unwrap();
                 }
                 tenants.reverse();
-                let state = ScanState::default();
+                let state = crate::node_test_support::scan_state();
                 for _ in 0..(usize::from(depth) + 4) {
                     let mut i = inputs(&h, GRACE);
                     i.tenants = &tenants;
@@ -1592,10 +1599,9 @@ mod properties {
             // Real fake-node weight reporting drives the engine's paged path.
             h.daemon.set_block_weight(3, 200_000_000);
             let progress = crate::scaling::new_progress();
-            progress.lock().want_headers_first(
-                crate::now_unix(),
-                crate::scaling::HeadersFirstReason::LargeBlock,
-            );
+            progress
+                .lock()
+                .want_headers_first(h.now, crate::scaling::HeadersFirstReason::LargeBlock);
             h.state = Harness::state().with_progress(progress);
             for _ in 0..interruption {
                 round(&mut h, &orders, Duration::ZERO, GRACE, None).await;
@@ -2020,7 +2026,6 @@ mod properties {
         // executor and the production SQLite worker, so jobs actually interleave.
         let mut h = runtime().block_on(Harness::new());
         let total = amounts.iter().sum::<u64>();
-        h.now = crate::now_unix();
         configure(&h, total, Some(threshold), i64::MAX);
         h.db = Some(super::super::super::worker(h.store(), &h.path));
         let mut txs: Vec<_> = amounts
@@ -2045,9 +2050,13 @@ mod properties {
                     if pause {
                         tokio::task::yield_now().await;
                     }
-                    fast_pass(&fast_state.state, &inputs(&fast_state, GRACE))
-                        .await
-                        .unwrap();
+                    fast_pass_at(
+                        &fast_state.state,
+                        &inputs(&fast_state, GRACE),
+                        fast_state.now,
+                    )
+                    .await
+                    .unwrap();
                 }
             });
             let round_state = std::sync::Arc::clone(&shared);
@@ -2088,7 +2097,7 @@ mod properties {
                             address: "late-fixture".into(),
                             xmr_amount_piconero: crate::store::Piconero(late_amount),
                             description: None,
-                            created_at: now,
+                            created_at: now.as_secs(),
                             expires_at: i64::MAX,
                             confirmations_required_override: Some(threshold),
                             idempotency_key: None,

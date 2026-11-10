@@ -8,7 +8,7 @@
 //! Only the tests where a push has to land go over real HTTP (to a stub
 //! UnifiedPush endpoint on `127.0.0.1:0`), and say `over_http`.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, StatusCode};
@@ -27,26 +27,7 @@ use crate::db::{
 };
 use crate::http::test_support::{api_request, body_json, store_with_keys};
 use crate::settings::PushConfig;
-use crate::webhooks::delivery::Clock;
 use outbound::Reach;
-
-/// A clock the test sets.
-struct ManualClock(AtomicI64);
-
-impl ManualClock {
-    fn set(&self, now: i64) {
-        self.0.store(now, Ordering::SeqCst);
-    }
-    fn advance(&self, seconds: i64) {
-        self.0.fetch_add(seconds, Ordering::SeqCst);
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> i64 {
-        self.0.load(Ordering::SeqCst)
-    }
-}
 
 /// A store with a connected app, on an engine in this process, and what
 /// pushes are sent with.
@@ -54,7 +35,9 @@ struct World {
     engine: engine_test_support::TestEngineHandle,
     fixture: Fixture,
     client: PushClient,
-    clock: ManualClock,
+    /// What time it is for the whole world, moved with `hand`.
+    clock: clock::Clock,
+    hand: clock::ManualTime,
 }
 
 async fn world() -> World {
@@ -62,15 +45,32 @@ async fn world() -> World {
         engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let fixture = fixture(engine.router(), PUBLIC_URI, &Recorder::default()).await;
     let client = PushClient::build(fixture.state.push.vapid(), None).unwrap();
+    let (clock, hand) = clock::Clock::manual(fixture.state.clock.now());
     World {
         engine,
         fixture,
         client,
-        clock: ManualClock(AtomicI64::new(crate::now_unix())),
+        clock,
+        hand,
     }
 }
 
 impl World {
+    /// What time it is.
+    fn now(&self) -> clock::UnixTime {
+        self.hand.now()
+    }
+
+    /// Moves time on by `by`.
+    fn advance(&self, by: std::time::Duration) {
+        self.hand.advance(by);
+    }
+
+    /// Sets what time it is to `at`.
+    fn set(&self, at: clock::UnixTime) {
+        self.hand.set(at);
+    }
+
     async fn call(&self, method: &str, uri: &str, key: &str, body: Option<Value>) -> Value {
         let answer = self
             .fixture
@@ -125,7 +125,7 @@ impl World {
             seq,
             event_id: format!("evt_{seq}"),
             kind: kind.into(),
-            created_at: self.clock.now(),
+            created_at: self.now().as_secs(),
             tenant_public_key: self.fixture.pk.clone(),
             order_id: order.clone(),
             txid: None,
@@ -143,7 +143,12 @@ impl World {
             .state
             .db
             .lock()
-            .queue_order_event(event, self.clock.now(), &queueing, |_, _| "{}".to_owned())
+            .queue_order_event(
+                event,
+                clock::UnixTime::from_secs(self.now().as_secs()),
+                &queueing,
+                |_, _| "{}".to_owned(),
+            )
             .unwrap()
     }
 
@@ -411,6 +416,7 @@ impl Lines {
             false,
             "trace",
             move || writer.clone(),
+            clock::Clock::System,
         );
         (lines, tracing::subscriber::set_default(subscriber))
     }
@@ -480,10 +486,15 @@ async fn an_app_orders_paid_event_queues_a_push_for_each_target_that_wants_it() 
         (1, "evt_1", "sale.paid", Some(&order), "high")
     );
     assert_eq!(paid.topic, policy_topic(&wants_all, &order));
-    assert_eq!(paid.next_attempt_at, Some(world.clock.now()));
+    assert_eq!(paid.next_attempt_at, Some(world.now().as_secs()));
     assert_eq!(
         paid.expires_at,
-        world.clock.now() + i64::from(PushConfig::default().default_ttl.as_secs())
+        world
+            .now()
+            .saturating_add(std::time::Duration::from_secs(u64::from(
+                PushConfig::default().default_ttl.as_secs()
+            )))
+            .as_secs()
     );
     let payload: Value = serde_json::from_str(&paid.payload).unwrap();
     assert_eq!(payload["event"], "sale.paid");
@@ -640,13 +651,13 @@ async fn a_newer_push_supersedes_an_unsent_one_about_the_same_order() {
     let other_order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.confirming"));
     world.queue(&world.event(2, &other_order, "order.confirming"));
-    world.clock.advance(30);
+    world.advance(std::time::Duration::from_secs(30));
     world.queue(&world.event(3, &order, "order.confirming"));
 
     let pushes = world.pushes(&target);
     let ids: Vec<&str> = pushes.iter().map(|p| p.event_id.as_str()).collect();
     assert_eq!(ids, ["evt_1", "evt_2", "evt_3"]);
-    assert_eq!(pushes[0].superseded_at, Some(world.clock.now()));
+    assert_eq!(pushes[0].superseded_at, Some(world.now().as_secs()));
     assert_eq!(pushes[0].next_attempt_at, None);
     // Another order's topic is its own.
     assert_eq!(pushes[1].superseded_at, None);
@@ -997,10 +1008,12 @@ async fn a_backlog_read_late_is_pushed_nothing_past_its_ttl() {
     let default_ttl = i64::from(PushConfig::default().default_ttl.as_secs());
 
     let late = world.order(&maker).await;
-    let two_hours_ago = world.clock.now() - 7_200;
+    let two_hours_ago = world
+        .now()
+        .saturating_sub(std::time::Duration::from_secs(7_200));
     for (seq, kind) in [(1, "order.unconfirmed"), (2, "order.paid")] {
         assert_eq!(
-            world.queue(&event_at(seq, &late, kind, two_hours_ago)),
+            world.queue(&event_at(seq, &late, kind, two_hours_ago.as_secs())),
             Queued {
                 webhooks: 1,
                 pushes: 0
@@ -1012,7 +1025,7 @@ async fn a_backlog_read_late_is_pushed_nothing_past_its_ttl() {
     let pushes = world.pushes(&target);
     assert_eq!(pushes.len(), 1, "only the sale.waiting: {pushes:?}");
     assert_eq!(pushes[0].event_type, "sale.waiting");
-    assert_eq!(pushes[0].superseded_at, Some(world.clock.now()));
+    assert_eq!(pushes[0].superseded_at, Some(world.now().as_secs()));
     assert_eq!(world.tick().await, 0);
     let recorded: String = world
         .fixture
@@ -1028,23 +1041,32 @@ async fn a_backlog_read_late_is_pushed_nothing_past_its_ttl() {
         .unwrap();
     assert_eq!(recorded, "sale.paid");
 
-    let now = world.clock.now();
+    let now = world.now();
     let fresh = world.order(&maker).await;
     let sale_expires_at = app_order(&fresh).expires_at;
-    world.queue(&event_at(3, &fresh, "order.unconfirmed", now));
-    world.queue(&event_at(4, &fresh, "order.paid", now));
+    world.queue(&event_at(3, &fresh, "order.unconfirmed", now.as_secs()));
+    world.queue(&event_at(4, &fresh, "order.paid", now.as_secs()));
     let pushes: Vec<(String, i64)> = world
         .pushes(&target)
         .into_iter()
         .filter(|push| push.order_id.as_ref() == Some(&fresh) && push.event_type != "sale.waiting")
         .map(|push| (push.event_type, push.expires_at))
         .collect();
-    let seen_until = sale_expires_at.clamp(now + 60, now + default_ttl);
+    let seen_until = sale_expires_at.clamp(
+        now.saturating_add(std::time::Duration::from_secs(60))
+            .as_secs(),
+        now.saturating_add(std::time::Duration::from_secs(default_ttl.unsigned_abs()))
+            .as_secs(),
+    );
     assert_eq!(
         pushes,
         [
             ("sale.seen".to_owned(), seen_until),
-            ("sale.paid".to_owned(), now + default_ttl),
+            (
+                "sale.paid".to_owned(),
+                (now.saturating_add(std::time::Duration::from_secs(default_ttl.unsigned_abs())))
+                    .as_secs()
+            ),
         ]
     );
 
@@ -1052,9 +1074,9 @@ async fn a_backlog_read_late_is_pushed_nothing_past_its_ttl() {
     // minute runs from the sighting. Read a minute after it, nothing.
     let expired = world.order(&maker).await;
     let expired_at = app_order(&expired).expires_at;
-    world.clock.set(expired_at + 50);
+    world.set(clock::UnixTime::from_secs(expired_at + 50));
     world.queue(&event_at(5, &expired, "order.unconfirmed", expired_at + 30));
-    world.clock.set(expired_at + 90);
+    world.set(clock::UnixTime::from_secs(expired_at + 90));
     world.queue(&event_at(6, &expired, "order.confirming", expired_at + 30));
     let pushes: Vec<(String, i64)> = world
         .pushes(&target)
@@ -1082,7 +1104,7 @@ impl World {
     /// `retry_at` (or given up on), counting against the target.
     fn failed(&self, status: u16, retry_at: Option<i64>) -> PushAttempt {
         PushAttempt {
-            at: self.clock.now(),
+            at: clock::UnixTime::from_secs(self.now().as_secs()),
             status: Some(status),
             duration_ms: 40,
             result: PushResult::Failed {
@@ -1110,7 +1132,7 @@ async fn a_push_past_its_ttl_is_given_up_without_a_request() {
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.paid"));
     let expires_at = world.pushes(&target)[0].expires_at;
-    world.clock.set(expires_at);
+    world.set(clock::UnixTime::from_secs(expires_at));
 
     assert_eq!(world.tick().await, 1);
     assert_eq!(stub.count(), 0);
@@ -1143,7 +1165,7 @@ async fn a_push_with_no_attempts_left_is_given_up_without_a_request() {
             &app,
             &target,
             id,
-            world.failed(500, Some(world.clock.now())),
+            world.failed(500, Some(world.now().as_secs())),
         );
     }
     assert_eq!(world.pushes(&target)[0].attempt_count, 2);
@@ -1155,7 +1177,7 @@ async fn a_push_with_no_attempts_left_is_given_up_without_a_request() {
     assert_eq!(world.tick_with(&lowered).await, 1);
     let push = &world.pushes(&target)[0];
     assert_eq!(push.attempt_count, 2, "no request");
-    assert_eq!(push.gave_up_at, Some(world.clock.now()));
+    assert_eq!(push.gave_up_at, Some(world.now().as_secs()));
     assert_eq!(push.last_error.as_deref(), Some(NO_ATTEMPTS_LEFT));
 }
 
@@ -1178,13 +1200,13 @@ async fn old_pushes_are_pruned_after_push_keep_days() {
     for _ in 0..4 {
         orders.push(world.order(&ak).await);
     }
-    let start = world.clock.now();
+    let start = world.now();
     // Delivered (evt_1, evt_3) and superseded (evt_2) at `start`.
     world.queue(&world.event(1, &orders[0], "order.paid"));
     world.queue(&world.event(2, &orders[1], "order.unconfirmed"));
     world.queue(&world.event(3, &orders[1], "order.confirming"));
     let delivered = PushAttempt {
-        at: start,
+        at: clock::UnixTime::from_secs(start.as_secs()),
         status: Some(201),
         duration_ms: 40,
         result: PushResult::Delivered,
@@ -1194,7 +1216,7 @@ async fn old_pushes_are_pruned_after_push_keep_days() {
         world.record_attempt(&app, &target, id, delivered.clone());
     }
     // Given up on an hour later (evt_4: refused as too large).
-    world.clock.advance(3_600);
+    world.advance(std::time::Duration::from_secs(3_600));
     world.queue(&world.event(4, &orders[2], "order.paid"));
     let id = world.pushes(&target)[3].id;
     world.record_attempt(&app, &target, id, world.failed(413, None));
@@ -1207,19 +1229,31 @@ async fn old_pushes_are_pruned_after_push_keep_days() {
             .map(|p| (p.delivered_at, p.superseded_at, p.gave_up_at))
             .collect::<Vec<_>>(),
         vec![
-            (Some(start), None, None),
-            (None, Some(start), None),
-            (Some(start), None, None),
-            (None, None, Some(start + 3_600)),
+            (Some(start.as_secs()), None, None),
+            (None, Some(start.as_secs()), None),
+            (Some(start.as_secs()), None, None),
+            (
+                None,
+                None,
+                Some(
+                    start
+                        .saturating_add(std::time::Duration::from_secs(3_600))
+                        .as_secs()
+                )
+            ),
             (None, None, None),
         ]
     );
 
-    let keep = PushConfig::default().keep_secs;
+    let keep = i64::try_from(PushConfig::default().keep.as_secs()).unwrap();
     async fn left_after_pruning_at(world: &World, target: &PushTargetId, at: i64) -> Vec<String> {
-        super::delivery::prune_deliveries(&world.fixture.state.db, &PushConfig::default(), at)
-            .await
-            .unwrap();
+        super::delivery::prune_deliveries(
+            &world.fixture.state.db,
+            &PushConfig::default(),
+            clock::UnixTime::from_secs(at),
+        )
+        .await
+        .unwrap();
         world
             .pushes(target)
             .into_iter()
@@ -1227,15 +1261,37 @@ async fn old_pushes_are_pruned_after_push_keep_days() {
             .collect()
     }
     assert_eq!(
-        left_after_pruning_at(&world, &target, start + keep).await,
+        left_after_pruning_at(
+            &world,
+            &target,
+            (start.saturating_add(std::time::Duration::from_secs(keep.unsigned_abs()))).as_secs()
+        )
+        .await,
         ["evt_1", "evt_2", "evt_3", "evt_4", "evt_5"]
     );
     assert_eq!(
-        left_after_pruning_at(&world, &target, start + keep + 1).await,
+        left_after_pruning_at(
+            &world,
+            &target,
+            (start
+                .saturating_add(std::time::Duration::from_secs(keep.unsigned_abs()))
+                .saturating_add(std::time::Duration::from_secs(1)))
+            .as_secs()
+        )
+        .await,
         ["evt_4", "evt_5"]
     );
     assert_eq!(
-        left_after_pruning_at(&world, &target, start + 3_600 + keep + 1).await,
+        left_after_pruning_at(
+            &world,
+            &target,
+            (start
+                .saturating_add(std::time::Duration::from_secs(3_600))
+                .saturating_add(std::time::Duration::from_secs(keep.unsigned_abs()))
+                .saturating_add(std::time::Duration::from_secs(1)))
+            .as_secs()
+        )
+        .await,
         ["evt_5"],
         "a push still waiting is never pruned"
     );
@@ -1273,6 +1329,7 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
         state.push.clone(),
         state.apps.clone(),
         crate::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
+        world.clock.clone(),
     ));
     world.engine.mark_order_paid(order.as_str()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -1283,7 +1340,6 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
     .await
     .expect("the paid event is queued and wakes the worker");
     subscriber.abort();
-    world.clock.set(crate::now_unix());
     assert_eq!(world.tick().await, 1);
 
     let received = stub.received.lock();
@@ -1302,7 +1358,7 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
         &authorization,
         &state.push.vapid_public_key(),
         &::push::Origin::parse(&origin).unwrap(),
-        crate::now_unix(),
+        world.clock.now(),
     )
     .expect("signed by this Monokulo for the push service's origin");
 
@@ -1321,7 +1377,7 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
     let delivered = &world.pushes(&target)[0];
     assert_eq!(
         (delivered.delivered_at, delivered.last_status_code),
-        (Some(world.clock.now()), Some(201))
+        (Some(world.now().as_secs()), Some(201))
     );
     let target = state
         .db
@@ -1331,7 +1387,7 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
         .unwrap();
     assert_eq!(
         (target.last_ok_at, target.failures),
-        (Some(world.clock.now()), 0)
+        (Some(world.now().as_secs()), 0)
     );
 }
 
@@ -1358,7 +1414,7 @@ async fn a_rate_limit_waits_as_told_and_a_gone_subscription_deletes_the_target_o
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.paid"));
 
-    let start = world.clock.now();
+    let start = world.now();
     assert_eq!(world.tick().await, 1);
     let push = &world.pushes(&target)[0];
     assert_eq!(
@@ -1367,7 +1423,15 @@ async fn a_rate_limit_waits_as_told_and_a_gone_subscription_deletes_the_target_o
             push.next_attempt_at,
             push.last_status_code
         ),
-        (1, Some(start + 7), Some(429))
+        (
+            1,
+            Some(
+                start
+                    .saturating_add(std::time::Duration::from_secs(7))
+                    .as_secs()
+            ),
+            Some(429)
+        )
     );
     let stored = |id: &PushTargetId| {
         world
@@ -1379,11 +1443,11 @@ async fn a_rate_limit_waits_as_told_and_a_gone_subscription_deletes_the_target_o
             .unwrap()
     };
     assert_eq!(stored(&target).unwrap().failures, 0, "a 429 counts nothing");
-    world.clock.advance(6);
+    world.advance(std::time::Duration::from_secs(6));
     assert_eq!(world.tick().await, 0, "not before Retry-After");
 
     stub.answer(410, None);
-    world.clock.advance(1);
+    world.advance(std::time::Duration::from_secs(1));
     assert_eq!(world.tick().await, 1);
     assert!(
         stored(&target).is_none(),
@@ -1435,7 +1499,7 @@ async fn twenty_failures_in_a_row_delete_the_target_over_http() {
     // One push at a time, in queue order: each is tried five times, and
     // the next goes first with the tick that gives up on it.
     assert_eq!(world.tick().await, 4);
-    let mut at = world.clock.now();
+    let mut at = world.now();
     for k in 0..4u32 {
         let current = usize::try_from(k).unwrap();
         for (n, wait) in [(1u32, 5), (2, 20), (3, 80), (4, 320)] {
@@ -1449,14 +1513,20 @@ async fn twenty_failures_in_a_row_delete_the_target_over_http() {
                     continue;
                 } else {
                     assert_eq!(push.attempt_count, n);
-                    assert_eq!(push.next_attempt_at, Some(at + wait));
+                    assert_eq!(
+                        push.next_attempt_at,
+                        Some(
+                            at.saturating_add(std::time::Duration::from_secs(wait))
+                                .as_secs()
+                        )
+                    );
                 }
                 assert_eq!(push.last_status_code, Some(503));
                 let error = push.last_error.unwrap();
                 assert!(!error.contains(secret), "{error}");
             }
-            at += wait;
-            world.clock.set(at);
+            at = at.saturating_add(std::time::Duration::from_secs(wait));
+            world.set(at);
             assert_eq!(world.tick().await, 4 - current);
         }
     }
@@ -1554,13 +1624,13 @@ async fn an_unreadable_push_is_given_up_and_the_others_are_sent_over_http() {
     assert_eq!(world.tick().await, 2);
     assert_eq!(stub.count(), 1);
     let pushes = world.pushes(&target);
-    assert_eq!(pushes[0].gave_up_at, Some(world.clock.now()));
+    assert_eq!(pushes[0].gave_up_at, Some(world.now().as_secs()));
     let error = pushes[0].last_error.as_deref().unwrap();
     assert!(
         error.starts_with("unreadable: ") && error.contains("sale.refunded"),
         "{error}"
     );
-    assert_eq!(pushes[1].delivered_at, Some(world.clock.now()));
+    assert_eq!(pushes[1].delivered_at, Some(world.now().as_secs()));
 }
 
 // -- Edge and failure cases --------------------------------------------------
@@ -1751,10 +1821,10 @@ async fn an_answer_from_a_replaced_subscription_leaves_the_new_one_alone_over_ht
             "after a {old_answer}"
         );
 
-        world.clock.advance(5);
+        world.advance(std::time::Duration::from_secs(5));
         assert_eq!(world.tick().await, 1);
         let push = world.pushes(&target).pop().unwrap();
-        assert_eq!(push.delivered_at, Some(world.clock.now()), "{push:?}");
+        assert_eq!(push.delivered_at, Some(world.now().as_secs()), "{push:?}");
     }
     assert_eq!((old_stub.count(), new_stub.count()), (2, 2));
 }
@@ -1937,12 +2007,12 @@ async fn each_attempt_is_encrypted_afresh_with_what_is_left_of_the_ttl_over_http
         .await;
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.paid"));
-    let start = world.clock.now();
+    let start = world.now();
 
     assert_eq!(world.tick().await, 1);
     assert_eq!(world.target(&app, &target).unwrap().failures, 1);
     stub.answer(201, None);
-    world.clock.advance(5);
+    world.advance(std::time::Duration::from_secs(5));
     assert_eq!(world.tick().await, 1);
 
     let received = stub.received.lock();
@@ -1965,12 +2035,29 @@ async fn each_attempt_is_encrypted_afresh_with_what_is_left_of_the_ttl_over_http
     drop(received);
 
     let stored = world.target(&app, &target).unwrap();
-    assert_eq!((stored.failures, stored.last_ok_at), (0, Some(start + 5)));
+    assert_eq!(
+        (stored.failures, stored.last_ok_at),
+        (
+            0,
+            Some(
+                start
+                    .saturating_add(std::time::Duration::from_secs(5))
+                    .as_secs()
+            )
+        )
+    );
     world.queue(&world.event(2, &order, "order.paid"));
     let pushes = world.pushes(&target);
     assert_eq!(
         (pushes[0].delivered_at, pushes[0].superseded_at),
-        (Some(start + 5), None)
+        (
+            Some(
+                start
+                    .saturating_add(std::time::Duration::from_secs(5))
+                    .as_secs()
+            ),
+            None
+        )
     );
 }
 
@@ -2041,7 +2128,7 @@ async fn a_413_gives_the_push_up_without_counting_against_the_target_over_http()
             push.next_attempt_at,
             push.gave_up_at
         ),
-        (1, Some(413), None, Some(world.clock.now()))
+        (1, Some(413), None, Some(world.now().as_secs()))
     );
     assert_eq!(world.target(&app, &target).unwrap().failures, 0);
 
@@ -2079,7 +2166,7 @@ async fn a_wait_past_the_ttl_gives_the_push_up_at_once_over_http() {
     world.queue(&world.event(2, &second, "order.paid"));
     assert_eq!(world.tick().await, 1);
 
-    let now = world.clock.now();
+    let now = world.now();
     let pushes = world.pushes(&target);
     let outcomes: Vec<_> = pushes
         .iter()
@@ -2095,8 +2182,8 @@ async fn a_wait_past_the_ttl_gives_the_push_up_at_once_over_http() {
     assert_eq!(
         outcomes,
         [
-            (1, Some(503), None, Some(now)),
-            (1, Some(429), None, Some(now))
+            (1, Some(503), None, Some(now.as_secs())),
+            (1, Some(429), None, Some(now.as_secs()))
         ]
     );
     assert_eq!(world.target(&app, &target).unwrap().failures, 1);
@@ -2119,10 +2206,10 @@ async fn a_refused_push_is_tried_again_on_the_schedule_over_http() {
         .await;
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.paid"));
-    let start = world.clock.now();
+    let start = world.now();
     assert_eq!(world.tick().await, 1);
     stub.answer(401, None);
-    world.clock.advance(5);
+    world.advance(std::time::Duration::from_secs(5));
     assert_eq!(world.tick().await, 1);
 
     let push = &world.pushes(&target)[0];
@@ -2132,7 +2219,16 @@ async fn a_refused_push_is_tried_again_on_the_schedule_over_http() {
             push.last_status_code,
             push.next_attempt_at
         ),
-        (2, Some(401), Some(start + 5 + 20))
+        (
+            2,
+            Some(401),
+            Some(
+                start
+                    .saturating_add(std::time::Duration::from_secs(5))
+                    .saturating_add(std::time::Duration::from_secs(20))
+                    .as_secs()
+            )
+        )
     );
     assert_eq!(world.target(&app, &target).unwrap().failures, 2);
 }
@@ -2156,7 +2252,7 @@ async fn an_endpoint_on_a_private_address_is_refused_without_a_request() {
         .await;
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.paid"));
-    let start = world.clock.now();
+    let start = world.now();
     let sent = run_delivery_tick(
         &world.fixture.state.db,
         &world.client,
@@ -2177,7 +2273,15 @@ async fn an_endpoint_on_a_private_address_is_refused_without_a_request() {
             push.last_status_code,
             push.next_attempt_at
         ),
-        (1, None, Some(start + 5))
+        (
+            1,
+            None,
+            Some(
+                start
+                    .saturating_add(std::time::Duration::from_secs(5))
+                    .as_secs()
+            )
+        )
     );
     assert_eq!(world.target(&app, &target).unwrap().failures, 1);
 }
@@ -2209,14 +2313,21 @@ async fn a_push_service_that_cant_be_reached_is_retried_without_its_url_over_htt
         .await;
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.paid"));
-    let start = world.clock.now();
+    let start = world.now();
     assert_eq!(world.tick().await, 1);
 
     let push = &world.pushes(&target)[0];
     let error = push.last_error.as_deref().unwrap();
     assert!(error.starts_with("could not connect"), "{error}");
     assert!(!error.contains(secret), "{error}");
-    assert_eq!(push.next_attempt_at, Some(start + 5));
+    assert_eq!(
+        push.next_attempt_at,
+        Some(
+            start
+                .saturating_add(std::time::Duration::from_secs(5))
+                .as_secs()
+        )
+    );
     let logged = lines.text();
     assert!(logged.contains("push failed; will retry"), "{logged}");
     assert!(!logged.contains(secret), "an endpoint reached a log line");
@@ -2241,12 +2352,12 @@ async fn a_push_service_that_never_answers_times_out_over_http() {
         .await;
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.paid"));
-    let start = world.clock.now();
+    let start = world.now();
     let config = PushConfig {
         delivery_timeout: std::time::Duration::from_millis(100),
         ..PushConfig::default()
     };
-    let began = std::time::Instant::now();
+    let began = tokio::time::Instant::now();
     assert_eq!(world.tick_with(&config).await, 1);
     assert!(began.elapsed() < std::time::Duration::from_secs(5));
 
@@ -2255,7 +2366,15 @@ async fn a_push_service_that_never_answers_times_out_over_http() {
     assert!(error.starts_with("timed out"), "{error}");
     assert_eq!(
         (push.attempt_count, push.next_attempt_at, push.delivered_at),
-        (1, Some(start + 5), None)
+        (
+            1,
+            Some(
+                start
+                    .saturating_add(std::time::Duration::from_secs(5))
+                    .as_secs()
+            ),
+            None
+        )
     );
     assert_eq!(world.target(&app, &target).unwrap().failures, 1);
     assert_eq!(stub.count(), 1);
@@ -2295,7 +2414,7 @@ async fn a_batch_sends_sixteen_pushes_at_once_and_fifty_in_all_over_http() {
         world.copy_push(target, 2);
     }
 
-    let began = std::time::Instant::now();
+    let began = tokio::time::Instant::now();
     assert_eq!(world.tick().await, super::delivery::DELIVERY_BATCH as usize);
     let took = began.elapsed();
     assert_eq!(stub.most_in_flight.load(Ordering::SeqCst), 16);
@@ -2379,7 +2498,9 @@ async fn one_targets_pushes_go_one_at_a_time_in_queue_order_over_http() {
     stub.answer(201, None);
     sale(5, "5.00").await;
     assert_eq!(world.tick().await, 0);
-    world.clock.advance(super::delivery::backoff_seconds(1));
+    world.advance(std::time::Duration::from_secs(
+        super::delivery::backoff_seconds(1).unsigned_abs(),
+    ));
     assert_eq!(world.tick().await, 4);
     for path in ["/la/island", "/la/watch"] {
         assert_eq!(
@@ -2437,7 +2558,9 @@ async fn a_failed_push_holds_its_targets_newer_one_in_the_same_batch_over_http()
     assert_eq!(older.attempt_count, 1);
     assert_eq!((newer.attempt_count, newer.delivered_at), (0, None));
 
-    world.clock.advance(super::delivery::backoff_seconds(1));
+    world.advance(std::time::Duration::from_secs(
+        super::delivery::backoff_seconds(1).unsigned_abs(),
+    ));
     world.tick().await;
     assert_eq!(sent(), ["1.00", "1.00", "2.00"]);
     assert!(world
@@ -2510,9 +2633,13 @@ async fn each_push_service_gets_a_token_for_its_own_origin_only_over_http() {
             ::push::vapid::verify(&authorization, &stranger, &origin(own), now),
             Err(::push::vapid::VapidError::KeyMismatch)
         ));
-        let expiry = i64::try_from(::push::vapid::EXPIRY.as_secs()).unwrap();
         assert!(matches!(
-            ::push::vapid::verify(&authorization, &key, &origin(own), now + expiry),
+            ::push::vapid::verify(
+                &authorization,
+                &key,
+                &origin(own),
+                now.saturating_add(::push::vapid::EXPIRY)
+            ),
             Err(::push::vapid::VapidError::Expired)
         ));
     }
@@ -2572,7 +2699,7 @@ async fn a_push_superseded_while_it_is_sent_is_not_tried_again_over_http() {
         ),
         (1, Some(503), None, None, true)
     );
-    assert_eq!(pushes[1].next_attempt_at, Some(world.clock.now()));
+    assert_eq!(pushes[1].next_attempt_at, Some(world.now().as_secs()));
 
     stub.gate(false);
     stub.answer(201, None);
@@ -2628,7 +2755,13 @@ async fn a_store_over_its_push_budget_leaves_the_relay_to_the_others_over_http()
         .execute(
             "UPDATE push_deliveries SET expires_at_utc = ?2
              WHERE push_target_id = ?1 AND event_id <> 'evt_1'",
-            rusqlite::params![flooded[7], world.clock.now() + 30],
+            rusqlite::params![
+                flooded[7],
+                world
+                    .now()
+                    .saturating_add(std::time::Duration::from_secs(30))
+                    .as_secs()
+            ],
         )
         .unwrap();
 
@@ -2671,7 +2804,12 @@ async fn a_store_over_its_push_budget_leaves_the_relay_to_the_others_over_http()
     assert_eq!(pushes.len(), 2 * budget as usize);
     let delivered = pushes.iter().filter(|p| p.delivered_at.is_some()).count();
     assert_eq!(delivered, budget as usize);
-    let (now, next_minute) = (world.clock.now(), world.clock.now() + 60);
+    let (now, next_minute) = (
+        world.now(),
+        world
+            .now()
+            .saturating_add(std::time::Duration::from_secs(60)),
+    );
     let mut put_off = 0;
     for push in pushes.iter().filter(|p| p.delivered_at.is_none()) {
         assert_eq!(push.attempt_count, 0, "{push:?}");
@@ -2681,17 +2819,17 @@ async fn a_store_over_its_push_budget_leaves_the_relay_to_the_others_over_http()
         } else {
             // Put off to the next minute, or held behind one that was.
             assert!(
-                [Some(now), Some(next_minute)].contains(&push.next_attempt_at),
+                [Some(now.as_secs()), Some(next_minute.as_secs())].contains(&push.next_attempt_at),
                 "{push:?}"
             );
-            put_off += usize::from(push.next_attempt_at == Some(next_minute));
+            put_off += usize::from(push.next_attempt_at == Some(next_minute.as_secs()));
         }
     }
     assert!(put_off > 0);
 
     // The next minute: the rest of the flood goes out.
     relay.unlimit_sender();
-    world.clock.advance(60);
+    world.advance(std::time::Duration::from_secs(60));
     while world.tick().await > 0 {}
     for push in flood() {
         assert!(
@@ -2713,7 +2851,7 @@ impl World {
     /// Queues a test push of `event` to the app's `target` now, as the
     /// app page's form does: its id.
     fn queue_test(&self, app: &AppId, target: &PushTargetId, event: SaleKind) -> i64 {
-        let now = self.clock.now();
+        let now = self.now();
         self.fixture
             .state
             .db
@@ -2723,9 +2861,11 @@ impl World {
                 app_id: app,
                 target_id: target,
                 event,
-                at: now,
+                at: clock::UnixTime::from_secs(now.as_secs()),
                 ttl: PushConfig::default().default_ttl,
-                due_at: now + 60,
+                due_at: clock::UnixTime::from_secs(
+                    (now.saturating_add(std::time::Duration::from_secs(60))).as_secs(),
+                ),
             })
             .unwrap()
             .expect("the app's target")
@@ -2944,6 +3084,6 @@ async fn a_test_push_counts_against_its_stores_budget() {
     assert_eq!(first.attempt_count, 1);
     assert_eq!(second.attempt_count, 0, "put off, not attempted");
     assert_eq!(second.state(), crate::db::PushState::Queued);
-    assert!(second.next_attempt_at.unwrap() > world.clock.now());
+    assert!(second.next_attempt_at.unwrap() > world.now().as_secs());
     assert_eq!(world.failures(&app, &target), 1);
 }

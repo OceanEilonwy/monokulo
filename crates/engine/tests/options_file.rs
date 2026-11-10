@@ -16,7 +16,9 @@ use std::io::{BufRead as _, BufReader};
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 const BIN: &str = env!("CARGO_BIN_EXE_monokulo-engine");
 const TOKEN: &str = "options-file-test-token-0123456789abcdef";

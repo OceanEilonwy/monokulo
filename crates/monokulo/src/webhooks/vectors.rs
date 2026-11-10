@@ -270,7 +270,9 @@ fn vectors() -> Value {
     let paid = body_v2(&event(4, PAID), &store(), Some(&eur), &web());
     let signed = credentials::webhook_sign::sign_payload(SECRET, SENT_AT, paid.as_bytes());
     let tampered = paid.replace("12.50", "1.25");
-    let old = SENT_AT - credentials::webhook_sign::SIGNATURE_TOLERANCE_SECS - 1;
+    let old = SENT_AT
+        - i64::try_from(credentials::webhook_sign::SIGNATURE_TOLERANCE.as_secs()).unwrap()
+        - 1;
     json!({
         "about": "Webhook deliveries as monokulo sends them, for testing a plugin's receiver. \
                   Check each with your clock at `sent_at` and the webhook's `signing_secret`: \
@@ -369,7 +371,7 @@ fn every_delivery_verifies_and_every_refusal_does_not() {
             SECRET,
             v["body"].as_str().unwrap().as_bytes(),
             v["headers"]["X-Monokulo-Signature"].as_str().unwrap(),
-            SENT_AT,
+            clock::UnixTime::from_secs(SENT_AT),
         )
     };
     let deliveries = vectors["deliveries"].as_array().unwrap();

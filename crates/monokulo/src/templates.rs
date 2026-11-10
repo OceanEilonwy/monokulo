@@ -1,6 +1,8 @@
 //! Plain display/formatting helpers shared by several `views`/`http`
 //! modules: durations, scan ranges and empty values.
 
+use clock::UnixTime;
+
 /// `value`, escaped, or a muted placeholder for a field with nothing to
 /// show - same `<span class="muted">-</span>` convention the status page
 /// already uses for "no value", applied here to every optional
@@ -43,28 +45,27 @@ pub fn display_scan_range(
 /// the same units as [`format_duration_until`]: `"<1m"` under a minute,
 /// never `"any moment"`. A moment in the past on its own ("2 min ago") is
 /// [`crate::views::time::Clock::relative`]'s.
-pub fn format_duration_since(then_unix: i64, now_unix: i64) -> String {
-    if now_unix - then_unix < 60 {
+pub fn format_duration_since(then: UnixTime, now: UnixTime) -> String {
+    if now.since(then) < std::time::Duration::from_secs(60) {
         "<1m".to_string()
     } else {
-        format_duration_until(now_unix, then_unix)
+        format_duration_until(now, then)
     }
 }
 
-/// A moment.js-style relative duration until `target_unix` ("12h", "4h
+/// A moment.js-style relative duration until `target` ("12h", "4h
 /// 15m", "2d 4h") - at most the two largest non-zero units (days, hours,
 /// minutes), a zero unit skipped rather than shown ("1d 30m", never "1d 0h
-/// 30m" or "1d 0h"). `"any moment"` once `target_unix` has passed.
+/// 30m" or "1d 0h"). `"any moment"` once `target` has passed.
 ///
 /// Computed here, server-side, rather than by client JavaScript from a raw
 /// timestamp: the checkout page, which must stay fully meaningful with
 /// JavaScript disabled, shows it as the time left to pay.
-pub fn format_duration_until(target_unix: i64, now_unix: i64) -> String {
-    let seconds_left = target_unix - now_unix;
-    if seconds_left <= 0 {
+pub fn format_duration_until(target: UnixTime, now: UnixTime) -> String {
+    let seconds_left = now.until(target).as_secs();
+    if seconds_left == 0 {
         return "any moment".to_string();
     }
-    let seconds_left = seconds_left as u64;
     let days = seconds_left / 86400;
     let hours = (seconds_left % 86400) / 3600;
     let minutes = (seconds_left % 3600) / 60;
@@ -95,7 +96,7 @@ mod tests {
     /// never negative.
     #[test]
     fn format_duration_until_matches_the_moment_js_style_examples() {
-        let now = 1_700_000_000;
+        let now = UnixTime::from_secs(1_700_000_000);
         for (from_now, shown) in [
             (12 * 3600, "12h"),
             (4 * 3600 + 15 * 60, "4h 15m"),
@@ -106,11 +107,8 @@ mod tests {
             (0, "any moment"),
             (-100, "any moment"),
         ] {
-            assert_eq!(
-                format_duration_until(now + from_now, now),
-                shown,
-                "{from_now}"
-            );
+            let target = UnixTime::from_secs(1_700_000_000 + from_now);
+            assert_eq!(format_duration_until(target, now), shown, "{from_now}");
         }
     }
 

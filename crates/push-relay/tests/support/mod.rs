@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex, Once, PoisonError};
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
+use clock::{Clock, UnixTime};
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -37,6 +38,11 @@ use tokio::sync::mpsc;
 use tower::ServiceExt as _;
 
 pub const APNS_KEY: &str = include_str!("../fixtures/apns-test.p8");
+/// What time every test relay thinks it is, pinned so the times a test reads
+/// off the relay (a handle's expiry, a token's `iat`, a `Retry-After`) are
+/// exact. On the hour, as every expiry is kept.
+pub const NOW_SECS: i64 = 1_800_000_000;
+pub const NOW: UnixTime = UnixTime::from_secs(NOW_SECS);
 /// The handle key every test relay runs under.
 pub const HANDLE_KEY: &str = "0123456789abcdef0123456789abcdef";
 /// A service account getting its tokens at `token_uri`.
@@ -301,9 +307,13 @@ impl TestRelay {
         ]);
         let config = settings::load(stored, env, Host::Standalone).await.unwrap();
         // Stopped with the test's runtime.
-        let relay = Relay::start(&config, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let relay = Relay::start(
+            &config,
+            tokio_util::sync::CancellationToken::new(),
+            Clock::Fixed(NOW),
+        )
+        .await
+        .unwrap();
         TestRelay {
             router: relay.router(),
             relay,
@@ -453,7 +463,7 @@ pub struct PushBuilder {
     pub topic: Option<Topic>,
     /// When the VAPID token is signed (Unix seconds; it is valid for 12
     /// hours from then): now, unless a test says otherwise.
-    pub signed_at: Option<i64>,
+    pub signed_at: Option<UnixTime>,
 }
 
 impl PushBuilder {
@@ -480,8 +490,7 @@ impl PushBuilder {
             .authorization(
                 &Origin::parse(&self.audience).unwrap(),
                 None,
-                self.signed_at
-                    .unwrap_or_else(service_runtime::time::now_unix),
+                self.signed_at.unwrap_or(NOW),
             )
             .unwrap();
         let mut request = Request::post(path)

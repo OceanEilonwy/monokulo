@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use ::key_custody::snp::{SnpConfig, SnpKeyCustody, StoredWrap, WrapStore};
 use ::key_custody::transport::{Anchor, TrustPolicy};
+use clock::{Clock, UnixTime};
 use snp_attest::guest::GuestDevice;
 
 /// The SEV-SNP master key's wraps, in the engine's database.
@@ -77,6 +78,8 @@ pub struct SnpSlot {
     /// AMD's chain.
     anchor: Anchor,
     started: parking_lot::Mutex<Option<Arc<SnpKeyCustody>>>,
+    /// What the backend it starts tells time by: the engine's clock.
+    clock: Clock,
 }
 
 impl SnpSlot {
@@ -84,6 +87,7 @@ impl SnpSlot {
         config: Result<SnpConfig, String>,
         guest: Arc<dyn GuestDevice>,
         wraps: Arc<dyn WrapStore>,
+        clock: Clock,
     ) -> Self {
         Self {
             config,
@@ -91,6 +95,7 @@ impl SnpSlot {
             wraps,
             anchor: Anchor::Amd,
             started: parking_lot::Mutex::new(None),
+            clock,
         }
     }
 
@@ -142,6 +147,7 @@ impl SnpSlot {
             Arc::clone(&self.guest),
             config,
             Arc::clone(&self.wraps),
+            self.clock.clone(),
         )?);
         *started = Some(Arc::clone(&backend));
         Ok(backend)
@@ -171,7 +177,7 @@ const RETRY: std::time::Duration = std::time::Duration::from_secs(30);
     clippy::infinite_loop,
     reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
-pub async fn run_snp_upkeep(slot: Arc<SnpSlot>, handoff: Option<Handoff>) {
+pub async fn run_snp_upkeep(slot: Arc<SnpSlot>, handoff: Option<Handoff>, clock: Clock) {
     let source = match snp_attest::kds::client() {
         Ok(client) => ::key_custody::snp::KdsEvidence(client),
         Err(e) => {
@@ -201,7 +207,7 @@ pub async fn run_snp_upkeep(slot: Arc<SnpSlot>, handoff: Option<Handoff>) {
                 }
             }
             if let (true, Some(handoff)) = (snp.awaiting_handoff(), handoff.as_ref()) {
-                match request_handoff(&http, &snp, handoff, slot.anchor()).await {
+                match request_handoff(&http, &snp, handoff, slot.anchor(), clock.now()).await {
                     Ok(()) => {
                         tracing::info!(from = %handoff.url, "snp key custody: took the master key over from the engine this one replaces");
                     }
@@ -225,10 +231,9 @@ pub async fn request_handoff(
     snp: &SnpKeyCustody,
     handoff: &Handoff,
     anchor: &Anchor,
+    now: UnixTime,
 ) -> Result<(), String> {
-    let bundle = snp
-        .handoff_bundle(::key_custody::snp::unix_now())
-        .map_err(|e| e.to_string())?;
+    let bundle = snp.handoff_bundle(now).map_err(|e| e.to_string())?;
     let url = format!(
         "{}/api/v1/admin/key-custody/handoff",
         handoff.url.trim_end_matches('/')
@@ -247,5 +252,5 @@ pub async fn request_handoff(
     }
     let answer: ::key_custody::transport::HandoffAnswer =
         response.json().await.map_err(|e| e.to_string())?;
-    snp.accept_handoff(&answer, anchor, ::key_custody::snp::unix_now())
+    snp.accept_handoff(&answer, anchor, now)
 }

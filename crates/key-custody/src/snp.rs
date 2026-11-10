@@ -74,9 +74,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
 
 use aes_gcm::aead::Aead as _;
 use aes_gcm::KeyInit as _;
+use clock::{Clock, UnixTime};
 use hmac::Mac as _;
 use monero::Address;
 use parking_lot::{Mutex, RwLock};
@@ -105,7 +107,7 @@ const NONCE_LEN: usize = 12;
 
 /// How long a challenge is accepted after it is issued: a form left open
 /// that long is loaded again.
-pub const CHALLENGE_TTL_SECS: i64 = 60 * 60;
+pub const CHALLENGE_TTL: Duration = Duration::from_secs(60 * 60);
 /// The most challenges outstanding at once; the oldest go first.
 const MAX_CHALLENGES: usize = 10_000;
 
@@ -190,7 +192,7 @@ enum Master {
 struct Challenge {
     action: Action,
     store: Option<String>,
-    expires_at: i64,
+    expires_at: UnixTime,
 }
 
 /// The backend's state, for `/status` and the admin page.
@@ -219,6 +221,8 @@ pub struct SnpKeyCustody {
     challenges: Mutex<HashMap<[u8; 32], Challenge>>,
     /// The challenge this engine's own handoff request carries.
     handoff_challenge: [u8; 32],
+    /// What time it is, for the trait methods that aren't handed a moment.
+    clock: Clock,
 }
 
 fn random_bytes<const N: usize>() -> [u8; N] {
@@ -279,6 +283,7 @@ impl SnpKeyCustody {
         guest: Arc<dyn GuestDevice>,
         config: SnpConfig,
         wraps: Arc<dyn WrapStore>,
+        clock: Clock,
     ) -> Result<Self, String> {
         let (receiver, report_raw, report) = Self::attest(guest.as_ref(), &config)?;
         let backend = SnpKeyCustody {
@@ -293,6 +298,7 @@ impl SnpKeyCustody {
             wraps,
             challenges: Mutex::new(HashMap::new()),
             handoff_challenge: random_bytes(),
+            clock,
         };
         *backend.master.write() = backend.recover_master()?;
         Ok(backend)
@@ -508,7 +514,7 @@ impl SnpKeyCustody {
         challenge: [u8; 32],
         action: Action,
         store: Option<&str>,
-        expires_at: i64,
+        expires_at: UnixTime,
     ) -> Result<Bundle, KeyCustodyError> {
         let evidence = self.evidence.read().clone().ok_or_else(|| {
             unavailable("AMD's certificates for this engine haven't been fetched yet; try again in a minute")
@@ -524,18 +530,17 @@ impl SnpKeyCustody {
             challenge: hex::encode(challenge),
             action,
             store: store.map(str::to_owned),
-            expires_at,
+            expires_at: expires_at.as_secs(),
         })
     }
 
     /// Issues a single-use challenge for `action` (and `store`) and returns
-    /// the bundle a client encrypts keys against. `now` is seconds since the
-    /// epoch.
+    /// the bundle a client encrypts keys against.
     pub fn issue_bundle(
         &self,
         action: Action,
         store: Option<&str>,
-        now: i64,
+        now: UnixTime,
     ) -> Result<Bundle, KeyCustodyError> {
         if action == Action::Handoff {
             return Err(KeyCustodyError::InvalidKeyMaterial(
@@ -543,7 +548,7 @@ impl SnpKeyCustody {
             ));
         }
         let challenge: [u8; 32] = random_bytes();
-        let expires_at = now + CHALLENGE_TTL_SECS;
+        let expires_at = now.saturating_add(CHALLENGE_TTL);
         let bundle = self.bundle_with(challenge, action, store, expires_at)?;
         let mut challenges = self.challenges.lock();
         challenges.retain(|_, c| c.expires_at > now);
@@ -576,7 +581,7 @@ impl SnpKeyCustody {
         envelope: &Envelope,
         action: Action,
         store: Option<&str>,
-        now: i64,
+        now: UnixTime,
     ) -> Result<WalletMaterial, KeyCustodyError> {
         let refused = |e: TransportError| KeyCustodyError::InvalidKeyMaterial(e.to_string());
         let challenge = ReceiverKey::challenge_of(envelope).map_err(refused)?;
@@ -618,13 +623,18 @@ impl SnpKeyCustody {
         envelope: &Envelope,
         action: Action,
         store: Option<&str>,
-        now: i64,
+        now: UnixTime,
     ) -> Result<(WalletHandle, Vec<u8>), KeyCustodyError> {
         let master = self.master()?;
         let material = self.open_merchant_envelope(envelope, action, store, now)?;
         let sealed = seal_with(&master, &material);
         let handle = self.registry.register_wallet(material).await?;
         Ok((handle, sealed))
+    }
+
+    /// What time it is, by this backend's clock.
+    pub fn now(&self) -> UnixTime {
+        self.clock.now()
     }
 
     // -- Handoff -----------------------------------------------------------
@@ -636,12 +646,12 @@ impl SnpKeyCustody {
 
     /// The bundle this engine sends the engine it replaces, asking for the
     /// master key.
-    pub fn handoff_bundle(&self, now: i64) -> Result<Bundle, KeyCustodyError> {
+    pub fn handoff_bundle(&self, now: UnixTime) -> Result<Bundle, KeyCustodyError> {
         self.bundle_with(
             self.handoff_challenge,
             Action::Handoff,
             None,
-            now + CHALLENGE_TTL_SECS,
+            now.saturating_add(CHALLENGE_TTL),
         )
     }
 
@@ -665,7 +675,7 @@ impl SnpKeyCustody {
         &self,
         bundle: &Bundle,
         anchor: &Anchor,
-        now: i64,
+        now: UnixTime,
     ) -> Result<HandoffAnswer, KeyCustodyError> {
         let master = self.master()?;
         if bundle.action != Action::Handoff {
@@ -714,7 +724,7 @@ impl SnpKeyCustody {
         &self,
         answer: &HandoffAnswer,
         anchor: &Anchor,
-        now: i64,
+        now: UnixTime,
     ) -> Result<(), String> {
         // Held throughout, so two answers can't both replace a waiting state.
         let mut state = self.master.write();
@@ -769,13 +779,6 @@ fn seal_with(master: &[u8; 32], material: &WalletMaterial) -> Vec<u8> {
     let mut sealed = SEALED_TAG.to_vec();
     sealed.extend_from_slice(&encrypt(master, SEAL_AAD, raw.as_slice()));
     sealed
-}
-
-/// The current time in seconds since the epoch.
-pub fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 #[async_trait::async_trait]
@@ -860,7 +863,7 @@ impl KeyCustody for SnpKeyCustody {
         store: Option<&str>,
     ) -> Result<Bundle, KeyCustodyError> {
         self.master()?;
-        self.issue_bundle(action, store, unix_now())
+        self.issue_bundle(action, store, self.now())
     }
 
     async fn register_envelope(
@@ -869,7 +872,7 @@ impl KeyCustody for SnpKeyCustody {
         action: Action,
         store: Option<&str>,
     ) -> Result<(WalletHandle, Vec<u8>), KeyCustodyError> {
-        self.register_envelope_at(envelope, action, store, unix_now())
+        self.register_envelope_at(envelope, action, store, self.now())
             .await
     }
 
@@ -884,7 +887,7 @@ mod tests {
     use super::*;
     use snp_attest::guest::{TestGuest, TestIdentity};
 
-    const NOW: i64 = 1_790_899_200;
+    const NOW: UnixTime = UnixTime::from_secs(1_790_899_200);
 
     /// The wraps, and the migration steps that have run, as the engine's
     /// database keeps them.
@@ -956,6 +959,7 @@ mod tests {
                 trust: trust(),
             },
             Arc::<MemoryWraps>::clone(wraps) as Arc<dyn WrapStore>,
+            Clock::Fixed(NOW),
         )
         .unwrap();
         backend.refresh_evidence(&FixedEvidence).await.unwrap();
@@ -1066,7 +1070,7 @@ mod tests {
                         &envelope,
                         Action::Move,
                         Some("st_1"),
-                        NOW + CHALLENGE_TTL_SECS
+                        NOW.saturating_add(CHALLENGE_TTL)
                     )
                     .await
             ),
@@ -1210,6 +1214,7 @@ mod tests {
                 trust: trust(),
             },
             Arc::new(MemoryWraps::default()),
+            Clock::Fixed(NOW),
         )
         .err()
         .unwrap();
@@ -1341,6 +1346,7 @@ mod tests {
                 Arc::new(TestGuest::new([1; 32], identity)),
                 config,
                 Arc::clone(&wraps),
+                Clock::Fixed(NOW),
             );
             assert!(started.err().unwrap().contains("not a trusted"));
         }
@@ -1356,6 +1362,7 @@ mod tests {
                 trust: trust(),
             },
             wraps,
+            Clock::Fixed(NOW),
         )
         .unwrap();
         assert!(!backend.status().evidence);
@@ -1449,6 +1456,7 @@ mod tests {
                 },
             },
             Arc::<MemoryWraps>::clone(&wraps) as Arc<dyn WrapStore>,
+            Clock::Fixed(NOW),
         )
         .unwrap();
         assert!(relaunched.awaiting_handoff());
@@ -1515,6 +1523,7 @@ mod tests {
                 trust: trust(),
             },
             Arc::new(MemoryWraps::default()),
+            Clock::Fixed(NOW),
         );
         assert!(started.err().unwrap().contains("migration agent"));
     }

@@ -259,7 +259,7 @@ async fn state(engine: axum::Router, public_uri: Option<&str>, onion: bool) -> A
             created_at: RECORDED_AT,
         })
         .unwrap();
-    let push = crate::push::Push::load_or_make(&state.db, &state.encryption_key)
+    let push = crate::push::Push::load_or_make(&state.db, &state.encryption_key, state.clock.now())
         .await
         .unwrap();
     AppState {
@@ -318,7 +318,7 @@ fn plugin_connect_code(state: &AppState, id: &str) -> String {
             &raw.hash(),
             &crate::db::ConnectionId::new(id.to_owned()),
             "nonce-1",
-            crate::now_unix(),
+            state.clock.now(),
         )
         .unwrap();
     raw.expose().to_owned()
@@ -410,6 +410,7 @@ pub async fn fixture_on(
         &crate::db::ConnectionId::new(store.id.clone()),
         &receiver,
         &std::collections::BTreeMap::new(),
+        state.clock.now(),
     )
     .await
     .unwrap();
@@ -836,29 +837,25 @@ async fn record_custom_page_problems(
     expect(answer, StatusCode::SERVICE_UNAVAILABLE, "no answer");
     dns.publish(name, value);
     let store = crate::db::ConnectionId::new(store_id.to_owned());
+    let now = state.clock.now();
     // Publishing itself is `record_custom_page`'s: lookups here are limited.
     let saved = state
         .db
         .lock()
-        .checkout_page_draft(&store, crate::now_unix())
+        .checkout_page_draft(&store, now)
         .unwrap()
         .unwrap();
     assert!(state
         .db
         .lock()
-        .publish_checkout_page(
-            &saved,
-            "recorded",
-            &["bakery.example".to_string()],
-            crate::now_unix(),
-        )
+        .publish_checkout_page(&saved, "recorded", &["bakery.example".to_string()], now,)
         .unwrap());
 
     // Saved by an earlier release, and short of what today's checks ask.
     state
         .db
         .lock()
-        .save_checkout_page_draft(&store, "{{status}}", "", "", "older", crate::now_unix())
+        .save_checkout_page_draft(&store, "{{status}}", "", "", "older", now)
         .unwrap();
     let answer = call_api(router, "POST", publish, Some(sk), None).await;
     expect(answer, StatusCode::UNPROCESSABLE_ENTITY, "no longer passes");
@@ -871,14 +868,17 @@ async fn record_custom_page_problems(
         approval["name"].as_str().unwrap(),
         approval["value"].as_str().unwrap(),
     );
-    let off = |at: Option<(i64, &str)>| {
+    let off = |at: Option<(clock::UnixTime, &str)>| {
         assert!(state
             .db
             .lock()
             .set_checkout_page_turned_off(&store, at)
             .unwrap());
     };
-    off(Some((RECORDED_AT, "Showed the wrong address.")));
+    off(Some((
+        clock::UnixTime::from_secs(RECORDED_AT),
+        "Showed the wrong address.",
+    )));
     let answer = call_api(router, "POST", publish, Some(sk), None).await;
     expect(answer, StatusCode::FORBIDDEN, "publishing, turned off");
     let answer = call_api(router, "DELETE", page, Some(sk), None).await;
@@ -1039,7 +1039,7 @@ fn with_abuse(state: &AppState, config: abuse::AbuseConfig, recorder: &Recorder)
 fn abuse(config: abuse::AbuseConfig) -> Arc<abuse::AbuseProtection> {
     Arc::new(
         abuse::AbuseProtection::new(config)
-            .with_clock(service_runtime::time::Clock::Fixed(RECORDED_AT)),
+            .with_clock(clock::Clock::Fixed(clock::UnixTime::from_secs(RECORDED_AT))),
     )
 }
 
@@ -1408,6 +1408,7 @@ async fn record_route_problems(
         exchange_rate: Arc::new(
             crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
                 rate_limited_coingecko(42).await,
+                state.clock.clone(),
             ),
         ),
         ..state.clone()
@@ -1970,6 +1971,7 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         exchange_rate: Arc::new(
             crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
                 rate_limited_coingecko(42).await,
+                state.clock.clone(),
             ),
         ),
         ..state.clone()

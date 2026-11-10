@@ -199,12 +199,14 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         state.push.clone(),
         state.apps.clone(),
         crate::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
+        state.clock.clone(),
     ));
     let worker = tokio::spawn(crate::webhooks::delivery::run_delivery_loop(
         state.db.clone(),
         state.encryption_key.clone(),
         state.settings.clone(),
         state.webhooks.clone(),
+        state.clock.clone(),
     ));
     let session_token = signed_up_and_logged_in_session_token(
         &router,
@@ -260,12 +262,15 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         .to_string();
     engine.mark_order_paid(&order_id).unwrap();
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
     let (headers, body) = loop {
         if let Some(first) = received.lock().first().cloned() {
             break first;
         }
-        assert!(std::time::Instant::now() < deadline, "no webhook delivered");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no webhook delivered"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
     subscriber.abort();
@@ -276,7 +281,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         &secret,
         body.as_bytes(),
         headers["x-monokulo-signature"].to_str().unwrap(),
-        service_runtime::time::now_unix()
+        state.clock.now()
     ));
     let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(payload["order_id"], order_id.as_str(), "{payload}");
@@ -329,11 +334,12 @@ async fn store_with_deliveries(
         &crate::db::ConnectionId::new(store.clone()),
         "https://erp.bakery.example/payments/in",
         &std::collections::BTreeMap::from([("X-Api-Key".to_string(), "never-shown".to_string())]),
+        state.clock.now(),
     )
     .await
     .unwrap();
     let webhook = created.webhook.id.to_string();
-    let now = crate::now_unix();
+    let now = state.clock.now();
     let db = state.db.lock();
     let mut ids = Vec::new();
     for (seq, (event_type, attempts, delivered)) in [
@@ -349,7 +355,7 @@ async fn store_with_deliveries(
             seq,
             event_id: format!("evt_{seq}"),
             kind: event_type.into(),
-            created_at: now - 600,
+            created_at: (now.saturating_sub(std::time::Duration::from_secs(600))).as_secs(),
             tenant_public_key: pk.clone(),
             order_id: OrderId::new(format!("5f01c9a7d2e14b88a3e0f9c6d1e21b0{seq}")),
             txid: None,
@@ -360,7 +366,7 @@ async fn store_with_deliveries(
         };
         db.queue_order_event(
             &event,
-            now - 600,
+            now.saturating_sub(std::time::Duration::from_secs(600)),
             &crate::push::Queueing::now(&crate::settings::MonokuloSettings::defaults()),
             |store, metadata| {
                 crate::webhooks::body::body_v2(&event, store, metadata, &Default::default())
@@ -375,7 +381,7 @@ async fn store_with_deliveries(
                 &AttemptOutcome {
                     attempt: Attempt {
                         n,
-                        at: now - 300 + i64::from(n),
+                        at: (now.saturating_sub(std::time::Duration::from_secs(300)).saturating_add(std::time::Duration::from_secs((i64::from(n)).unsigned_abs()))).as_secs(),
                         status: Some(if delivered { 200 } else { 503 }),
                         error: None,
                         ms: 184,
@@ -383,7 +389,7 @@ async fn store_with_deliveries(
                     },
                     delivered,
                     response: Some("HTTP/1.1 503 Service Unavailable\ncontent-type: text/html\n\n<html>Upstream is restarting</html>".into()),
-                    next_attempt_at: (!delivered && !(last && attempts == 8)).then_some(now + 360),
+                    next_attempt_at: (!delivered && !(last && attempts == 8)).then_some((now.saturating_add(std::time::Duration::from_secs(360))).as_secs()),
                 },
             )
             .unwrap();

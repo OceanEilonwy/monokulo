@@ -191,14 +191,14 @@ pub fn stored_site(site: Option<&Site>) -> &str {
 /// into their domains, and recording their secret key hashes. A step that
 /// fails is logged, leaves nothing behind, and is tried again at the next
 /// start.
-pub fn backfill_at_start(db: &crate::db::Db, key: &crate::crypto::AtRestKey) {
-    if let Err(e) = db.refresh_checkout_stylesheets(crate::now_unix()) {
+pub fn backfill_at_start(db: &crate::db::Db, key: &crate::crypto::AtRestKey, now: clock::UnixTime) {
+    if let Err(e) = db.refresh_checkout_stylesheets(now) {
         tracing::error!(error = %e, "could not write stores' checkout stylesheets");
     }
-    if let Err(e) = db.refresh_checkout_pages(crate::now_unix()) {
+    if let Err(e) = db.refresh_checkout_pages(now) {
         tracing::error!(error = %e, "could not write custom checkout pages' stylesheets");
     }
-    match crate::embed_domains::import_existing_domains(db) {
+    match crate::embed_domains::import_existing_domains(db, now) {
         Ok(true) => tracing::info!(
             step = crate::db::STORE_DOMAINS_STEP,
             "imported existing stores' domains"

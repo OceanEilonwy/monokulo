@@ -57,10 +57,10 @@ impl<O> Default for Last<O> {
 }
 
 impl<O: Copy> Last<O> {
-    /// It happened now, and went `outcome`.
-    pub fn record(&self, outcome: O) {
+    /// It happened at `now`, and went `outcome`.
+    pub fn record(&self, outcome: O, now: clock::UnixTime) {
         *self.0.lock() = Some(Event {
-            at: crate::time::now_unix(),
+            at: now.as_secs(),
             outcome,
         });
     }
@@ -210,12 +210,11 @@ mod tests {
     fn the_last_event_is_the_one_recorded_last() {
         let last = Last::default();
         assert_eq!(last.get(), None);
-        last.record(Outcome::TooLarge);
+        last.record(Outcome::TooLarge, clock::UnixTime::from_secs(1_800_000_000));
         let event = last.get().unwrap();
-        assert!(event.at > 0);
         assert_eq!(
             serde_json::to_value(event).unwrap(),
-            serde_json::json!({ "at": event.at, "outcome": "too-large" })
+            serde_json::json!({ "at": 1_800_000_000, "outcome": "too-large" })
         );
     }
 

@@ -36,7 +36,7 @@ const CERT: &[u8] = include_bytes!("fixtures/push.test.pem");
 const KEY: &[u8] = include_bytes!("fixtures/push.test.key.pem");
 
 /// 2027-01-15T08:00:00Z, the time every push here is signed at.
-const NOW: i64 = 1_800_000_000;
+const NOW: clock::UnixTime = clock::UnixTime::from_secs(1_800_000_000);
 
 /// What the push service received.
 struct Received {

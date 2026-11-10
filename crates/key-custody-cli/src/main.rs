@@ -75,7 +75,7 @@ fn seal(
         );
     }
     let bundle = key_custody_cli::load_bundle(source, fetch)?;
-    let verified = key_custody_cli::check(&bundle, &policy, now())?;
+    let verified = key_custody_cli::check(&bundle, &policy, clock::Clock::System.now())?;
     eprintln!("{}", key_custody_cli::describe(&verified, &policy, custom));
 
     let (view, spend) = read_keys()?;
@@ -130,10 +130,4 @@ fn fetch(url: &str) -> Result<String, String> {
         return Err(format!("fetching {url}: {status}: {}", body.trim()));
     }
     Ok(body)
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }

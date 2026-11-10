@@ -55,10 +55,13 @@ fn main() {
     let early = Snapshot::new(file.clone(), start.env.clone());
     // Then logging, so everything after it is logged (structured_logging.md
     // 1.1), at the level and in the format the settings give.
+    // The engine's own process tells time by the system's clock.
+    let clock = clock::Clock::System;
     let _telemetry = telemetry::init_with(
         "engine",
         &early.get(&LOGGING_LEVEL),
         telemetry::Format::chosen(early.get(&LOGGING_FORMAT)),
+        clock.clone(),
     );
     // The engine's threads: how many, on which CPUs, at what niceness
     // (`engine::threads`). A plan this machine can't take stops it here.
@@ -80,16 +83,16 @@ fn main() {
             std::process::exit(1);
         }
     };
-    runtime.block_on(run(config));
+    runtime.block_on(run(config, clock));
 }
 
 #[expect(
     clippy::expect_used,
     reason = "boot-time: a listener that can't bind or a server that can't start ends the process"
 )]
-async fn run(config: EngineConfig) {
+async fn run(config: EngineConfig, clock: clock::Clock) {
     // CPU and memory every 10 s, for the admin page: the process's, so its host samples it, not the engine.
-    service_runtime::resources::start_sampling();
+    service_runtime::resources::start_sampling(clock);
 
     let engine = match Engine::start(config).await {
         Ok(engine) => engine,

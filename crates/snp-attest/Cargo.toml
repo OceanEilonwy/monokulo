@@ -27,6 +27,8 @@ guest = ["dep:libc"]
 test-support = []
 
 [dependencies]
+# What time it is, passed in (`verify::verify_evidence`).
+clock = { path = "../clock" }
 hex = { version = "0.4.3", optional = true }
 p384 = { version = "0.14.0", features = ["ecdsa"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"], optional = true }

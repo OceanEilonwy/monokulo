@@ -1,6 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
+use clock::{Clock, UnixTime};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ use engine_protocol::admin_api::{
 use engine_protocol::custody::RequestedBackend;
 
 use super::{
-    network_str, now_unix, parse_network, parse_status_query, resolve_wallet_handle,
+    network_str, parse_network, parse_status_query, resolve_wallet_handle,
     resolve_wallet_handle_held, ApiError, AppState, AuthedTenant, Custody,
 };
 
@@ -244,9 +245,10 @@ async fn create_tenant_to_completion(
                 .unwrap_or(defaults.order_expiry_seconds),
         ),
     };
+    let now = state.clock.now();
     let created = state
         .db
-        .write(move |s| s.create_tenant(&new_tenant, now_unix()))
+        .write(move |s| s.create_tenant(&new_tenant, now))
         .await;
     // A failed insert leaves a registered wallet nothing holds a handle to - key
     // material live in `KeyCustody` for the rest of the process's life, with no
@@ -325,11 +327,10 @@ async fn create_tenant_on_wallet(
         )
     };
     let on = wallet.id.clone();
+    let now = state.clock.now();
     let created = state
         .db
-        .write(move |s| {
-            s.create_tenant_on_wallet(&on, Some(confirmations), Some(expiry), now_unix())
-        })
+        .write(move |s| s.create_tenant_on_wallet(&on, Some(confirmations), Some(expiry), now))
         .await?;
     let tenant = created.tenant;
     let handle = match state
@@ -346,11 +347,7 @@ async fn create_tenant_on_wallet(
         Err(e) => {
             // No store without its keys: the row goes again.
             let id = tenant.id.clone();
-            if let Err(disable) = state
-                .db
-                .write(move |s| s.disable_tenant(&id, now_unix()))
-                .await
-            {
+            if let Err(disable) = state.db.write(move |s| s.disable_tenant(&id, now)).await {
                 tracing::error!(store.id = %tenant.id, error = %disable, "creating a store on a wallet, its keys didn't register and disabling the row failed");
             }
             return Err(key_custody_error_for_new_tenant(e));
@@ -415,10 +412,8 @@ async fn create_wallet_to_completion(
         primary_address,
         network,
     };
-    let wallet = state
-        .db
-        .write(move |s| s.create_wallet(&new, now_unix()))
-        .await?;
+    let now = state.clock.now();
+    let wallet = state.db.write(move |s| s.create_wallet(&new, now)).await?;
     Ok(Json(WalletView {
         wallet_id: wallet.id,
         primary_address: wallet.primary_address,
@@ -434,13 +429,14 @@ pub(super) async fn get_wallet(
     Path(id): Path<EngineWalletId>,
 ) -> Result<Json<WalletStatusView>, ApiError> {
     let grace = grace_period(&state);
+    let now = state.clock.now();
     let (wallet, in_use) = state
         .db
         .read(move |s| {
             let wallet = s
                 .get_wallet(&id)?
                 .ok_or(crate::store::StoreError::NotFound)?;
-            let in_use = s.wallet_in_use(&id, now_unix(), grace)?;
+            let in_use = s.wallet_in_use(&id, now, grace)?;
             Ok((wallet, in_use))
         })
         .await?;
@@ -475,14 +471,16 @@ pub(super) async fn retire_wallet(
     Path(id): Path<EngineWalletId>,
 ) -> Result<Json<RetiredView>, ApiError> {
     let grace = grace_period(&state);
-    let now = now_unix();
+    let now = state.clock.now();
     let retired = id.clone();
     let holders = state
         .db
         .write(move |s| s.retire_wallet(&id, now, grace))
         .await?;
     forget_handles(&state.custody, holders, Some(&retired), "retiring a wallet").await;
-    Ok(Json(RetiredView { retired_at: now }))
+    Ok(Json(RetiredView {
+        retired_at: now.as_secs(),
+    }))
 }
 
 /// `POST /api/v1/admin/wallets/{id}/restore`: a retired wallet back, with
@@ -829,7 +827,7 @@ pub(super) async fn answer_handoff(
         ApiError::Unavailable("this engine's snp key custody backend isn't running".into())
     })?;
     let answer = snp
-        .answer_handoff(&bundle, slot.anchor(), crate::key_custody::snp::unix_now())
+        .answer_handoff(&bundle, slot.anchor(), state.clock.now())
         .map_err(|e| match e {
             KeyCustodyError::InvalidKeyMaterial(m) => ApiError::Forbidden(m),
             other @ (KeyCustodyError::UnknownWallet
@@ -885,12 +883,14 @@ pub(super) async fn delete_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
     State(custody): State<Custody>,
     State(db): State<Database>,
+    State(clock): State<Clock>,
 ) -> Result<StatusCode, ApiError> {
     let changing = custody.wallet_handles.changing(&tenant.id).await;
     let id = tenant.id.clone();
     let watchers = db.read(move |s| s.watchers_of(&id)).await?;
     let id = tenant.id.clone();
-    db.write(move |s| s.disable_tenant(&id, now_unix())).await?;
+    let now = clock.now();
+    db.write(move |s| s.disable_tenant(&id, now)).await?;
     drop(changing);
     let ids = std::iter::once(tenant.id).chain(watchers.into_iter().map(|w| w.id));
     forget_handles(&custody, ids, None, "deleting a store").await;
@@ -969,9 +969,10 @@ pub(super) async fn change_wallet(
     // (`scanner::record_scan_match`).
     let old_handle = state.custody.wallet_handles.write().remove(&tenant.id);
     let (id, wallet_id) = (tenant.id.clone(), req.wallet_id.clone());
+    let now = state.clock.now();
     let changed = state
         .db
-        .write(move |s| s.change_tenant_wallet(&id, &wallet_id, now_unix()))
+        .write(move |s| s.change_tenant_wallet(&id, &wallet_id, now))
         .await;
     let change = match changed {
         Ok(change) => change,
@@ -1035,7 +1036,7 @@ pub(super) async fn change_wallet(
 /// Builds an `OrderView`, including the one field (`currently_scanning`)
 /// that isn't a column: it depends on wall-clock time (the grace window),
 /// which is why this isn't a plain `From<Order>`.
-fn build_order_view(order: Order, now: i64, grace_period_seconds: i64) -> OrderView {
+fn build_order_view(order: Order, now: UnixTime, grace_period_seconds: i64) -> OrderView {
     let currently_scanning = order.in_scan_window(now, grace_period_seconds);
     OrderView {
         order_id: order.id,
@@ -1087,12 +1088,13 @@ pub(super) async fn list_orders(
     AuthedTenant(tenant): AuthedTenant,
     State(db): State<Database>,
     State(settings): State<Arc<EngineSettings>>,
+    State(clock): State<Clock>,
     Query(q): Query<ListOrdersQuery>,
 ) -> Result<Json<Vec<OrderView>>, ApiError> {
     let status_filter: Option<OrderStatus> =
         q.status.as_deref().map(parse_status_query).transpose()?;
     let limit = q.limit.unwrap_or(50).min(200);
-    let now = now_unix();
+    let now = clock.now();
     let ids: Option<Vec<crate::store::OrderId>> = q.ids.as_deref().map(|ids| {
         ids.split(',')
             .map(str::trim)
@@ -1172,9 +1174,10 @@ pub(super) async fn list_open_orders(
     AuthedTenant(tenant): AuthedTenant,
     State(db): State<Database>,
     State(settings): State<Arc<EngineSettings>>,
+    State(clock): State<Clock>,
 ) -> Result<Json<Vec<OrderView>>, ApiError> {
     let grace = settings.scan.load().expired_order_grace_period_seconds;
-    let now = now_unix();
+    let now = clock.now();
     let views = db
         .read(move |store| {
             Ok(store
@@ -1202,7 +1205,7 @@ pub(super) async fn order_totals(
     Query(q): Query<OrderTotalsQuery>,
 ) -> Result<Json<OrderTotalsView>, ApiError> {
     let totals = db
-        .read(move |store| store.order_totals(&tenant.id, q.since))
+        .read(move |store| store.order_totals(&tenant.id, UnixTime::from_secs(q.since)))
         .await?;
     Ok(Json(OrderTotalsView {
         received_piconero: totals.received_piconero,
@@ -1229,8 +1232,10 @@ pub(super) async fn get_order_detail(
     Path(order_id): Path<crate::store::OrderId>,
     State(db): State<Database>,
     State(settings): State<Arc<EngineSettings>>,
+    State(clock): State<Clock>,
 ) -> Result<Json<OrderDetailResponse>, ApiError> {
     let grace = settings.scan.load().expired_order_grace_period_seconds;
+    let now = clock.now();
     let tenant_id = tenant.id.clone();
     let found = db
         .read(move |store| {
@@ -1238,7 +1243,7 @@ pub(super) async fn get_order_detail(
                 return Ok(None);
             };
             let payments = store.get_all_payments(&order.id)?;
-            Ok(Some((build_order_view(order, now_unix(), grace), payments)))
+            Ok(Some((build_order_view(order, now, grace), payments)))
         })
         .await?;
     let (order_view, payments) = found.ok_or(ApiError::NotFound)?;
@@ -1260,8 +1265,9 @@ pub(super) async fn cancel_order(
     AuthedTenant(tenant): AuthedTenant,
     Path(order_id): Path<crate::store::OrderId>,
     State(db): State<Database>,
+    State(clock): State<Clock>,
 ) -> Result<StatusCode, ApiError> {
-    let now = now_unix();
+    let now = clock.now();
     let outcome = db
         .write(move |store| {
             store.in_transaction(|store| {
@@ -1306,6 +1312,7 @@ pub(super) async fn renew_order(
     Path(order_id): Path<crate::store::OrderId>,
     State(db): State<Database>,
     State(settings): State<Arc<EngineSettings>>,
+    State(clock): State<Clock>,
     Json(req): Json<engine_protocol::admin_api::RenewOrderRequest>,
 ) -> Result<Json<engine_protocol::admin_api::RenewOrderResponse>, ApiError> {
     if req.xmr_amount_piconero == crate::store::Piconero::ZERO {
@@ -1320,8 +1327,10 @@ pub(super) async fn renew_order(
         )));
     }
     let grace = settings.scan.load().expired_order_grace_period_seconds;
-    let now = now_unix();
-    let new_expires_at = now.saturating_add(tenant.order_expiry_seconds);
+    let now = clock.now();
+    let new_expires_at = now
+        .saturating_add(crate::duration_secs(tenant.order_expiry_seconds))
+        .as_secs();
     let tenant_id = tenant.id.clone();
     let (outcome, order) = db
         .write(move |store| {
@@ -1453,7 +1462,7 @@ pub(super) async fn lookup_payment(
         }
     }
 
-    let now = now_unix();
+    let now = state.clock.now();
     let mut on_chain = false;
     let mut touched = std::collections::BTreeSet::new();
     for (network, scanners) in by_network {

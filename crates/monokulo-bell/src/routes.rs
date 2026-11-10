@@ -103,7 +103,7 @@ async fn register(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ProblemDetails> {
-    let now = service_runtime::time::now_unix();
+    let now = shared.clock.now();
     let client = abuse::identity::client_address(peer.ip(), &headers, &shared.trusted_proxies);
     shared
         .registrations

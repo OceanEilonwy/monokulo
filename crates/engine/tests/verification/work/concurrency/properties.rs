@@ -6,11 +6,12 @@ use crate::property_support::{
 use crate::scanner::tests::{fixture_tenant, fixture_tx, live_tenants, FIXTURE_AMOUNT_PICONERO};
 use crate::status::OrderStatus;
 use crate::store::{db::Class, Database, Db, ReadStorePool, Store};
-use crate::work::{fast_pass, run_round, RoundInputs, ScanState};
+use crate::work::{fast_pass, run_round, RoundInputs};
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use clock::UnixTime;
 use engine_daemon::fake::{tx_id_hex, FakeDaemonClient};
 use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
 use proptest::prelude::*;
@@ -93,7 +94,7 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
         )]));
     let router = crate::http::build_router(app, 1 << 20);
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let input = RoundInputs {
         db: &db,
         custody: custody.as_ref(),
@@ -140,7 +141,7 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
         let state = if iteration == 0 {
             &state
         } else {
-            &ScanState::default()
+            &crate::node_test_support::scan_state()
         };
         custody.scan_mode.store(2, Ordering::SeqCst);
         let mut block = Some(Box::pin(run_round(state, &input, Duration::ZERO)));
@@ -213,7 +214,11 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
         if change == 3 && iteration == 0 {
             store
                 .lock()
-                .open_reorg_job(monero::Network::Mainnet, 3, crate::now_unix())
+                .open_reorg_job(
+                    monero::Network::Mainnet,
+                    3,
+                    crate::node_test_support::TEST_NOW,
+                )
                 .unwrap();
             daemon.reorg_from(3, vec![("replacement", vec![fixture_tx()])]);
         }
@@ -285,7 +290,7 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
         }
         // Recreate volatile state after abandoning callers: shutdown must not
         // cancel work the worker already accepted or retain scan reservations.
-        let recovery = ScanState::default();
+        let recovery = crate::node_test_support::scan_state();
         for _ in 0..12 {
             run_round(&recovery, &input, Duration::ZERO)
                 .await
@@ -369,7 +374,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
     let hash3 = hex::encode([3; 32]);
     daemon.push_block(&hex::encode([1; 32]), vec![]);
     daemon.push_block(&hash2, vec![]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let input = RoundInputs {
         db: &db,
@@ -398,7 +403,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
     let mut release = hold_worker(&db).await;
     let mut proof = Some(Box::pin(db.run(Class::Scanner, move |s| {
         let network = monero::Network::Mainnet;
-        s.enable_proof(network, 1000)?;
+        s.enable_proof(network, UnixTime::from_secs(1000))?;
         if proof_mode == 1 {
             return s.forget_anchor(network);
         }
@@ -421,7 +426,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
                     })
                     .collect(),
             },
-            1000,
+            UnixTime::from_secs(1000),
         )
     })));
     let edit_tenant = tenant.clone();
@@ -508,7 +513,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
     // The old generation has no remaining callers or claim guards. Its worker
     // effects have drained. New state must catch up with the replacement handle.
     let new_tenants = live_tenants(&store, [(tenant.clone(), handle)]);
-    let recovery = ScanState::default();
+    let recovery = crate::node_test_support::scan_state();
     let recovery_input = RoundInputs {
         tenants: &new_tenants,
         ..input
@@ -565,7 +570,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
                     })
                     .collect(),
             },
-            1000,
+            UnixTime::from_secs(1000),
         )
     })
     .await

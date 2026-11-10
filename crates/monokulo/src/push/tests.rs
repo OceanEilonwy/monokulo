@@ -2,6 +2,10 @@ use super::*;
 use crate::db::{Database, Db};
 use crate::http::TEST_ENCRYPTION_KEY;
 
+// These tests have no state and no clock: the key's creation time is stored
+// but never compared with a render, so the system clock is read where it is
+// made.
+
 fn database() -> Database {
     Database::inline(Db::open_in_memory().unwrap().into_shared())
 }
@@ -11,7 +15,9 @@ fn database() -> Database {
 #[tokio::test]
 async fn the_vapid_key_is_made_once_and_survives_a_restart() {
     let db = database();
-    let first = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY).await.unwrap();
+    let first = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY, clock::Clock::System.now())
+        .await
+        .unwrap();
     let stored = db.lock().vapid_key().unwrap().expect("a stored key");
     assert_eq!(stored.public_key, first.vapid_public_key().to_string());
     let private = hex::encode(*first.vapid.to_bytes());
@@ -19,7 +25,9 @@ async fn the_vapid_key_is_made_once_and_survives_a_restart() {
         !stored.private_key_encrypted.contains(&private),
         "the private key is stored in the clear"
     );
-    let again = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY).await.unwrap();
+    let again = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY, clock::Clock::System.now())
+        .await
+        .unwrap();
     assert_eq!(again.vapid_public_key(), first.vapid_public_key());
     assert_eq!(*again.vapid.to_bytes(), *first.vapid.to_bytes());
     assert_eq!(db.lock().vapid_key().unwrap(), Some(stored));
@@ -31,9 +39,11 @@ async fn the_vapid_key_is_made_once_and_survives_a_restart() {
 #[tokio::test]
 async fn a_key_that_cannot_be_read_back_is_an_error_not_a_new_key() {
     let db = database();
-    Push::load_or_make(&db, &TEST_ENCRYPTION_KEY).await.unwrap();
+    Push::load_or_make(&db, &TEST_ENCRYPTION_KEY, clock::Clock::System.now())
+        .await
+        .unwrap();
     let stored = db.lock().vapid_key().unwrap();
-    let error = Push::load_or_make(&db, &AtRestKey::new([9; 32]))
+    let error = Push::load_or_make(&db, &AtRestKey::new([9; 32]), clock::Clock::System.now())
         .await
         .err()
         .expect("a wrong key is refused");
@@ -59,7 +69,7 @@ async fn a_stored_public_key_must_be_the_private_keys() {
             created_at: 1,
         })
         .unwrap();
-    let error = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY)
+    let error = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY, clock::Clock::System.now())
         .await
         .err()
         .expect("a mismatched row is refused");
@@ -84,7 +94,7 @@ async fn the_private_key_is_bound_to_its_row() {
             created_at: 1,
         })
         .unwrap();
-    let error = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY)
+    let error = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY, clock::Clock::System.now())
         .await
         .err()
         .expect("a value from another binding is refused");
@@ -147,7 +157,7 @@ async fn a_stored_private_key_that_isnt_a_scalar_is_unreadable() {
                 created_at: 1,
             })
             .unwrap();
-        let error = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY)
+        let error = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY, clock::Clock::System.now())
             .await
             .err()
             .unwrap_or_else(|| panic!("{hex:?} was taken for a key"));
@@ -167,8 +177,10 @@ async fn first_starts_at_once_agree_on_one_key() {
     let path = std::env::temp_dir().join(format!("monokulo_vapid_{}.db", uuid::Uuid::new_v4()));
     let db = Database::open(path.to_str().unwrap(), 4).unwrap();
     let key = TEST_ENCRYPTION_KEY;
-    let starts =
-        futures_util::future::join_all((0..8).map(|_| Push::load_or_make(&db, &key))).await;
+    let starts = futures_util::future::join_all(
+        (0..8).map(|_| Push::load_or_make(&db, &key, clock::Clock::System.now())),
+    )
+    .await;
     let keys: Vec<String> = starts
         .into_iter()
         .map(|push| push.unwrap().vapid_public_key().to_string())
@@ -188,11 +200,15 @@ async fn first_starts_at_once_agree_on_one_key() {
 #[tokio::test]
 async fn the_published_key_verifies_pushes_signed_after_a_restart() {
     let db = database();
-    let before = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY).await.unwrap();
+    let before = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY, clock::Clock::System.now())
+        .await
+        .unwrap();
     let handed: ::push::VapidPublicKey = before.vapid_public_key().to_string().parse().unwrap();
-    let after = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY).await.unwrap();
+    let after = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY, clock::Clock::System.now())
+        .await
+        .unwrap();
     let service = ::push::Origin::parse("https://ntfy.sh").unwrap();
-    let now = 1_800_000_000;
+    let now = clock::UnixTime::from_secs(1_800_000_000);
     let signed = after.vapid.authorization(&service, None, now).unwrap();
     let claims = ::push::vapid::verify(&signed, &handed, &service, now).unwrap();
     assert_eq!(claims.aud, service);
@@ -209,7 +225,7 @@ async fn the_published_key_verifies_pushes_signed_after_a_restart() {
         ::push::vapid::verify(&signed, &handed, &elsewhere, now),
         Err(::push::vapid::VapidError::Audience)
     ));
-    let late = now + ::push::vapid::EXPIRY.as_secs() as i64;
+    let late = now.saturating_add(::push::vapid::EXPIRY);
     assert!(matches!(
         ::push::vapid::verify(&signed, &handed, &service, late),
         Err(::push::vapid::VapidError::Expired)

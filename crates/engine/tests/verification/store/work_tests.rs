@@ -24,7 +24,7 @@ fn tenant(store: &Store, network: &str) -> String {
                 confirmations_required: Some(10),
                 order_expiry_seconds: None,
             },
-            100,
+            UnixTime::from_secs(100),
         )
         .unwrap()
         .tenant
@@ -80,7 +80,7 @@ fn work(store: &Store, network: &str) -> Vec<i64> {
     store
         .due_reorg_candidates(
             engine_protocol::network::parse_network(network).unwrap(),
-            i64::MAX,
+            UnixTime::from_secs(i64::MAX),
             1000,
         )
         .unwrap()
@@ -105,7 +105,7 @@ fn a_reorg_job_collects_its_candidates_in_pages_that_survive_a_restart() {
     let unconfirmed = pay(s, main_order, "pool", None);
     let _other_network = pay(s, other_order, "other", Some(12));
     assert_eq!(
-        s.open_reorg_job(monero::Network::Mainnet, 10, 1000)
+        s.open_reorg_job(monero::Network::Mainnet, 10, UnixTime::from_secs(1000))
             .unwrap(),
         OpenedReorg::Created
     );
@@ -113,7 +113,7 @@ fn a_reorg_job_collects_its_candidates_in_pages_that_survive_a_restart() {
 
     // Two candidates per page, restarting the process between pages.
     assert!(matches!(
-        s.collect_reorg_candidates(monero::Network::Mainnet, 2, 1001)
+        s.collect_reorg_candidates(monero::Network::Mainnet, 2, UnixTime::from_secs(1001))
             .unwrap(),
         ReorgPhase::CollectConfirmed {
             after_height: _,
@@ -122,11 +122,11 @@ fn a_reorg_job_collects_its_candidates_in_pages_that_survive_a_restart() {
     ));
     let s = reopen(store, &path);
     let mut phase = s
-        .collect_reorg_candidates(monero::Network::Mainnet, 2, 1002)
+        .collect_reorg_candidates(monero::Network::Mainnet, 2, UnixTime::from_secs(1002))
         .unwrap();
     while phase != ReorgPhase::Process {
         phase = s
-            .collect_reorg_candidates(monero::Network::Mainnet, 2, 1003)
+            .collect_reorg_candidates(monero::Network::Mainnet, 2, UnixTime::from_secs(1003))
             .unwrap();
     }
     let mut collected = work(&s, "mainnet");
@@ -149,23 +149,26 @@ fn a_deeper_fork_widens_the_open_job_and_a_shallower_one_does_not() {
     let s = &store.0;
     let deep = pay(s, &store.1, "deep", Some(5));
     let shallow = pay(s, &store.1, "shallow", Some(10));
-    s.open_reorg_job(monero::Network::Mainnet, 8, 1000).unwrap();
+    s.open_reorg_job(monero::Network::Mainnet, 8, UnixTime::from_secs(1000))
+        .unwrap();
     while s
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 1000)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(1000))
         .unwrap()
         != ReorgPhase::Process
     {}
     assert_eq!(work(s, "mainnet"), vec![shallow]);
     assert_eq!(
-        s.open_reorg_job(monero::Network::Mainnet, 9, 1001).unwrap(),
+        s.open_reorg_job(monero::Network::Mainnet, 9, UnixTime::from_secs(1001))
+            .unwrap(),
         OpenedReorg::Covered
     );
     assert_eq!(
-        s.open_reorg_job(monero::Network::Mainnet, 4, 1002).unwrap(),
+        s.open_reorg_job(monero::Network::Mainnet, 4, UnixTime::from_secs(1002))
+            .unwrap(),
         OpenedReorg::Deepened { from: 8 }
     );
     while s
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 1003)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(1003))
         .unwrap()
         != ReorgPhase::Process
     {}
@@ -188,10 +191,10 @@ fn a_failed_candidate_waits_behind_the_others_and_blocks_the_rewind_until_done()
         s.set_scanned_block(monero::Network::Mainnet, h, &format!("old{h}"))
             .unwrap();
     }
-    s.open_reorg_job(monero::Network::Mainnet, 10, 1000)
+    s.open_reorg_job(monero::Network::Mainnet, 10, UnixTime::from_secs(1000))
         .unwrap();
     while s
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 1000)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(1000))
         .unwrap()
         != ReorgPhase::Process
     {}
@@ -200,7 +203,7 @@ fn a_failed_candidate_waits_behind_the_others_and_blocks_the_rewind_until_done()
 
     // The first retries are due at once; the third failure waits.
     for _ in 0..3 {
-        s.defer_reorg_candidate(monero::Network::Mainnet, first, 1000)
+        s.defer_reorg_candidate(monero::Network::Mainnet, first, UnixTime::from_secs(1000))
             .unwrap();
     }
     assert_eq!(
@@ -209,10 +212,10 @@ fn a_failed_candidate_waits_behind_the_others_and_blocks_the_rewind_until_done()
             reorg_retry_delay(2),
             reorg_retry_delay(3)
         ),
-        (0, 0, 1)
+        (Duration::ZERO, Duration::ZERO, Duration::from_secs(1))
     );
     let due: Vec<i64> = s
-        .due_reorg_candidates(monero::Network::Mainnet, 1000, 10)
+        .due_reorg_candidates(monero::Network::Mainnet, UnixTime::from_secs(1000), 10)
         .unwrap()
         .iter()
         .map(|c| c.payment.id)
@@ -225,7 +228,11 @@ fn a_failed_candidate_waits_behind_the_others_and_blocks_the_rewind_until_done()
     s.complete_reorg_candidate(monero::Network::Mainnet, second)
         .unwrap();
     let later = s
-        .due_reorg_candidates(monero::Network::Mainnet, 1000 + reorg_retry_delay(3), 10)
+        .due_reorg_candidates(
+            monero::Network::Mainnet,
+            UnixTime::from_secs(1000).saturating_add(reorg_retry_delay(3)),
+            10,
+        )
         .unwrap();
     assert_eq!(later.len(), 1);
     assert_eq!((later[0].payment.id, later[0].attempts), (first, 3));
@@ -264,10 +271,10 @@ fn a_rewind_that_empties_the_window_keeps_the_ancestor_and_clamps_cursors() {
         .unwrap();
     s.execute_raw_for_test("UPDATE tenants SET scanned_through_height = 21")
         .unwrap();
-    s.open_reorg_job(monero::Network::Mainnet, 20, 1000)
+    s.open_reorg_job(monero::Network::Mainnet, 20, UnixTime::from_secs(1000))
         .unwrap();
     while s
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 1000)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(1000))
         .unwrap()
         != ReorgPhase::Process
     {}
@@ -321,8 +328,14 @@ fn staged_reorg_cleanup(network: monero::Network, fork: u64, restart: bool) {
         store.conn.execute("INSERT INTO partial_block_matches(network,tenant_id,order_id,txid,output_index,amount_piconero,key_images_json,seen_at_utc,output_key) VALUES(?1,?2,?3,'staged-tx',0,17,'[]',1000,'output-key')", params![engine_protocol::network::SqlNetwork(net),t,o]).unwrap();
         staged.push((net, t, height, hash));
     }
-    store.open_reorg_job(network, fork, 1000).unwrap();
-    while store.collect_reorg_candidates(network, 1, 1000).unwrap() != ReorgPhase::Process {}
+    store
+        .open_reorg_job(network, fork, UnixTime::from_secs(1000))
+        .unwrap();
+    while store
+        .collect_reorg_candidates(network, 1, UnixTime::from_secs(1000))
+        .unwrap()
+        != ReorgPhase::Process
+    {}
     if restart {
         drop(store);
         store = Store::open_file(&path).unwrap();
@@ -390,12 +403,12 @@ fn open_orders_are_due_by_deadline_and_height_and_terminal_ones_never() {
     let s = &store.0;
     let expiring = order(s, &store.3, 5_000);
     assert_eq!(
-        s.due_order_ids(monero::Network::Mainnet, 4_999, 0, 10)
+        s.due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(4_999), 0, 10)
             .unwrap(),
         Vec::<String>::new()
     );
     assert_eq!(
-        s.due_order_ids(monero::Network::Mainnet, 5_000, 0, 10)
+        s.due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(5_000), 0, 10)
             .unwrap(),
         vec![expiring.clone()]
     );
@@ -413,29 +426,42 @@ fn open_orders_are_due_by_deadline_and_height_and_terminal_ones_never() {
         None,
     )
     .unwrap();
-    s.recompute_order_status(&OrderId::new(expiring.clone()), 52, 1_000)
-        .unwrap();
+    s.recompute_order_status(
+        &OrderId::new(expiring.clone()),
+        52,
+        UnixTime::from_secs(1_000),
+    )
+    .unwrap();
     assert!(s
-        .due_order_ids(monero::Network::Mainnet, 1_000, 52, 10)
+        .due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(1_000), 52, 10)
         .unwrap()
         .is_empty());
     assert_eq!(
-        s.due_order_ids(monero::Network::Mainnet, 1_000, 53, 10)
+        s.due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(1_000), 53, 10)
             .unwrap(),
         vec![expiring.clone()]
     );
     assert!(
-        s.due_order_ids(monero::Network::Mainnet, 9_999, 52, 10)
+        s.due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(9_999), 52, 10)
             .unwrap()
             .is_empty(),
         "no deadline once fully paid"
     );
-    s.recompute_order_status(&OrderId::new(expiring.clone()), 59, 1_000)
-        .unwrap();
+    s.recompute_order_status(
+        &OrderId::new(expiring.clone()),
+        59,
+        UnixTime::from_secs(1_000),
+    )
+    .unwrap();
     assert!(
-        !s.due_order_ids(monero::Network::Mainnet, i64::MAX, u64::MAX, 10)
-            .unwrap()
-            .contains(&OrderId::new(expiring)),
+        !s.due_order_ids(
+            monero::Network::Mainnet,
+            UnixTime::from_secs(i64::MAX),
+            u64::MAX,
+            10
+        )
+        .unwrap()
+        .contains(&OrderId::new(expiring)),
         "settled"
     );
     drop(store);
@@ -460,10 +486,10 @@ fn a_settlement_waits_for_an_open_reorg_on_its_network() {
         None,
     )
     .unwrap();
-    s.open_reorg_job(monero::Network::Mainnet, 70, 1_000)
+    s.open_reorg_job(monero::Network::Mainnet, 70, UnixTime::from_secs(1_000))
         .unwrap();
     let (_, frozen) = s
-        .recompute_order_status(&OrderId::new(o.clone()), 59, 1_000)
+        .recompute_order_status(&OrderId::new(o.clone()), 59, UnixTime::from_secs(1_000))
         .unwrap();
     assert_eq!(frozen, crate::status::OrderStatus::Confirming);
     assert_eq!(
@@ -472,21 +498,21 @@ fn a_settlement_waits_for_an_open_reorg_on_its_network() {
         vec![o.clone()]
     );
     assert_eq!(
-        s.due_order_ids(monero::Network::Mainnet, 1_000, 0, 10)
+        s.due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(1_000), 0, 10)
             .unwrap(),
         vec![o.clone()],
         "due again at once"
     );
 
     while s
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 1000)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(1000))
         .unwrap()
         != ReorgPhase::Process
     {}
     s.finish_reorg(monero::Network::Mainnet, 70, Some((69, "h69")))
         .unwrap();
     let (_, settled) = s
-        .recompute_order_status(&OrderId::new(o), 59, 1_000)
+        .recompute_order_status(&OrderId::new(o), 59, UnixTime::from_secs(1_000))
         .unwrap();
     assert_eq!(settled, crate::status::OrderStatus::Paid);
     assert!(s
@@ -519,7 +545,9 @@ fn a_settlement_waits_for_the_payments_block_to_be_recorded() {
     .unwrap();
     s.set_scanned_block(monero::Network::Mainnet, 49, "h49")
         .unwrap();
-    let (_, held) = s.recompute_order_status(&o, 59, 1_000).unwrap();
+    let (_, held) = s
+        .recompute_order_status(&o, 59, UnixTime::from_secs(1_000))
+        .unwrap();
     assert_eq!(held, crate::status::OrderStatus::Confirming);
     assert_eq!(
         s.get_order_by_id(&o).unwrap().unwrap().confirmations,
@@ -527,7 +555,7 @@ fn a_settlement_waits_for_the_payments_block_to_be_recorded() {
         "counted all the same"
     );
     assert_eq!(
-        s.due_order_ids(monero::Network::Mainnet, 1_000, 0, 10)
+        s.due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(1_000), 0, 10)
             .unwrap(),
         vec![o.clone()],
         "due again at once"
@@ -535,7 +563,9 @@ fn a_settlement_waits_for_the_payments_block_to_be_recorded() {
 
     s.set_scanned_block(monero::Network::Mainnet, 50, "h50")
         .unwrap();
-    let (_, settled) = s.recompute_order_status(&o, 59, 1_000).unwrap();
+    let (_, settled) = s
+        .recompute_order_status(&o, 59, UnixTime::from_secs(1_000))
+        .unwrap();
     assert_eq!(settled, crate::status::OrderStatus::Paid);
     drop(store);
     cleanup(&path);
@@ -762,10 +792,15 @@ fn branch_tracking_and_recollection_commit_whole_and_preserve_the_rescan_anchor(
         .set_scanned_block(monero::Network::Mainnet, 10, "a10")
         .unwrap();
     store
-        .open_reorg_job(monero::Network::Mainnet, 11, 200)
+        .open_reorg_job(monero::Network::Mainnet, 11, UnixTime::from_secs(200))
         .unwrap();
     sweep(&store, |s| {
-        s.restart_reorg_for_branch(monero::Network::Mainnet, 12, "b12", 200)
+        s.restart_reorg_for_branch(
+            monero::Network::Mainnet,
+            12,
+            "b12",
+            UnixTime::from_secs(200),
+        )
     });
     assert_eq!(
         store.reorg_branch(monero::Network::Mainnet).unwrap(),
@@ -773,7 +808,7 @@ fn branch_tracking_and_recollection_commit_whole_and_preserve_the_rescan_anchor(
     );
     assert_eq!(store.reorg_branch(monero::Network::Stagenet).unwrap(), None);
     while store
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 200)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(200))
         .unwrap()
         != ReorgPhase::Process
     {}
@@ -801,10 +836,15 @@ fn branch_tracking_and_recollection_commit_whole_and_preserve_the_rescan_anchor(
     // Another branch, at the same fork point: the completed payment must
     // be collected again, and retries on the discarded branch must clear.
     store
-        .defer_reorg_candidate(monero::Network::Mainnet, second, 200)
+        .defer_reorg_candidate(monero::Network::Mainnet, second, UnixTime::from_secs(200))
         .unwrap();
     sweep(&store, |s| {
-        s.restart_reorg_for_branch(monero::Network::Mainnet, 13, "c13", 201)
+        s.restart_reorg_for_branch(
+            monero::Network::Mainnet,
+            13,
+            "c13",
+            UnixTime::from_secs(201),
+        )
     });
     assert_eq!(
         store
@@ -814,12 +854,12 @@ fn branch_tracking_and_recollection_commit_whole_and_preserve_the_rescan_anchor(
         0
     );
     while store
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 201)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(201))
         .unwrap()
         != ReorgPhase::Process
     {}
     let candidates = store
-        .due_reorg_candidates(monero::Network::Mainnet, 201, 10)
+        .due_reorg_candidates(monero::Network::Mainnet, UnixTime::from_secs(201), 10)
         .unwrap();
     assert_eq!(candidates.len(), 2);
     assert!(candidates.iter().all(|candidate| candidate.attempts == 0));
@@ -901,7 +941,12 @@ fn every_store_operation_fails_whole_and_then_works() {
         )
         .unwrap();
     store
-        .void_payment(&OrderId::new(order_id.clone()), "tx_voided", 0, 160)
+        .void_payment(
+            &OrderId::new(order_id.clone()),
+            "tx_voided",
+            0,
+            UnixTime::from_secs(160),
+        )
         .unwrap();
     let voided_id = store
         .get_all_payments(&OrderId::new(order_id.clone()))
@@ -913,14 +958,14 @@ fn every_store_operation_fails_whole_and_then_works() {
 
     // A reorg's life.
     sweep(&store, |s| {
-        s.open_reorg_job(monero::Network::Mainnet, 11, 200)
+        s.open_reorg_job(monero::Network::Mainnet, 11, UnixTime::from_secs(200))
     });
     assert!(sweep(&store, |s| s.settlement_frozen(monero::Network::Mainnet)));
     assert_eq!(
         sweep(&store, |s| s.collect_reorg_candidates(
             monero::Network::Mainnet,
             1,
-            200
+            UnixTime::from_secs(200)
         )),
         ReorgPhase::CollectConfirmed {
             after_height: 11,
@@ -928,25 +973,29 @@ fn every_store_operation_fails_whole_and_then_works() {
         }
     );
     sweep(&store, |s| {
-        s.collect_reorg_candidates(monero::Network::Mainnet, 1, 200)
+        s.collect_reorg_candidates(monero::Network::Mainnet, 1, UnixTime::from_secs(200))
     });
     sweep(&store, |s| {
-        s.collect_reorg_candidates(monero::Network::Mainnet, 1, 200)
+        s.collect_reorg_candidates(monero::Network::Mainnet, 1, UnixTime::from_secs(200))
     });
     assert_eq!(
         sweep(&store, |s| s.collect_reorg_candidates(
             monero::Network::Mainnet,
             64,
-            200
+            UnixTime::from_secs(200)
         )),
         ReorgPhase::Process
     );
     let due = sweep(&store, |s| {
-        s.due_reorg_candidates(monero::Network::Mainnet, 200, 10)
+        s.due_reorg_candidates(monero::Network::Mainnet, UnixTime::from_secs(200), 10)
     });
     assert_eq!(due.len(), 2);
     sweep(&store, |s| {
-        s.defer_reorg_candidate(monero::Network::Mainnet, due[0].payment.id, 200)
+        s.defer_reorg_candidate(
+            monero::Network::Mainnet,
+            due[0].payment.id,
+            UnixTime::from_secs(200),
+        )
     });
     assert_eq!(
         sweep(&store, |s| s.reorg_work_remaining(monero::Network::Mainnet)).0,
@@ -984,7 +1033,12 @@ fn every_store_operation_fails_whole_and_then_works() {
         2
     );
     sweep(&store, |s| {
-        s.due_order_ids(monero::Network::Mainnet, 20_000, 12, 10)
+        s.due_order_ids(
+            monero::Network::Mainnet,
+            UnixTime::from_secs(20_000),
+            12,
+            10,
+        )
     });
     assert_eq!(
         sweep(&store, |s| s.voided_payments_page(
@@ -1022,7 +1076,7 @@ fn every_store_operation_fails_whole_and_then_works() {
                 TenantId::new(tenant_id.clone()),
                 TenantId::new(other.clone())
             ],
-            150,
+            UnixTime::from_secs(150),
             0
         ))
         .len(),
@@ -1031,7 +1085,7 @@ fn every_store_operation_fails_whole_and_then_works() {
     assert_eq!(
         sweep(&store, |s| s.active_tenants_page(
             monero::Network::Mainnet,
-            150,
+            UnixTime::from_secs(150),
             0,
             "",
             10
@@ -1111,7 +1165,7 @@ fn every_store_operation_fails_whole_and_then_works() {
             monero::Network::Mainnet,
             10,
             11,
-            i64::MAX / 2,
+            UnixTime::from_secs(i64::MAX / 2),
             0
         ))
         .stores(),
@@ -1191,10 +1245,10 @@ fn out_of_range_values_and_corrupt_rows_are_errors() {
         )
         .unwrap();
     store
-        .open_reorg_job(monero::Network::Mainnet, 5, 100)
+        .open_reorg_job(monero::Network::Mainnet, 5, UnixTime::from_secs(100))
         .unwrap();
     while store
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 100)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(100))
         .unwrap()
         != ReorgPhase::Process
     {}
@@ -1202,7 +1256,7 @@ fn out_of_range_values_and_corrupt_rows_are_errors() {
         .execute_raw_for_test("UPDATE reorg_work SET attempts = -3")
         .unwrap();
     assert!(matches!(
-        store.due_reorg_candidates(monero::Network::Mainnet, 100, 10),
+        store.due_reorg_candidates(monero::Network::Mainnet, UnixTime::from_secs(100), 10),
         Err(StoreError::Sqlite(
             rusqlite::Error::IntegralValueOutOfRange(_, -3)
         ))
@@ -1215,7 +1269,7 @@ fn out_of_range_values_and_corrupt_rows_are_errors() {
 fn an_unknown_reorg_phase_is_an_error() {
     let store = Store::open_in_memory().unwrap();
     store
-        .open_reorg_job(monero::Network::Mainnet, 5, 100)
+        .open_reorg_job(monero::Network::Mainnet, 5, UnixTime::from_secs(100))
         .unwrap();
     store.execute_raw_for_test("PRAGMA ignore_check_constraints = ON; UPDATE reorg_jobs SET phase = 'later'; PRAGMA ignore_check_constraints = OFF").unwrap();
     let error = store.reorg_job(monero::Network::Mainnet).unwrap_err();
@@ -1228,22 +1282,22 @@ fn an_unknown_reorg_phase_is_an_error() {
 fn late_collects_and_defers_are_no_ops() {
     let store = Store::open_in_memory().unwrap();
     store
-        .open_reorg_job(monero::Network::Mainnet, 5, 100)
+        .open_reorg_job(monero::Network::Mainnet, 5, UnixTime::from_secs(100))
         .unwrap();
     while store
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 100)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(100))
         .unwrap()
         != ReorgPhase::Process
     {}
     let before = store.dump_for_test();
     assert_eq!(
         store
-            .collect_reorg_candidates(monero::Network::Mainnet, 10, 100)
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(100))
             .unwrap(),
         ReorgPhase::Process
     );
     store
-        .defer_reorg_candidate(monero::Network::Mainnet, 12345, 100)
+        .defer_reorg_candidate(monero::Network::Mainnet, 12345, UnixTime::from_secs(100))
         .unwrap();
     assert_eq!(store.dump_for_test(), before);
 }
@@ -1261,7 +1315,7 @@ fn due_orders_are_listed_once_up_to_the_limit() {
         .execute_raw_for_test("UPDATE orders SET next_due_at_utc = 50, next_due_height = 7")
         .unwrap();
     let due = store
-        .due_order_ids(monero::Network::Mainnet, 100, 10, 10)
+        .due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(100), 10, 10)
         .unwrap();
     assert_eq!(due.len(), 3, "each once: {due:?}");
     assert!(orders
@@ -1269,7 +1323,7 @@ fn due_orders_are_listed_once_up_to_the_limit() {
         .all(|o| due.contains(&OrderId::new(o.clone()))));
     assert_eq!(
         store
-            .due_order_ids(monero::Network::Mainnet, 100, 10, 2)
+            .due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(100), 10, 2)
             .unwrap()
             .len(),
         2
@@ -1319,11 +1373,16 @@ fn the_engine_page_s_facts_count_each_thing_once_on_its_network() {
         )
         .unwrap();
     store
-        .open_reorg_job(monero::Network::Mainnet, 11, 100)
+        .open_reorg_job(monero::Network::Mainnet, 11, UnixTime::from_secs(100))
         .unwrap();
 
     let facts = store
-        .activity_facts(monero::Network::Mainnet, 100, Some(10), 32)
+        .activity_facts(
+            monero::Network::Mainnet,
+            UnixTime::from_secs(100),
+            Some(10),
+            32,
+        )
         .unwrap();
     assert_eq!(
         facts,
@@ -1338,11 +1397,21 @@ fn the_engine_page_s_facts_count_each_thing_once_on_its_network() {
         }
     );
     let one = store
-        .activity_facts(monero::Network::Mainnet, 100, Some(10), 1)
+        .activity_facts(
+            monero::Network::Mainnet,
+            UnixTime::from_secs(100),
+            Some(10),
+            1,
+        )
         .unwrap();
     assert_eq!((one.groups, one.all_groups), (vec![(12, 1)], 2));
     let none_due = store
-        .activity_facts(monero::Network::Mainnet, 40, Some(6), 32)
+        .activity_facts(
+            monero::Network::Mainnet,
+            UnixTime::from_secs(40),
+            Some(6),
+            32,
+        )
         .unwrap();
     assert_eq!(none_due.orders_due, 0, "not yet due by time or height");
 }
@@ -1375,7 +1444,7 @@ fn height_due_orders_get_half_the_page_whatever_the_time_due_backlog() {
             .unwrap();
     }
     let due = store
-        .due_order_ids(monero::Network::Mainnet, 100, 10, 6)
+        .due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(100), 10, 6)
         .unwrap();
     assert_eq!(due.len(), 6);
     let heights = due
@@ -1388,7 +1457,7 @@ fn height_due_orders_get_half_the_page_whatever_the_time_due_backlog() {
     );
     // With room to spare, the time-due ones take what the others left.
     let due = store
-        .due_order_ids(monero::Network::Mainnet, 100, 10, 20)
+        .due_order_ids(monero::Network::Mainnet, UnixTime::from_secs(100), 10, 20)
         .unwrap();
     assert_eq!(due.len(), 11);
 }
@@ -1399,7 +1468,7 @@ fn height_due_orders_get_half_the_page_whatever_the_time_due_backlog() {
 fn finishing_a_reorg_early_or_at_another_fork_is_refused() {
     let store = Store::open_in_memory().unwrap();
     store
-        .open_reorg_job(monero::Network::Mainnet, 5, 100)
+        .open_reorg_job(monero::Network::Mainnet, 5, UnixTime::from_secs(100))
         .unwrap();
     assert!(
         matches!(
@@ -1409,7 +1478,7 @@ fn finishing_a_reorg_early_or_at_another_fork_is_refused() {
         "still collecting"
     );
     while store
-        .collect_reorg_candidates(monero::Network::Mainnet, 10, 100)
+        .collect_reorg_candidates(monero::Network::Mainnet, 10, UnixTime::from_secs(100))
         .unwrap()
         != ReorgPhase::Process
     {}
@@ -1444,7 +1513,7 @@ fn order_id(id: &str) -> OrderId {
 }
 
 /// The stores in scope on `network`, by id.
-fn in_scope(store: &Store, network: monero::Network, now: i64, grace: i64) -> Vec<String> {
+fn in_scope(store: &Store, network: monero::Network, now: UnixTime, grace: i64) -> Vec<String> {
     store
         .active_tenants_page(network, now, grace, "", 1000)
         .unwrap()
@@ -1484,7 +1553,12 @@ fn a_store_is_in_scope_for_each_open_order_status_and_no_settled_one() {
         set_status(&store, &order, status);
         stores.push((status, open, tenant));
     }
-    let active = in_scope(&store, monero::Network::Mainnet, i64::MAX, 0);
+    let active = in_scope(
+        &store,
+        monero::Network::Mainnet,
+        UnixTime::from_secs(i64::MAX),
+        0,
+    );
     for (status, open, tenant) in &stores {
         assert_eq!(active.contains(tenant), *open, "{status}");
     }
@@ -1515,7 +1589,8 @@ fn an_expired_order_stays_in_scope_for_the_grace_period_and_no_longer() {
         )
         .unwrap();
     // The store's page and its window say the same.
-    let scanned_for = |now: i64, grace: i64| {
+    let scanned_for = |secs: i64, grace: i64| {
+        let now = UnixTime::from_secs(secs);
         let listed = in_scope(&store, monero::Network::Mainnet, now, grace).contains(&tenant);
         let windows = store
             .scan_windows(&[tenant_id(&tenant)], now, grace)
@@ -1527,7 +1602,7 @@ fn an_expired_order_stays_in_scope_for_the_grace_period_and_no_longer() {
         assert_eq!(
             listed,
             !windows.is_empty(),
-            "at {now} with {grace}s of grace"
+            "at {secs} with {grace}s of grace"
         );
         listed
     };
@@ -1547,8 +1622,15 @@ fn an_expired_order_stays_in_scope_for_the_grace_period_and_no_longer() {
 #[test]
 fn a_store_leaves_scope_when_its_orders_settle_and_returns_with_a_new_one() {
     let store = Store::open_in_memory().unwrap();
-    let active =
-        |tenant: &String| in_scope(&store, monero::Network::Mainnet, i64::MAX, 0).contains(tenant);
+    let active = |tenant: &String| {
+        in_scope(
+            &store,
+            monero::Network::Mainnet,
+            UnixTime::from_secs(i64::MAX),
+            0,
+        )
+        .contains(tenant)
+    };
     let settle = |order: &str, txid: &str| {
         store
             .record_payment_match(
@@ -1563,7 +1645,7 @@ fn a_store_leaves_scope_when_its_orders_settle_and_returns_with_a_new_one() {
             )
             .unwrap();
         let (_, status) = store
-            .recompute_order_status(&order_id(order), 59, 1_600)
+            .recompute_order_status(&order_id(order), 59, UnixTime::from_secs(1_600))
             .unwrap();
         assert_eq!(status, crate::status::OrderStatus::Paid);
     };
@@ -1595,18 +1677,28 @@ fn stores_in_scope_and_due_orders_are_those_of_one_network() {
     let stage_order = order(&store, &stage_tenant, 5_000);
 
     assert_eq!(
-        in_scope(&store, monero::Network::Mainnet, i64::MAX, 0),
+        in_scope(
+            &store,
+            monero::Network::Mainnet,
+            UnixTime::from_secs(i64::MAX),
+            0
+        ),
         vec![main_tenant]
     );
     assert_eq!(
-        in_scope(&store, monero::Network::Stagenet, i64::MAX, 0),
+        in_scope(
+            &store,
+            monero::Network::Stagenet,
+            UnixTime::from_secs(i64::MAX),
+            0
+        ),
         vec![stage_tenant]
     );
     // Both orders reach their deadline at once; each is due on its own
     // network.
     let due = |network| {
         store
-            .due_order_ids(network, 5_000, 0, 10)
+            .due_order_ids(network, UnixTime::from_secs(5_000), 0, 10)
             .unwrap()
             .into_iter()
             .map(OrderId::into_string)
@@ -1640,17 +1732,17 @@ fn a_reorg_collects_payments_back_in_the_pool_and_voided_ones() {
     let voided_pooled = pay(&store, &order, "voided_pooled", None);
     for txid in ["voided_mined", "voided_pooled"] {
         store
-            .void_payment(&order_id(&order), txid, 0, 1_600)
+            .void_payment(&order_id(&order), txid, 0, UnixTime::from_secs(1_600))
             .unwrap();
     }
     pay(&store, &other_order, "other_mined", Some(60));
     pay(&store, &other_order, "other_pooled", None);
 
     store
-        .open_reorg_job(monero::Network::Mainnet, 50, 2_000)
+        .open_reorg_job(monero::Network::Mainnet, 50, UnixTime::from_secs(2_000))
         .unwrap();
     while store
-        .collect_reorg_candidates(monero::Network::Mainnet, 2, 2_001)
+        .collect_reorg_candidates(monero::Network::Mainnet, 2, UnixTime::from_secs(2_001))
         .unwrap()
         != ReorgPhase::Process
     {}
@@ -1675,10 +1767,15 @@ fn voided_payments_are_paged_from_a_cutoff_on_their_own_network() {
     let recent = pay(&store, &order, "tx_recent", Some(50));
     pay(&store, &order, "tx_never_voided", Some(50));
     store
-        .void_payment(&order_id(&order), "tx_old", 0, 1_000)
+        .void_payment(&order_id(&order), "tx_old", 0, UnixTime::from_secs(1_000))
         .unwrap();
     store
-        .void_payment(&order_id(&order), "tx_recent", 0, 5_000)
+        .void_payment(
+            &order_id(&order),
+            "tx_recent",
+            0,
+            UnixTime::from_secs(5_000),
+        )
         .unwrap();
     let page = |network, cutoff: i64, after: i64, limit: usize| {
         store

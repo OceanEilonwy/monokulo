@@ -1495,10 +1495,11 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
         ..AppState::for_tests()
     };
     let db = state.db.clone();
+    let now = state.clock.now();
     let router = build_router(state);
     let raw_token = credentials::auth::generate_invite_token();
     db.lock()
-        .create_invite_link("link-1", &raw_token.hash(), None, None, crate::now_unix())
+        .create_invite_link("link-1", &raw_token.hash(), None, None, now)
         .unwrap();
 
     let first = router
@@ -1805,7 +1806,7 @@ fn state_with_owner_and_store(
             "owner@example.com",
             "x",
             false,
-            1,
+            clock::UnixTime::from_secs(1),
         )
         .unwrap();
         db.create_user(
@@ -1813,7 +1814,7 @@ fn state_with_owner_and_store(
             "other@example.com",
             "x",
             false,
-            1,
+            clock::UnixTime::from_secs(1),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(
@@ -2007,7 +2008,8 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
         .unwrap();
     assert_eq!(script.status(), StatusCode::OK);
 
-    let chrome = crate::views::PageChrome::from_user(None, "/");
+    // Only the chrome's frame is rendered: no time on the page is compared.
+    let chrome = crate::views::PageChrome::from_user(None, "/", clock::Clock::System.now());
     let page = crate::views::Page::new("t", ui::PageHeader::new("t"))
         .render(&chrome, maud::html! {})
         .into_string();
@@ -2056,7 +2058,7 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
             "owner@example.com",
             "x",
             false,
-            1,
+            clock::UnixTime::from_secs(1),
         )
         .unwrap();
         let encrypted = crate::crypto::encrypt(
@@ -2117,13 +2119,13 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
         db.create_session(
             &credentials::auth::RawToken::presented("owner-token").hash(),
             &engine_protocol::ids::UserId::new("u_owner"),
-            crate::now_unix(),
+            state.clock.now(),
         )
         .unwrap();
         db.create_session(
             &credentials::auth::RawToken::presented("other-token").hash(),
             &engine_protocol::ids::UserId::new("u_other"),
-            crate::now_unix(),
+            state.clock.now(),
         )
         .unwrap();
     }

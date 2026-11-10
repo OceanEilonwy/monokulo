@@ -19,7 +19,7 @@ use crate::db::{AppOrder, LoggedEvent};
 use pricing::xmr_amount::Piconero;
 
 /// How long a connect code can be redeemed after the dashboard showed it.
-pub const CONNECT_TOKEN_TTL_SECONDS: i64 = 10 * 60;
+pub const CONNECT_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Events a slow stream may fall behind by before it skips ahead (and
 /// says so, `lagged`).

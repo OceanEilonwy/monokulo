@@ -22,27 +22,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use clock::UnixTime;
 use credentials::webhook_sign::sign_payload;
 
 use crate::db::{Attempt, AttemptOutcome, Database, DbError, DueDelivery};
 use crate::outbound::{request_error_text, Outbound};
 use crate::settings::WebhookConfig;
 use outbound::{check_host, Reach};
-
-/// What the worker tells the time by: the system's clock, or a test's.
-pub trait Clock: Send + Sync {
-    /// Seconds since the Unix epoch.
-    fn now(&self) -> i64;
-}
-
-/// The system's clock.
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> i64 {
-        crate::now_unix()
-    }
-}
 
 /// Most deliveries picked per batch, and most sent at once.
 pub const DELIVERY_BATCH: u32 = 50;
@@ -57,8 +43,8 @@ pub const RESPONSE_EXCERPT_BYTES: usize = 512;
 
 /// The wait after a failed attempt, `attempts_made` counting it: 1 minute
 /// after the first, doubling up to 64 minutes.
-pub fn backoff_seconds(attempts_made: u32) -> i64 {
-    60 * (1i64 << attempts_made.saturating_sub(1).min(6))
+pub fn backoff(attempts_made: u32) -> Duration {
+    Duration::from_secs(60 * (1u64 << attempts_made.saturating_sub(1).min(6)))
 }
 
 /// The HTTP clients deliveries are sent with (`crate::outbound`), and
@@ -124,10 +110,10 @@ pub async fn attempt_delivery(
     delivery: &DueDelivery,
     secret: &str,
     timeout: Duration,
-    now: i64,
+    now: UnixTime,
 ) -> AttemptResult {
-    let signature = sign_payload(secret, now, delivery.body.as_bytes());
-    let started = std::time::Instant::now();
+    let signature = sign_payload(secret, now.as_secs(), delivery.body.as_bytes());
+    let started = tokio::time::Instant::now();
     let sent =
         tokio::time::timeout(timeout, send(client, delivery, signature.clone(), timeout)).await;
     let duration = started.elapsed();
@@ -230,7 +216,7 @@ pub async fn run_delivery_tick(
     client: &WebhookClient,
     key: &crate::crypto::AtRestKey,
     config: &WebhookConfig,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
 ) -> Result<usize, DbError> {
     use futures_util::stream::{self, StreamExt as _};
 
@@ -276,7 +262,7 @@ pub async fn run_delivery_tick(
                     let at = clock.now();
                     let result = attempt_delivery(client, &delivery, &secret, timeout, at).await;
                     log_attempt(&delivery, &result, max_attempts);
-                    (delivery, Some((result, at)))
+                    (delivery, Some((result, at.as_secs())))
                 },
                 span,
             )
@@ -310,7 +296,7 @@ pub async fn run_delivery_tick(
                     // Timed from when the attempt was made, not from the
                     // start of a slow batch.
                     next_attempt_at: (made < max_attempts)
-                        .then(|| clock.now().saturating_add(backoff_seconds(made))),
+                        .then(|| clock.now().saturating_add(backoff(made)).as_secs()),
                 };
                 db.write(move |db| db.record_delivery_attempt(id, &outcome))
                     .await
@@ -333,10 +319,10 @@ pub async fn run_delivery_tick(
 pub async fn prune_deliveries(
     db: &Database,
     config: &WebhookConfig,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Result<(u64, u64), DbError> {
-    let delivered_before = now.saturating_sub(config.keep_delivered_secs);
-    let gave_up_before = now.saturating_sub(config.keep_given_up_secs);
+    let delivered_before = now.saturating_sub(config.keep_delivered).as_secs();
+    let gave_up_before = now.saturating_sub(config.keep_given_up).as_secs();
     let (delivered, gave_up) = db
         .write(move |db| db.prune_deliveries(delivered_before, gave_up_before))
         .await?;
@@ -389,6 +375,7 @@ pub async fn run_delivery_loop(
     key: crate::crypto::AtRestKey,
     settings: Arc<crate::settings::MonokuloSettings>,
     webhooks: Arc<super::Webhooks>,
+    clock: clock::Clock,
 ) {
     let client = loop {
         match webhooks.client().await {
@@ -405,11 +392,11 @@ pub async fn run_delivery_loop(
         let config = settings.webhooks.load();
         if pruned_at.is_none_or(|at| at.elapsed() >= PRUNE_EVERY) {
             pruned_at = Some(tokio::time::Instant::now());
-            if let Err(e) = prune_deliveries(&db, &config, crate::now_unix()).await {
+            if let Err(e) = prune_deliveries(&db, &config, clock.now()).await {
                 tracing::warn!(error = %e, "old webhook deliveries could not be deleted");
             }
         }
-        let picked = match run_delivery_tick(&db, &client, &key, &config, &SystemClock).await {
+        let picked = match run_delivery_tick(&db, &client, &key, &config, &clock).await {
             Ok(picked) => picked,
             Err(e) => {
                 tracing::warn!(error = %e, "a webhook delivery batch failed");
@@ -431,7 +418,7 @@ mod tests {
     /// doubling to 64 minutes, and no further.
     #[test]
     fn the_wait_doubles_from_a_minute_to_64_minutes() {
-        let minutes: Vec<i64> = (1..=9).map(|made| backoff_seconds(made) / 60).collect();
+        let minutes: Vec<u64> = (1..=9).map(|made| backoff(made).as_secs() / 60).collect();
         assert_eq!(minutes, vec![1, 2, 4, 8, 16, 32, 64, 64, 64]);
     }
 

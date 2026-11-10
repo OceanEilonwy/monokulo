@@ -21,7 +21,9 @@ use crate::views::checkout_layouts::Layout;
 
 mod apps;
 mod checkout_pages;
-pub use checkout_pages::{CheckoutPageDraft, CustomPageListing, PublishedCheckoutPage, DRAFT_SECS};
+pub use checkout_pages::{
+    CheckoutPageDraft, CustomPageListing, PublishedCheckoutPage, DRAFT_LIFETIME,
+};
 mod order_changes;
 mod order_requests;
 mod push;
@@ -313,12 +315,12 @@ pub struct Db {
 /// How long a session is good for after it was made: 30 days. A session
 /// that never expired would stay usable from a lost device, or a leaked
 /// cookie, for as long as the row existed.
-pub const SESSION_LIFETIME_SECONDS: i64 = 30 * 24 * 60 * 60;
+pub const SESSION_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 
 /// How long an invite link can be redeemed after it was made: 14 days. A
 /// link that never expired would stay good for an account for as long as
 /// the row existed, in an inbox or an unactioned request's row.
-pub const INVITE_LIFETIME_SECONDS: i64 = 14 * 24 * 60 * 60;
+pub const INVITE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct PosOrderRow {
@@ -482,14 +484,14 @@ impl Db {
         &self,
         connection_id: &ConnectionId,
         order_ids: &[OrderId],
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<()> {
         let mut stmt = self.conn.prepare(
             "UPDATE pos_orders SET closed_at_utc = ?3
              WHERE connection_id = ?1 AND order_id = ?2 AND closed_at_utc IS NULL",
         )?;
         for order_id in order_ids {
-            stmt.execute(params![connection_id, order_id, now])?;
+            stmt.execute(params![connection_id, order_id, now.as_secs()])?;
         }
         Ok(())
     }
@@ -800,7 +802,7 @@ pub enum AddDomainRefused {
 
 impl StoreDomainRow {
     /// Where this domain stands at `now`.
-    pub fn state(&self, now: i64) -> domain_proof::DomainState {
+    pub fn state(&self, now: clock::UnixTime) -> domain_proof::DomainState {
         domain_proof::DomainState::of(self.verified_at, self.failing_since, now)
     }
 }
@@ -893,7 +895,7 @@ pub struct NewStoreIntegration<'a> {
     pub version: &'a str,
     pub webhook_id: Option<&'a str>,
     pub webhook_url: Option<&'a str>,
-    pub at: i64,
+    pub at: clock::UnixTime,
 }
 
 /// A row from `store_connections`. `tenant_secret_token_encrypted` holds the
@@ -1267,11 +1269,11 @@ impl Db {
         email: &str,
         password_hash: &str,
         is_admin: bool,
-        created_at: i64,
+        created_at: clock::UnixTime,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO users (id, email, password_hash, is_admin, created_at_utc) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, email, password_hash, is_admin, created_at],
+            params![id, email, password_hash, is_admin, created_at.as_secs()],
         )?;
         Ok(())
     }
@@ -1491,7 +1493,7 @@ impl Db {
             TEST_ADMIN_EMAIL,
             TEST_ADMIN_PASSWORD_HASH,
             true,
-            0,
+            clock::UnixTime::EPOCH,
         )
         .expect("seeding the test admin account");
         self.set_setting("setup_complete", "true")
@@ -1505,33 +1507,33 @@ impl Db {
         &self,
         token_hash: &credentials::auth::TokenHash,
         user_id: &UserId,
-        created_at: i64,
+        now: clock::UnixTime,
     ) -> Result<()> {
         // Sessions that expired are dropped as new ones are made, so the
         // table doesn't hold every session ever made.
         self.conn.execute(
             "DELETE FROM sessions WHERE created_at_utc < ?1",
-            params![created_at.saturating_sub(SESSION_LIFETIME_SECONDS)],
+            params![now.saturating_sub(SESSION_LIFETIME).as_secs()],
         )?;
         self.conn.execute(
             "INSERT INTO sessions (token, user_id, created_at_utc) VALUES (?1, ?2, ?3)",
-            params![token_hash, user_id, created_at],
+            params![token_hash, user_id, now.as_secs()],
         )?;
         Ok(())
     }
 
     /// Looks up a session by its hashed token. `None` for an unknown,
     /// already-deleted or expired session (one made more than
-    /// [`SESSION_LIFETIME_SECONDS`] before `now`) - callers (the
+    /// [`SESSION_LIFETIME`] before `now`) - callers (the
     /// `AuthedUser` extractor) map that to 401, same as an unknown tenant
     /// secret in the engine's own `AuthedTenant`. A read: expired rows are
     /// removed by [`Db::create_session`], a write.
     pub fn find_session(
         &self,
         token_hash: &credentials::auth::TokenHash,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<Option<SessionRow>> {
-        let oldest_live = now.saturating_sub(SESSION_LIFETIME_SECONDS);
+        let oldest_live = now.saturating_sub(SESSION_LIFETIME).as_secs();
         self.conn
             .query_row(
                 "SELECT token, user_id, created_at_utc FROM sessions WHERE token = ?1 AND created_at_utc >= ?2",
@@ -1582,7 +1584,7 @@ impl Db {
         tenant_public_key: &str,
         tenant_secret_token_encrypted: &str,
         secret_key_hash: &TokenHash,
-        created_at: i64,
+        created_at: clock::UnixTime,
         base_currency: &str,
         wallet_id: &WalletId,
     ) -> Result<()> {
@@ -1606,18 +1608,18 @@ impl Db {
                 tenant_public_key,
                 tenant_secret_token_encrypted,
                 secret_key_hash,
-                created_at,
+                created_at.as_secs(),
                 base_currency,
                 wallet_id,
             ],
         )?;
         tx.execute(
             "INSERT INTO wallet_events (wallet_id, at_utc, kind, detail) VALUES (?1, ?2, 'store_connected', ?3)",
-            params![wallet_id, created_at, id],
+            params![wallet_id, created_at.as_secs(), id],
         )?;
         tx.execute(
             "INSERT INTO store_wallet_periods (connection_id, wallet_id, from_utc) VALUES (?1, ?2, ?3)",
-            params![id, wallet_id, created_at],
+            params![id, wallet_id, created_at.as_secs()],
         )?;
         tx.commit()?;
         Ok(())
@@ -1709,7 +1711,7 @@ impl Db {
         tx.execute(
             "UPDATE store_integrations SET disconnected_at_utc = ?2
              WHERE store_id = ?1 AND disconnected_at_utc IS NULL",
-            params![new.store_id, new.at],
+            params![new.store_id, new.at.as_secs()],
         )?;
         tx.execute(
             "INSERT INTO store_integrations
@@ -1723,7 +1725,7 @@ impl Db {
                 new.version,
                 new.webhook_id,
                 new.webhook_url,
-                new.at,
+                new.at.as_secs(),
                 new.plugin.name().map_or("", PluginName::as_str)
             ],
         )?;
@@ -1795,13 +1797,13 @@ impl Db {
         store_id: &ConnectionId,
         kind: &str,
         version: &str,
-        at: i64,
+        at: clock::UnixTime,
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE store_integrations
              SET last_seen_at_utc = ?4, version = CASE WHEN ?3 = '' THEN version ELSE ?3 END
              WHERE store_id = ?1 AND kind = ?2 AND disconnected_at_utc IS NULL",
-            params![store_id, kind, version, at],
+            params![store_id, kind, version, at.as_secs()],
         )?;
         Ok(())
     }
@@ -1819,7 +1821,7 @@ impl Db {
         id: &str,
         tenant_secret_token_encrypted: &str,
         secret_key_hash: &TokenHash,
-        at: i64,
+        at: clock::UnixTime,
     ) -> Result<bool> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
@@ -1838,7 +1840,7 @@ impl Db {
         let changed = tx.execute(
             "UPDATE store_integrations SET disconnected_at_utc = ?3
              WHERE id = ?2 AND store_id = ?1 AND disconnected_at_utc IS NULL",
-            params![store_id, id, at],
+            params![store_id, id, at.as_secs()],
         )?;
         tx.commit()?;
         Ok(changed == 1)
@@ -2075,7 +2077,7 @@ impl Db {
         user_id: &UserId,
         id: &WalletId,
         name: &str,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<bool> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
@@ -2100,7 +2102,7 @@ impl Db {
         )?;
         tx.execute(
             "INSERT INTO wallet_events (wallet_id, at_utc, kind, detail) VALUES (?1, ?2, 'renamed', ?3)",
-            params![id, now, old],
+            params![id, now.as_secs(), old],
         )?;
         tx.commit()?;
         Ok(true)
@@ -2133,7 +2135,12 @@ impl Db {
     /// Records that one of `user_id`'s wallets was retired at `at` (the
     /// engine deleted its keys then). `false` if it isn't theirs, is
     /// already retired, or a store still uses it.
-    pub fn retire_wallet(&self, user_id: &UserId, id: &WalletId, at: i64) -> Result<bool> {
+    pub fn retire_wallet(
+        &self,
+        user_id: &UserId,
+        id: &WalletId,
+        at: clock::UnixTime,
+    ) -> Result<bool> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
@@ -2142,12 +2149,12 @@ impl Db {
             "UPDATE wallets SET retired_at_utc = ?3
              WHERE id = ?1 AND user_id = ?2 AND retired_at_utc IS NULL
                AND NOT EXISTS (SELECT 1 FROM store_connections s WHERE s.wallet_id = ?1)",
-            params![id, user_id, at],
+            params![id, user_id, at.as_secs()],
         )?;
         if changed > 0 {
             tx.execute(
                 "INSERT INTO wallet_events (wallet_id, at_utc, kind) VALUES (?1, ?2, 'retired')",
-                params![id, at],
+                params![id, at.as_secs()],
             )?;
         }
         tx.commit()?;
@@ -2156,7 +2163,12 @@ impl Db {
 
     /// Brings back one of `user_id`'s retired wallets (the engine has its
     /// keys again).
-    pub fn restore_wallet(&self, user_id: &UserId, id: &WalletId, now: i64) -> Result<bool> {
+    pub fn restore_wallet(
+        &self,
+        user_id: &UserId,
+        id: &WalletId,
+        now: clock::UnixTime,
+    ) -> Result<bool> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
@@ -2169,7 +2181,7 @@ impl Db {
         if changed > 0 {
             tx.execute(
                 "INSERT INTO wallet_events (wallet_id, at_utc, kind) VALUES (?1, ?2, 'restored')",
-                params![id, now],
+                params![id, now.as_secs()],
             )?;
         }
         tx.commit()?;
@@ -2200,7 +2212,7 @@ impl Db {
         &self,
         connection_id: &ConnectionId,
         wallet_id: &WalletId,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<()> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
@@ -2213,7 +2225,7 @@ impl Db {
         if changed > 0 {
             tx.execute(
                 "INSERT INTO wallet_events (wallet_id, at_utc, kind, detail) VALUES (?1, ?2, 'store_connected', ?3)",
-                params![wallet_id, now, connection_id],
+                params![wallet_id, now.as_secs(), connection_id],
             )?;
             // It has used the wallet since it was connected.
             tx.execute(
@@ -2233,7 +2245,7 @@ impl Db {
         &self,
         connection_id: &ConnectionId,
         wallet_id: &WalletId,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<ChangeStoreWallet> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
@@ -2253,21 +2265,21 @@ impl Db {
         )?;
         tx.execute(
             "UPDATE store_wallet_periods SET until_utc = ?2 WHERE connection_id = ?1 AND until_utc IS NULL",
-            params![connection_id, now],
+            params![connection_id, now.as_secs()],
         )?;
         tx.execute(
             "INSERT INTO store_wallet_periods (connection_id, wallet_id, from_utc) VALUES (?1, ?2, ?3)",
-            params![connection_id, wallet_id, now],
+            params![connection_id, wallet_id, now.as_secs()],
         )?;
         if let Some(old) = &old {
             tx.execute(
                 "INSERT INTO wallet_events (wallet_id, at_utc, kind, detail) VALUES (?1, ?2, 'store_changed_away', ?3)",
-                params![old, now, connection_id],
+                params![old, now.as_secs(), connection_id],
             )?;
         }
         tx.execute(
             "INSERT INTO wallet_events (wallet_id, at_utc, kind, detail) VALUES (?1, ?2, 'store_changed_to', ?3)",
-            params![wallet_id, now, connection_id],
+            params![wallet_id, now.as_secs(), connection_id],
         )?;
         tx.commit()?;
         Ok(ChangeStoreWallet::Changed)
@@ -2495,17 +2507,19 @@ impl Db {
         token_hash: &credentials::auth::TokenHash,
         connection_id: &ConnectionId,
         nonce: &str,
-        created_at: i64,
+        now: clock::UnixTime,
     ) -> Result<()> {
         // Tokens a day old are long past any use (they live minutes):
         // dropped as new ones are made, so the table doesn't grow forever.
         self.conn.execute(
             "DELETE FROM connect_tokens WHERE created_at_utc < ?1",
-            params![created_at.saturating_sub(24 * 60 * 60)],
+            params![now
+                .saturating_sub(std::time::Duration::from_secs(24 * 60 * 60))
+                .as_secs()],
         )?;
         self.conn.execute(
             "INSERT INTO connect_tokens (token_hash, connection_id, nonce, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
-            params![token_hash, connection_id, nonce, created_at],
+            params![token_hash, connection_id, nonce, now.as_secs()],
         )?;
         Ok(())
     }
@@ -2517,7 +2531,7 @@ impl Db {
     /// boolean return already uses), is the one database write that can
     /// never let two concurrent `/finish` calls for the same token both
     /// succeed - a naive "SELECT to check, then UPDATE" would race between
-    /// the check and the write. `cutoff` (`now - ttl_seconds`) folds the TTL
+    /// the check and the write. `cutoff` (`now` less `ttl`) folds the TTL
     /// check into that same atomic statement, so an expired token is
     /// rejected exactly like an already-consumed one - not a separate check
     /// that could itself race against a concurrent consume.
@@ -2530,13 +2544,13 @@ impl Db {
     pub fn consume_connect_token(
         &self,
         token_hash: &credentials::auth::TokenHash,
-        now: i64,
-        ttl_seconds: i64,
+        now: clock::UnixTime,
+        ttl: std::time::Duration,
     ) -> Result<Option<ConnectionId>> {
-        let cutoff = now - ttl_seconds;
+        let cutoff = now.saturating_sub(ttl).as_secs();
         let affected = self.conn.execute(
             "UPDATE connect_tokens SET consumed_at_utc = ?1 WHERE token_hash = ?2 AND consumed_at_utc IS NULL AND created_at_utc >= ?3",
-            params![now, token_hash, cutoff],
+            params![now.as_secs(), token_hash, cutoff],
         )?;
         if affected == 0 {
             return Ok(None);
@@ -2669,7 +2683,7 @@ impl Db {
         connection_id: &ConnectionId,
         domain: &str,
         token: &str,
-        created_at: i64,
+        created_at: clock::UnixTime,
         replaces: Option<&str>,
     ) -> Result<std::result::Result<(), AddDomainRefused>> {
         let existing = self.list_store_domains(connection_id)?;
@@ -2702,7 +2716,7 @@ impl Db {
         self.conn.execute(
             "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc, replaces_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, connection_id, domain, token, created_at, replaces],
+            params![id, connection_id, domain, token, created_at.as_secs(), replaces],
         )?;
         Ok(Ok(()))
     }
@@ -2732,14 +2746,21 @@ impl Db {
         user_id: &UserId,
         name: &str,
         query_string: &str,
-        now: i64,
+        now: clock::UnixTime,
         max: usize,
     ) -> Result<bool> {
         let changed = self.conn.execute(
             "INSERT INTO saved_log_searches (id, user_id, name, query_string, created_at_utc)
              SELECT ?1, ?2, ?3, ?4, ?5
              WHERE (SELECT COUNT(*) FROM saved_log_searches WHERE user_id = ?2) < ?6",
-            params![id, user_id, name, query_string, now, Unsigned(max)],
+            params![
+                id,
+                user_id,
+                name,
+                query_string,
+                now.as_secs(),
+                Unsigned(max)
+            ],
         )?;
         Ok(changed == 1)
     }
@@ -2776,7 +2797,7 @@ impl Db {
         &self,
         id: &ConnectionId,
         style: &crate::views::checkout_style::CheckoutStyle,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         let stored = serde_json::to_string(style).expect("a style is plain data");
@@ -2795,7 +2816,7 @@ impl Db {
     /// Writes each store's stylesheet again, from its colours: at each start, as a
     /// release that changes what they're written as changes the hash its pages ask
     /// for. Returns how many it wrote.
-    pub fn refresh_checkout_stylesheets(&self, now: i64) -> Result<usize> {
+    pub fn refresh_checkout_stylesheets(&self, now: clock::UnixTime) -> Result<usize> {
         let rows: Vec<(ConnectionId, String)> = self
             .conn
             .prepare(
@@ -2813,7 +2834,7 @@ impl Db {
                     "INSERT INTO checkout_stylesheets (hash, connection_id, css, created_at_utc)
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT (hash, connection_id) DO UPDATE SET created_at_utc = excluded.created_at_utc",
-                    params![crate::views::checkout_style::stylesheet_hash(&css), id, css, now],
+                    params![crate::views::checkout_style::stylesheet_hash(&css), id, css, now.as_secs()],
                 )?;
                 written += 1;
             }
@@ -2851,7 +2872,7 @@ impl Db {
     pub fn record_store_domain_check(
         &self,
         id: &str,
-        checked_at: i64,
+        checked_at: clock::UnixTime,
         error: Option<&str>,
     ) -> Result<()> {
         match error {
@@ -2865,7 +2886,7 @@ impl Db {
                 let changed = tx.execute(
                     "UPDATE store_domains SET verified_at_utc = ?2, failing_since_utc = NULL, last_checked_at_utc = ?2, last_error = NULL, replaces_id = NULL
                      WHERE id = ?1",
-                    params![id, checked_at],
+                    params![id, checked_at.as_secs()],
                 )?;
                 tx.commit()?;
                 changed
@@ -2874,7 +2895,7 @@ impl Db {
                 "UPDATE store_domains SET last_checked_at_utc = ?2, last_error = ?3,
                     failing_since_utc = CASE WHEN verified_at_utc IS NULL THEN NULL ELSE COALESCE(failing_since_utc, ?2) END
                  WHERE id = ?1",
-                params![id, checked_at, error],
+                params![id, checked_at.as_secs(), error],
             )?,
         };
         Ok(())
@@ -2887,12 +2908,12 @@ impl Db {
     pub fn record_store_domain_unanswered(
         &self,
         id: &str,
-        checked_at: i64,
+        checked_at: clock::UnixTime,
         error: &str,
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE store_domains SET last_checked_at_utc = ?2, last_error = ?3 WHERE id = ?1",
-            params![id, checked_at, error],
+            params![id, checked_at.as_secs(), error],
         )?;
         Ok(())
     }
@@ -2903,20 +2924,23 @@ impl Db {
     /// the merchant asks.
     pub fn list_store_domains_due_for_recheck(
         &self,
-        now: i64,
-        every_secs: i64,
-        failing_every_secs: i64,
+        now: clock::UnixTime,
+        every: std::time::Duration,
+        failing_every: std::time::Duration,
     ) -> Result<Vec<StoreDomainRow>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {STORE_DOMAIN_COLUMNS} FROM store_domains
              WHERE verified_at_utc IS NOT NULL
                AND (last_checked_at_utc IS NULL
-                    OR (failing_since_utc IS NULL AND last_error IS NULL AND last_checked_at_utc <= ?1 - ?2)
-                    OR ((failing_since_utc IS NOT NULL OR last_error IS NOT NULL) AND last_checked_at_utc <= ?1 - ?3))
+                    OR (failing_since_utc IS NULL AND last_error IS NULL AND last_checked_at_utc <= ?1)
+                    OR ((failing_since_utc IS NOT NULL OR last_error IS NOT NULL) AND last_checked_at_utc <= ?2))
              ORDER BY last_checked_at_utc"
         ))?;
         let rows = stmt.query_map(
-            params![now, every_secs, failing_every_secs],
+            params![
+                now.saturating_sub(every).as_secs(),
+                now.saturating_sub(failing_every).as_secs()
+            ],
             store_domain_from_row,
         )?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -3117,7 +3141,7 @@ impl Db {
         _proof: crate::confirmation_thresholds::PolicyProof,
         connection_id: &ConnectionId,
         deleted_ids: &[String],
-        new: Option<(&str, &str, u64, i64)>,
+        new: Option<(&str, &str, u64, clock::UnixTime)>,
     ) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         for id in deleted_ids {
@@ -3136,7 +3160,7 @@ impl Db {
                     connection_id,
                     unit_amount,
                     Unsigned(confirmations_required),
-                    created_at,
+                    created_at.as_secs(),
                     crate::confirmation_thresholds::MAX_CUSTOM_THRESHOLDS
                 ],
             )?;
@@ -3172,11 +3196,11 @@ impl Db {
         id: &str,
         email: &str,
         message: &str,
-        created_at: i64,
+        created_at: clock::UnixTime,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO invite_requests (id, email, message, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
-            params![id, email, message, created_at],
+            params![id, email, message, created_at.as_secs()],
         )?;
         Ok(())
     }
@@ -3259,11 +3283,11 @@ impl Db {
     /// behind it; nothing to revoke, and the request itself would already
     /// have been auto-actioned by [`Db::redeem_invite_and_create_user`], so
     /// this path shouldn't normally even be reached for one).
-    pub fn delete_invite_request(&self, id: &str, now: i64) -> Result<()> {
+    pub fn delete_invite_request(&self, id: &str, now: clock::UnixTime) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?2 WHERE id = ?1",
-            params![id, now],
+            params![id, now.as_secs()],
         )?;
         tx.execute(
             "DELETE FROM invite_links WHERE request_id = ?1 AND used_at_utc IS NULL",
@@ -3279,11 +3303,11 @@ impl Db {
     /// applied to the whole set at once rather than row by row. Returns how
     /// many requests were actually cleared, for the page's own confirmation
     /// banner.
-    pub fn delete_all_unactioned_invite_requests(&self, now: i64) -> Result<usize> {
+    pub fn delete_all_unactioned_invite_requests(&self, now: clock::UnixTime) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
         let cleared = tx.execute(
             "UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?1 WHERE actioned = 0",
-            params![now],
+            params![now.as_secs()],
         )?;
         tx.execute(
             "DELETE FROM invite_links WHERE used_at_utc IS NULL AND request_id IN (SELECT id FROM invite_requests WHERE actioned = 1)",
@@ -3303,11 +3327,11 @@ impl Db {
         token_hash: &credentials::auth::TokenHash,
         token_encrypted: Option<&str>,
         request_id: Option<&str>,
-        created_at: i64,
+        created_at: clock::UnixTime,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO invite_links (id, token_hash, token_encrypted, request_id, created_at_utc) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, token_hash, token_encrypted, request_id, created_at],
+            params![id, token_hash, token_encrypted, request_id, created_at.as_secs()],
         )?;
         Ok(())
     }
@@ -3315,7 +3339,7 @@ impl Db {
     /// Redeems a presented invite token and creates the account it grants,
     /// in one transaction: the token is claimed (a single `UPDATE ... WHERE
     /// used_at_utc IS NULL`, checked by its affected-row count, so an
-    /// invalid, already-used or expired ([`INVITE_LIFETIME_SECONDS`]) token
+    /// invalid, already-used or expired ([`INVITE_LIFETIME`]) token
     /// can never result in a free account),
     /// the account is created, and the originating request is cleared, or
     /// none of it is. An account that can't be created (the email is
@@ -3327,7 +3351,7 @@ impl Db {
         user_id: &UserId,
         email: &str,
         password_hash: &str,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<RedeemInviteResult> {
         let tx = self.conn.unchecked_transaction()?;
         // `used_at_utc` first (not yet `used_by_user_id`, which has a real
@@ -3335,14 +3359,14 @@ impl Db {
         // filled in once `user_id` exists as a row).
         let claimed = tx.execute(
             "UPDATE invite_links SET used_at_utc = ?2 WHERE token_hash = ?1 AND used_at_utc IS NULL AND created_at_utc >= ?3",
-            params![token_hash, now, now.saturating_sub(INVITE_LIFETIME_SECONDS)],
+            params![token_hash, now.as_secs(), now.saturating_sub(INVITE_LIFETIME).as_secs()],
         )?;
         if claimed == 0 {
             return Ok(RedeemInviteResult::InvalidOrAlreadyUsed);
         }
         let created = tx.execute(
             "INSERT INTO users (id, email, password_hash, is_admin, created_at_utc) VALUES (?1, ?2, ?3, 0, ?4)",
-            params![user_id, email, password_hash, now],
+            params![user_id, email, password_hash, now.as_secs()],
         );
         if let Err(e) = created {
             let e = DbError::from(e);
@@ -3362,7 +3386,7 @@ impl Db {
         tx.execute(
             "UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?2
              WHERE actioned = 0 AND id = (SELECT request_id FROM invite_links WHERE token_hash = ?1)",
-            params![token_hash, now],
+            params![token_hash, now.as_secs()],
         )?;
         tx.commit()?;
         Ok(RedeemInviteResult::Created)
@@ -3378,7 +3402,7 @@ impl Db {
         id: &UserId,
         email: &str,
         password_hash: &str,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         let complete: Option<String> = tx
@@ -3393,7 +3417,7 @@ impl Db {
         }
         tx.execute(
             "INSERT INTO users (id, email, password_hash, is_admin, created_at_utc) VALUES (?1, ?2, ?3, 1, ?4)",
-            params![id, email, password_hash, now],
+            params![id, email, password_hash, now.as_secs()],
         )?;
         tx.execute(
             "INSERT INTO settings (key, value) VALUES ('setup_complete', 'true')
@@ -3446,7 +3470,7 @@ pub(crate) mod test_rows {
             // A key of its own: a test that uses the store's key sets the
             // hash of the one it uses.
             &credentials::auth::RawToken::presented(&format!("sk_of_{}", id.as_str())).hash(),
-            created_at,
+            clock::UnixTime::from_secs(created_at),
             base_currency,
             &wallet,
         )
@@ -3529,7 +3553,7 @@ mod tests {
             "merchant@example.com",
             "hash",
             false,
-            1,
+            clock::UnixTime::from_secs(1),
         )
         .unwrap();
         for (id, pk) in [("store-a", "pk_a"), ("store-b", "pk_b")] {
@@ -3676,7 +3700,7 @@ mod tests {
             "merchant@example.com",
             "hash",
             false,
-            1,
+            clock::UnixTime::from_secs(1),
         )
         .unwrap();
         let store = ConnectionId::new("store");
@@ -3834,7 +3858,7 @@ mod tests {
             "a@example.com",
             "hash1",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
 
@@ -3844,7 +3868,7 @@ mod tests {
                 "a@example.com",
                 "hash2",
                 false,
-                2000,
+                clock::UnixTime::from_secs(2000),
             )
             .unwrap_err();
         assert!(
@@ -3874,7 +3898,10 @@ mod tests {
         // error.
         {
             let db = Db::open_in_memory().unwrap();
-            assert!(db.find_session(&th("nonexistent"), 1000).unwrap().is_none());
+            assert!(db
+                .find_session(&th("nonexistent"), clock::UnixTime::from_secs(1000))
+                .unwrap()
+                .is_none());
         }
 
         // Looking up an unknown store connection id returns none rather than an
@@ -3909,17 +3936,20 @@ mod tests {
             "a@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         db.create_session(
             &th("hashed-token"),
             &engine_protocol::ids::UserId::new("user-1"),
-            2000,
+            clock::UnixTime::from_secs(2000),
         )
         .unwrap();
 
-        let session = db.find_session(&th("hashed-token"), 1000).unwrap().unwrap();
+        let session = db
+            .find_session(&th("hashed-token"), clock::UnixTime::from_secs(1000))
+            .unwrap()
+            .unwrap();
         assert_eq!(session.token_hash, th("hashed-token"));
         assert_eq!(session.user_id, engine_protocol::ids::UserId::new("user-1"));
         assert_eq!(session.created_at, 2000);
@@ -3936,19 +3966,19 @@ mod tests {
             "a@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         db.create_session(
             &th("hashed-token"),
             &engine_protocol::ids::UserId::new("user-1"),
-            2000,
+            clock::UnixTime::from_secs(2000),
         )
         .unwrap();
 
         assert!(db.delete_session(&th("hashed-token")).unwrap());
         assert!(db
-            .find_session(&th("hashed-token"), 1000)
+            .find_session(&th("hashed-token"), clock::UnixTime::from_secs(1000))
             .unwrap()
             .is_none());
         assert!(!db.delete_session(&th("hashed-token")).unwrap());
@@ -3962,7 +3992,7 @@ mod tests {
             "a@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(
@@ -4004,7 +4034,7 @@ mod tests {
                 "b@example.com",
                 "hash",
                 false,
-                1000,
+                clock::UnixTime::from_secs(1000),
             )
             .unwrap();
             crate::db::test_rows::store_on_wallet(
@@ -4035,7 +4065,7 @@ mod tests {
                 "a@example.com",
                 "hash",
                 false,
-                1000,
+                clock::UnixTime::from_secs(1000),
             )
             .unwrap();
 
@@ -4058,7 +4088,7 @@ mod tests {
                 "admin@example.com",
                 "hash",
                 true,
-                1000,
+                clock::UnixTime::from_secs(1000),
             )
             .unwrap();
 
@@ -4125,7 +4155,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some(("thresh-1", "50.00", 20, 1000)),
+                Some(("thresh-1", "50.00", 20, clock::UnixTime::from_secs(1000))),
             )
             .unwrap();
 
@@ -4147,8 +4177,14 @@ mod tests {
             use monero::Network;
             let db = Db::open_in_memory().unwrap();
             let user = engine_protocol::ids::UserId::new("user-w");
-            db.create_user(&user, "w@example.com", "hash", false, 1000)
-                .unwrap();
+            db.create_user(
+                &user,
+                "w@example.com",
+                "hash",
+                false,
+                clock::UnixTime::from_secs(1000),
+            )
+            .unwrap();
             let kinds = [
                 (
                     Network::Mainnet,
@@ -4272,7 +4308,7 @@ mod tests {
             "a@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(
@@ -4319,7 +4355,7 @@ mod tests {
             "a@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(
@@ -4391,7 +4427,7 @@ mod tests {
             "a@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         db.create_user(
@@ -4399,7 +4435,7 @@ mod tests {
             "b@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         for (id, user, pk) in [
@@ -4709,7 +4745,7 @@ mod tests {
                 &format!("{user}@example.com"),
                 "hash",
                 false,
-                1000,
+                clock::UnixTime::from_secs(1000),
             )
             .unwrap();
         }
@@ -4758,7 +4794,7 @@ mod tests {
             "cl@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(
@@ -4815,7 +4851,7 @@ mod tests {
             "connect-tokens@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(
@@ -4840,12 +4876,16 @@ mod tests {
             &th("hashed-connect-token"),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             "nonce-1",
-            2000,
+            clock::UnixTime::from_secs(2000),
         )
         .unwrap();
 
         let resolved = db
-            .consume_connect_token(&th("hashed-connect-token"), 2001, 600)
+            .consume_connect_token(
+                &th("hashed-connect-token"),
+                clock::UnixTime::from_secs(2001),
+                std::time::Duration::from_secs(600),
+            )
             .unwrap();
         assert_eq!(
             resolved,
@@ -4865,12 +4905,16 @@ mod tests {
             &th("hashed-connect-token"),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             "nonce-1",
-            2000,
+            clock::UnixTime::from_secs(2000),
         )
         .unwrap();
 
         let first = db
-            .consume_connect_token(&th("hashed-connect-token"), 2001, 600)
+            .consume_connect_token(
+                &th("hashed-connect-token"),
+                clock::UnixTime::from_secs(2001),
+                std::time::Duration::from_secs(600),
+            )
             .unwrap();
         assert_eq!(
             first,
@@ -4881,7 +4925,11 @@ mod tests {
         );
 
         let second = db
-            .consume_connect_token(&th("hashed-connect-token"), 2002, 600)
+            .consume_connect_token(
+                &th("hashed-connect-token"),
+                clock::UnixTime::from_secs(2002),
+                std::time::Duration::from_secs(600),
+            )
             .unwrap();
         assert_eq!(second, None, "a second consume of the same token must fail");
     }
@@ -4894,14 +4942,18 @@ mod tests {
             &th("hashed-connect-token"),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             "nonce-1",
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
 
         // created_at = 1000, ttl = 600 seconds - "now" = 1601 is one second
         // past the token's expiry window.
         let resolved = db
-            .consume_connect_token(&th("hashed-connect-token"), 1601, 600)
+            .consume_connect_token(
+                &th("hashed-connect-token"),
+                clock::UnixTime::from_secs(1601),
+                std::time::Duration::from_secs(600),
+            )
             .unwrap();
         assert_eq!(resolved, None, "expired token must not be consumable");
     }
@@ -4910,8 +4962,12 @@ mod tests {
     fn consuming_an_unknown_connect_token_returns_none() {
         let db = Db::open_in_memory().unwrap();
         assert_eq!(
-            db.consume_connect_token(&th("nonexistent-connect-token"), 2000, 600)
-                .unwrap(),
+            db.consume_connect_token(
+                &th("nonexistent-connect-token"),
+                clock::UnixTime::from_secs(2000),
+                std::time::Duration::from_secs(600)
+            )
+            .unwrap(),
             None
         );
     }
@@ -4930,7 +4986,7 @@ mod tests {
             "a@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         drop(db);
@@ -4984,7 +5040,7 @@ mod tests {
             "other@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(
@@ -5160,7 +5216,12 @@ mod tests {
                             crate::confirmation_thresholds::PolicyProof::for_test(),
                             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                             &[],
-                            Some((&format!("id-{i}"), &i.to_string(), 10, 1000)),
+                            Some((
+                                &format!("id-{i}"),
+                                &i.to_string(),
+                                10,
+                                clock::UnixTime::from_secs(1000),
+                            )),
                         )
                         .unwrap()
                 })
@@ -5193,21 +5254,21 @@ mod tests {
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("original", "50", 20, 1000)),
+            Some(("original", "50", 20, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("taken", "100", 20, 1000)),
+            Some(("taken", "100", 20, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
         let result = db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &["original".to_string()],
-            Some(("taken", "200", 10, 1000)),
+            Some(("taken", "200", 10, clock::UnixTime::from_secs(1000))),
         );
         assert!(result.is_err());
         assert!(db
@@ -5228,7 +5289,12 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some((&format!("id-{i}"), &i.to_string(), 10, 1000)),
+                Some((
+                    &format!("id-{i}"),
+                    &i.to_string(),
+                    10,
+                    clock::UnixTime::from_secs(1000),
+                )),
             )
             .unwrap();
         }
@@ -5237,7 +5303,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some(("sixth", "50", 20, 1000))
+                Some(("sixth", "50", 20, clock::UnixTime::from_secs(1000)))
             )
             .unwrap());
         assert_eq!(
@@ -5253,7 +5319,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &["id-0".to_string()],
-                Some(("replacement", "50", 20, 1000))
+                Some(("replacement", "50", 20, clock::UnixTime::from_secs(1000)))
             )
             .unwrap());
         let rows = db
@@ -5275,21 +5341,21 @@ mod tests {
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("thresh-a", "9", 15, 1000)),
+            Some(("thresh-a", "9", 15, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("thresh-b", "10", 20, 1000)),
+            Some(("thresh-b", "10", 20, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("thresh-c", "2.5", 12, 1000)),
+            Some(("thresh-c", "2.5", 12, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
 
@@ -5310,14 +5376,24 @@ mod tests {
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("upper", "9007.199254740981", 20, 1000)),
+            Some((
+                "upper",
+                "9007.199254740981",
+                20,
+                clock::UnixTime::from_secs(1000),
+            )),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("lower", "9007.199254740980", 10, 1000)),
+            Some((
+                "lower",
+                "9007.199254740980",
+                10,
+                clock::UnixTime::from_secs(1000),
+            )),
         )
         .unwrap();
         let rows = db
@@ -5339,7 +5415,7 @@ mod tests {
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("thresh-1", "50.00", 20, 1000)),
+            Some(("thresh-1", "50.00", 20, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
 
@@ -5348,7 +5424,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some(("thresh-2", "50.00", 5, 1000)),
+                Some(("thresh-2", "50.00", 5, clock::UnixTime::from_secs(1000))),
             )
             .unwrap_err();
         assert!(
@@ -5375,7 +5451,7 @@ mod tests {
             "b@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(
@@ -5394,14 +5470,14 @@ mod tests {
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id_a.to_string()),
             &[],
-            Some(("thresh-1", "50.00", 20, 1000)),
+            Some(("thresh-1", "50.00", 20, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new("conn-b"),
             &[],
-            Some(("thresh-2", "50.00", 5, 1000)),
+            Some(("thresh-2", "50.00", 5, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
 
@@ -5430,7 +5506,7 @@ mod tests {
             "b@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         crate::db::test_rows::store_on_wallet(
@@ -5448,7 +5524,7 @@ mod tests {
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id_a.to_string()),
             &[],
-            Some(("thresh-1", "50.00", 20, 1000)),
+            Some(("thresh-1", "50.00", 20, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
 
@@ -5496,14 +5572,14 @@ mod tests {
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("thresh-1", "50.00", 20, 1000)),
+            Some(("thresh-1", "50.00", 20, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
-            Some(("thresh-2", "100.00", 30, 1000)),
+            Some(("thresh-2", "100.00", 30, clock::UnixTime::from_secs(1000))),
         )
         .unwrap();
 
@@ -5538,8 +5614,13 @@ mod tests {
     fn a_request_invite_submission_creates_a_row_only_the_admin_can_see_and_it_carries_no_link_until_one_is_made(
     ) {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_request("req-1", "hopeful@example.com", "please let me in", 1000)
-            .unwrap();
+        db.create_invite_request(
+            "req-1",
+            "hopeful@example.com",
+            "please let me in",
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
         assert_eq!(db.count_unactioned_invite_requests().unwrap(), 1);
         let rows = db.list_unactioned_invite_requests(10, 0).unwrap();
         assert_eq!(rows.len(), 1);
@@ -5554,14 +5635,19 @@ mod tests {
     #[test]
     fn a_request_linked_invite_link_is_visible_on_the_request_row_once_created() {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_request("req-1", "hopeful@example.com", "please", 1000)
-            .unwrap();
+        db.create_invite_request(
+            "req-1",
+            "hopeful@example.com",
+            "please",
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
         db.create_invite_link(
             "link-1",
             &th("hash-of-token"),
             Some("encrypted-blob"),
             Some("req-1"),
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
 
@@ -5575,12 +5661,24 @@ mod tests {
     #[test]
     fn deleting_a_request_hides_it_and_revokes_its_own_unused_link() {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_request("req-1", "a@example.com", "m", 1000)
-            .unwrap();
-        db.create_invite_link("link-1", &th("hash-1"), Some("enc-1"), Some("req-1"), 1000)
-            .unwrap();
+        db.create_invite_request(
+            "req-1",
+            "a@example.com",
+            "m",
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
+        db.create_invite_link(
+            "link-1",
+            &th("hash-1"),
+            Some("enc-1"),
+            Some("req-1"),
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
 
-        db.delete_invite_request("req-1", 2000).unwrap();
+        db.delete_invite_request("req-1", clock::UnixTime::from_secs(2000))
+            .unwrap();
 
         assert_eq!(
             db.count_unactioned_invite_requests().unwrap(),
@@ -5593,7 +5691,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("u1"),
                 "a@example.com",
                 "hash",
-                3000
+                clock::UnixTime::from_secs(3000)
             )
             .unwrap(),
             RedeemInviteResult::InvalidOrAlreadyUsed,
@@ -5604,10 +5702,21 @@ mod tests {
     #[test]
     fn deleting_a_request_does_not_touch_a_link_that_was_already_used() {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_request("req-1", "a@example.com", "m", 1000)
-            .unwrap();
-        db.create_invite_link("link-1", &th("hash-1"), Some("enc-1"), Some("req-1"), 1000)
-            .unwrap();
+        db.create_invite_request(
+            "req-1",
+            "a@example.com",
+            "m",
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
+        db.create_invite_link(
+            "link-1",
+            &th("hash-1"),
+            Some("enc-1"),
+            Some("req-1"),
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
         // Someone already redeemed it before the admin got around to
         // deleting the (by then auto-actioned) request - a no-op path this
         // handler should still tolerate cleanly.
@@ -5616,11 +5725,12 @@ mod tests {
             &engine_protocol::ids::UserId::new("u1"),
             "a@example.com",
             "hash",
-            1500,
+            clock::UnixTime::from_secs(1500),
         )
         .unwrap();
 
-        db.delete_invite_request("req-1", 2000).unwrap();
+        db.delete_invite_request("req-1", clock::UnixTime::from_secs(2000))
+            .unwrap();
         // The already-created account's own session/lookup path is
         // untouched - deleting the request never un-creates a real user.
         assert!(db.get_user_by_email("a@example.com").unwrap().is_some());
@@ -5630,19 +5740,49 @@ mod tests {
     fn delete_all_clears_every_unactioned_request_and_revokes_every_unused_link_but_leaves_actioned_ones_alone(
     ) {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_request("req-1", "a@example.com", "m", 1000)
-            .unwrap();
-        db.create_invite_link("link-1", &th("hash-1"), Some("enc-1"), Some("req-1"), 1000)
-            .unwrap();
-        db.create_invite_request("req-2", "b@example.com", "m", 1000)
-            .unwrap();
-        db.create_invite_link("link-2", &th("hash-2"), Some("enc-2"), Some("req-2"), 1000)
-            .unwrap();
-        db.create_invite_request("req-3", "c@example.com", "m", 1000)
-            .unwrap();
-        db.delete_invite_request("req-3", 1500).unwrap(); // already actioned before delete-all runs
+        db.create_invite_request(
+            "req-1",
+            "a@example.com",
+            "m",
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
+        db.create_invite_link(
+            "link-1",
+            &th("hash-1"),
+            Some("enc-1"),
+            Some("req-1"),
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
+        db.create_invite_request(
+            "req-2",
+            "b@example.com",
+            "m",
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
+        db.create_invite_link(
+            "link-2",
+            &th("hash-2"),
+            Some("enc-2"),
+            Some("req-2"),
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
+        db.create_invite_request(
+            "req-3",
+            "c@example.com",
+            "m",
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
+        db.delete_invite_request("req-3", clock::UnixTime::from_secs(1500))
+            .unwrap(); // already actioned before delete-all runs
 
-        let cleared = db.delete_all_unactioned_invite_requests(2000).unwrap();
+        let cleared = db
+            .delete_all_unactioned_invite_requests(clock::UnixTime::from_secs(2000))
+            .unwrap();
         assert_eq!(
             cleared, 2,
             "req-3 was already actioned and must not be double-counted"
@@ -5654,7 +5794,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("u1"),
                 "a@example.com",
                 "h",
-                3000
+                clock::UnixTime::from_secs(3000)
             )
             .unwrap(),
             RedeemInviteResult::InvalidOrAlreadyUsed
@@ -5665,7 +5805,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("u2"),
                 "b@example.com",
                 "h",
-                3000
+                clock::UnixTime::from_secs(3000)
             )
             .unwrap(),
             RedeemInviteResult::InvalidOrAlreadyUsed
@@ -5675,8 +5815,14 @@ mod tests {
     #[test]
     fn a_valid_invite_token_redeems_exactly_once() {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_link("link-1", &th("hash-1"), None, None, 1000)
-            .unwrap();
+        db.create_invite_link(
+            "link-1",
+            &th("hash-1"),
+            None,
+            None,
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
 
         let first = db
             .redeem_invite_and_create_user(
@@ -5684,7 +5830,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("user-1"),
                 "first@example.com",
                 "hashed-pw",
-                2000,
+                clock::UnixTime::from_secs(2000),
             )
             .unwrap();
         assert_eq!(first, RedeemInviteResult::Created);
@@ -5699,7 +5845,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("user-2"),
                 "second@example.com",
                 "hashed-pw",
-                3000,
+                clock::UnixTime::from_secs(3000),
             )
             .unwrap();
         assert_eq!(second, RedeemInviteResult::InvalidOrAlreadyUsed);
@@ -5720,7 +5866,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("user-1"),
                 "a@example.com",
                 "hashed-pw",
-                1000,
+                clock::UnixTime::from_secs(1000),
             )
             .unwrap();
         assert_eq!(result, RedeemInviteResult::InvalidOrAlreadyUsed);
@@ -5738,11 +5884,17 @@ mod tests {
             "taken@example.com",
             "hash",
             false,
-            500,
+            clock::UnixTime::from_secs(500),
         )
         .unwrap();
-        db.create_invite_link("link-1", &th("hash-1"), None, None, 1000)
-            .unwrap();
+        db.create_invite_link(
+            "link-1",
+            &th("hash-1"),
+            None,
+            None,
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
 
         let result = db
             .redeem_invite_and_create_user(
@@ -5750,7 +5902,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("user-2"),
                 "taken@example.com",
                 "hashed-pw",
-                2000,
+                clock::UnixTime::from_secs(2000),
             )
             .unwrap();
         assert_eq!(result, RedeemInviteResult::DuplicateEmail);
@@ -5762,14 +5914,14 @@ mod tests {
                 &engine_protocol::ids::UserId::new("user-3"),
                 "retry@example.com",
                 "hashed-pw",
-                3000,
+                clock::UnixTime::from_secs(3000),
             )
             .unwrap();
         assert_eq!(retry, RedeemInviteResult::Created);
         assert!(db.get_user_by_email("retry@example.com").unwrap().is_some());
     }
 
-    /// A session is good for `SESSION_LIFETIME_SECONDS` and no longer; the
+    /// A session is good for `SESSION_LIFETIME` and no longer; the
     /// rows of expired ones go when a new session is made.
     #[test]
     fn a_session_expires_and_its_row_is_dropped_by_the_next_login() {
@@ -5779,49 +5931,70 @@ mod tests {
             "a@example.com",
             "hash",
             false,
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
         db.create_session(
             &th("old"),
             &engine_protocol::ids::UserId::new("user-1"),
-            1000,
+            clock::UnixTime::from_secs(1000),
         )
         .unwrap();
-        assert!(db.find_session(&th("old"), 1000).unwrap().is_some());
         assert!(db
-            .find_session(&th("old"), 1000 + SESSION_LIFETIME_SECONDS - 1)
+            .find_session(&th("old"), clock::UnixTime::from_secs(1000))
             .unwrap()
             .is_some());
         assert!(db
-            .find_session(&th("old"), 1000 + SESSION_LIFETIME_SECONDS + 1)
+            .find_session(
+                &th("old"),
+                clock::UnixTime::from_secs(1000)
+                    .saturating_add(SESSION_LIFETIME - std::time::Duration::from_secs(1))
+            )
+            .unwrap()
+            .is_some());
+        assert!(db
+            .find_session(
+                &th("old"),
+                clock::UnixTime::from_secs(1000)
+                    .saturating_add(SESSION_LIFETIME + std::time::Duration::from_secs(1))
+            )
             .unwrap()
             .is_none());
         db.create_session(
             &th("new"),
             &engine_protocol::ids::UserId::new("user-1"),
-            1000 + SESSION_LIFETIME_SECONDS + 1,
+            clock::UnixTime::from_secs(1000)
+                .saturating_add(SESSION_LIFETIME + std::time::Duration::from_secs(1)),
         )
         .unwrap();
         assert!(
-            db.find_session(&th("old"), 1000).unwrap().is_none(),
+            db.find_session(&th("old"), clock::UnixTime::from_secs(1000))
+                .unwrap()
+                .is_none(),
             "the expired row is gone, whatever clock asks"
         );
     }
 
-    /// An invite link is good for `INVITE_LIFETIME_SECONDS` and no longer.
+    /// An invite link is good for `INVITE_LIFETIME` and no longer.
     #[test]
     fn an_invite_link_expires() {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_link("link-1", &th("hash-1"), None, None, 1000)
-            .unwrap();
+        db.create_invite_link(
+            "link-1",
+            &th("hash-1"),
+            None,
+            None,
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
         let late = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
                 &engine_protocol::ids::UserId::new("user-1"),
                 "a@example.com",
                 "hash",
-                1000 + INVITE_LIFETIME_SECONDS + 1,
+                clock::UnixTime::from_secs(1000)
+                    .saturating_add(INVITE_LIFETIME + std::time::Duration::from_secs(1)),
             )
             .unwrap();
         assert_eq!(late, RedeemInviteResult::InvalidOrAlreadyUsed);
@@ -5831,7 +6004,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("user-1"),
                 "a@example.com",
                 "hash",
-                1000 + INVITE_LIFETIME_SECONDS,
+                clock::UnixTime::from_secs(1000).saturating_add(INVITE_LIFETIME),
             )
             .unwrap();
         assert_eq!(in_time, RedeemInviteResult::Created);
@@ -5847,7 +6020,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("admin-1"),
                 "admin@example.com",
                 "hash",
-                1000
+                clock::UnixTime::from_secs(1000)
             )
             .unwrap());
         assert!(db.is_setup_complete().unwrap());
@@ -5856,7 +6029,7 @@ mod tests {
                 &engine_protocol::ids::UserId::new("admin-2"),
                 "other@example.com",
                 "hash",
-                1001
+                clock::UnixTime::from_secs(1001)
             )
             .unwrap());
         assert!(db.get_user_by_email("other@example.com").unwrap().is_none());
@@ -5865,10 +6038,21 @@ mod tests {
     #[test]
     fn redeeming_a_request_linked_token_auto_actions_its_request() {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_request("req-1", "a@example.com", "let me in", 1000)
-            .unwrap();
-        db.create_invite_link("link-1", &th("hash-1"), Some("enc-1"), Some("req-1"), 1000)
-            .unwrap();
+        db.create_invite_request(
+            "req-1",
+            "a@example.com",
+            "let me in",
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
+        db.create_invite_link(
+            "link-1",
+            &th("hash-1"),
+            Some("enc-1"),
+            Some("req-1"),
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
         assert_eq!(db.count_unactioned_invite_requests().unwrap(), 1);
 
         db.redeem_invite_and_create_user(
@@ -5876,7 +6060,7 @@ mod tests {
             &engine_protocol::ids::UserId::new("user-1"),
             "a@example.com",
             "hashed-pw",
-            2000,
+            clock::UnixTime::from_secs(2000),
         )
         .unwrap();
 
@@ -5895,7 +6079,7 @@ mod tests {
                 &format!("req-{i}"),
                 &format!("user{i}@example.com"),
                 "m",
-                1000 + i,
+                clock::UnixTime::from_secs(1000 + i),
             )
             .unwrap();
         }
@@ -5919,9 +6103,15 @@ mod tests {
     #[test]
     fn get_invite_request_finds_a_row_even_after_it_has_been_actioned() {
         let db = Db::open_in_memory().unwrap();
-        db.create_invite_request("req-1", "a@example.com", "m", 1000)
+        db.create_invite_request(
+            "req-1",
+            "a@example.com",
+            "m",
+            clock::UnixTime::from_secs(1000),
+        )
+        .unwrap();
+        db.delete_invite_request("req-1", clock::UnixTime::from_secs(2000))
             .unwrap();
-        db.delete_invite_request("req-1", 2000).unwrap();
 
         let row = db
             .get_invite_request("req-1")
@@ -5936,8 +6126,14 @@ mod tests {
     fn wallets_list_mainnet_first_then_each_test_network_by_name() {
         let db = Db::open_in_memory().unwrap();
         let user = UserId::new("u1");
-        db.create_user(&user, "a@example.com", "h", false, 0)
-            .unwrap();
+        db.create_user(
+            &user,
+            "a@example.com",
+            "h",
+            false,
+            clock::UnixTime::from_secs(0),
+        )
+        .unwrap();
         for (i, (name, network)) in [
             ("POS trial", "stagenet"),
             ("savings", "mainnet"),

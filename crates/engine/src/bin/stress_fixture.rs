@@ -20,9 +20,12 @@ use std::error::Error;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use axum::{body::Body, http::Request};
+use clock::Clock;
 use engine::engine_settings::{Daemons, EngineSettings};
 use engine::http::{build_router, rate_limit::ApiRateLimits, AppState};
 use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
@@ -493,7 +496,10 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         .map(|probe| -> Arc<dyn KeyCustody> { Arc::<SaturatedCustody>::clone(probe) })
         .unwrap_or(plain_custody);
     let mut handles = HashMap::with_capacity(tenants);
-    let now = engine::now_unix();
+    // The fixture measures real time, so it tells time by the system's clock.
+    let clock = Clock::System;
+    let now = clock.now();
+    let made_at = now.saturating_sub(Duration::from_secs(10));
     for index in 0..tenants {
         let keys = stress_common::material(seed, index)?;
         let handle = custody.register_wallet(keys.clone()).await?;
@@ -510,7 +516,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
                 confirmations_required: Some(10),
                 order_expiry_seconds: Some(3600),
             },
-            now - 10,
+            made_at,
         )?;
         let id = engine::store::TenantId::new(format!("tn_stress_{index:08}"));
         fixture_sql.execute(
@@ -548,8 +554,8 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
                 address: subaddress.to_string(),
                 xmr_amount_piconero: engine::store::Piconero(1),
                 description: None,
-                created_at: now - 10,
-                expires_at: now + 3600,
+                created_at: made_at.as_secs(),
+                expires_at: now.saturating_add(Duration::from_secs(3600)).as_secs(),
             })?;
             let order_id = format!("order_stress_{index:08}_{order_index:04}");
             fixture_sql.execute(
@@ -652,6 +658,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             scanner_status: new_scanner_status_map(),
         },
         activity_stream: engine::activity::StreamTuning::DEFAULT,
+        clock: clock.clone(),
     };
     let http = build_router(app_state, 1_000_000);
     let http_done = Arc::new(AtomicU64::new(0));
@@ -693,7 +700,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         tokio::spawn(async move {
             while !stop.load(Ordering::Relaxed) {
                 let deadline = Instant::now() + Duration::from_millis(10);
-                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                tokio::time::sleep_until(deadline).await;
                 max_delay.fetch_max(
                     Instant::now()
                         .saturating_duration_since(deadline)
@@ -710,7 +717,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         custody: Arc::clone(&custody),
         daemon: Arc::clone(&daemon),
         handles,
-        memory: Arc::new(engine::work::ScanState::default()),
+        memory: Arc::new(engine::work::ScanState::new(clock)),
     };
     let observer = rusqlite::Connection::open_with_flags(
         &db_path,

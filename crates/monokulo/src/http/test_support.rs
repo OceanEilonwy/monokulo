@@ -120,7 +120,7 @@ pub async fn store_with_keys(
         .lock()
         .find_session(
             &credentials::auth::RawToken::presented(session_token).hash(),
-            crate::now_unix(),
+            state.clock.now(),
         )
         .unwrap()
         .expect("a live session")

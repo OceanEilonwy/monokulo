@@ -13,6 +13,11 @@ struct Fixture {
     seeds: std::collections::BTreeMap<u64, [u8; 32]>,
 }
 
+/// The moment `secs` seconds after the epoch, for a block's timestamp.
+fn at(secs: u64) -> UnixTime {
+    UnixTime::from_secs(i64::try_from(secs).unwrap())
+}
+
 fn id(hex_id: &str) -> [u8; 32] {
     hex::decode(hex_id).unwrap().try_into().unwrap()
 }
@@ -100,7 +105,7 @@ fn real_blocks_prove_across_a_key_change_and_any_change_fails() {
             "the id is computed from the blob"
         );
         assert_eq!(check_header(&window, &candidate), Ok(difficulty));
-        assert_eq!(check_time(&candidate, timestamp + 60), Ok(()));
+        assert_eq!(check_time(&candidate, at(timestamp + 60)), Ok(()));
         let key = f.seeds[&seed_height(height)];
         let hash = hasher
             .hash_blocking(&key, vec![candidate.pow_input.clone()])
@@ -222,8 +227,8 @@ fn the_header_rules_each_refuse() {
     assert_eq!(rejection.verdict(), Verdict::Invalid);
 
     // Two hours ahead is allowed; a second more waits for the clock.
-    check_time(&good, good.timestamp - FUTURE_TIME_LIMIT_SECS).unwrap();
-    let rejection = check_time(&good, good.timestamp - FUTURE_TIME_LIMIT_SECS - 1).unwrap_err();
+    check_time(&good, at(good.timestamp - FUTURE_TIME_LIMIT_SECS)).unwrap();
+    let rejection = check_time(&good, at(good.timestamp - FUTURE_TIME_LIMIT_SECS - 1)).unwrap_err();
     assert!(matches!(
         rejection,
         Rejection::TimestampInFuture {
