@@ -1289,6 +1289,87 @@ pub(super) async fn cancel_order(
     }
 }
 
+/// `POST /api/v1/admin/tenant/orders/{order_id}/renew` - a new quote for
+/// one of the authenticated tenant's orders that expired with nothing paid
+/// to it (Monokular's New code; docs/decisions/order-renewal.md): monokulo
+/// prices it, and the engine gives it the new amount and a fresh expiry,
+/// `now` plus the tenant's `order_expiry_seconds`, at the same address. The
+/// checks and the change are one transaction with the status recompute, so
+/// a payment the scanner records first refuses the renewal (`409`) and one
+/// recorded after it counts against the new quote; the recompute makes it
+/// `pending`, announced as `order.pending`. Only the quote that ended at
+/// `expires_at` is renewed: asked again (another till, a retry), the order
+/// is answered as it is, `renewed` false. `503` while the row scanning it is
+/// behind.
+pub(super) async fn renew_order(
+    AuthedTenant(tenant): AuthedTenant,
+    Path(order_id): Path<crate::store::OrderId>,
+    State(db): State<Database>,
+    State(settings): State<Arc<EngineSettings>>,
+    Json(req): Json<engine_protocol::admin_api::RenewOrderRequest>,
+) -> Result<Json<engine_protocol::admin_api::RenewOrderResponse>, ApiError> {
+    if req.xmr_amount_piconero == crate::store::Piconero::ZERO {
+        return Err(ApiError::BadRequest(
+            "xmr_amount_piconero must be greater than zero".into(),
+        ));
+    }
+    if req.xmr_amount_piconero > super::orders::MAX_ORDER_PICONERO {
+        return Err(ApiError::BadRequest(format!(
+            "xmr_amount_piconero must be at most {}",
+            super::orders::MAX_ORDER_PICONERO
+        )));
+    }
+    let grace = settings.scan.load().expired_order_grace_period_seconds;
+    let now = now_unix();
+    let new_expires_at = now.saturating_add(tenant.order_expiry_seconds);
+    let tenant_id = tenant.id.clone();
+    let (outcome, order) = db
+        .write(move |store| {
+            store.in_transaction(|store| {
+                let outcome = store.renew_order(
+                    &tenant_id,
+                    &order_id,
+                    req.expires_at,
+                    req.xmr_amount_piconero,
+                    new_expires_at,
+                    now,
+                    grace,
+                )?;
+                if outcome == crate::store::RenewOrder::Renewed {
+                    let current_height = store.order_scanned_tip(&order_id)?;
+                    crate::scanner::recompute_and_notify_in_tx(
+                        store,
+                        &order_id,
+                        current_height,
+                        now,
+                    )?;
+                }
+                let order = store
+                    .get_order(&tenant_id, &order_id)?
+                    .ok_or(crate::store::StoreError::NotFound)?;
+                Ok::<_, crate::scanner::ScannerError>((outcome, order))
+            })
+        })
+        .await?;
+    let renewed = match outcome {
+        crate::store::RenewOrder::Renewed => true,
+        crate::store::RenewOrder::Moved => false,
+        crate::store::RenewOrder::Refused(why) => return Err(ApiError::Conflict(why)),
+        crate::store::RenewOrder::Behind => {
+            return Err(ApiError::Unavailable(
+                "the store's payments are still being caught up with: try again in a moment".into(),
+            ))
+        }
+    };
+    Ok(Json(engine_protocol::admin_api::RenewOrderResponse {
+        renewed,
+        order_id: order.id,
+        address: order.address,
+        xmr_amount_piconero: order.xmr_amount_piconero,
+        expires_at: order.expires_at,
+    }))
+}
+
 /// `POST /api/v1/admin/tenant/orders/{order_id}/refund-address` - records
 /// where a refund for one of the authenticated tenant's orders should go.
 /// Monokulo's checkout calls this on the customer's behalf (after checking

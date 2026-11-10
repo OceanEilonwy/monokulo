@@ -1008,6 +1008,32 @@ impl EngineClient {
         .parsed()
     }
 
+    /// `POST /api/v1/admin/tenant/orders/{order_id}/renew`: a new quote,
+    /// `xmr_amount_piconero` from now, for one of `sk`'s tenant's orders that
+    /// expired with nothing paid to it, if its quote is still the one that
+    /// ended at `expires_at` (docs/decisions/order-renewal.md). The order
+    /// as it is after, with whether it was renewed now. A refusal is the
+    /// engine's `409`, a scan still catching up its `503`.
+    pub async fn renew_order(
+        &self,
+        sk: &RawToken,
+        order_id: &engine_protocol::ids::OrderId,
+        xmr_amount_piconero: pricing::xmr_amount::Piconero,
+        expires_at: i64,
+    ) -> Result<engine_protocol::admin_api::RenewOrderResponse, EngineClientError> {
+        let order_id = path_id(order_id.as_str())?;
+        self.send(
+            Call::post(format!("/api/v1/admin/tenant/orders/{order_id}/renew"))
+                .store(sk)
+                .json(&engine_protocol::admin_api::RenewOrderRequest {
+                    xmr_amount_piconero,
+                    expires_at,
+                }),
+        )
+        .await?
+        .parsed()
+    }
+
     /// `POST /api/v1/admin/tenant/orders/{order_id}/refund-address`:
     /// records where a refund for one of `sk`'s tenant's orders should go.
     /// The engine does no format validation of its own (it stores the string

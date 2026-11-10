@@ -181,7 +181,11 @@ pub struct LoggedEvent {
     pub merchant_order_id: Option<String>,
     /// What the order is for, as it was created.
     pub description: Option<String>,
+    /// The order's amount when the event was written: a renewal changes it.
     pub xmr_amount_piconero: Piconero,
+    /// The order's expiry when the event was written, when the engine said
+    /// (an older one didn't): a renewal changes it.
+    pub expires_at: Option<i64>,
 }
 
 /// A webhook's deliveries in sum: what its health line says.

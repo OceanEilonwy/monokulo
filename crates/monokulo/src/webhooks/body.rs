@@ -267,6 +267,7 @@ mod tests {
             merchant_order_id: Some("gm-1042".into()),
             description: Some("Two sourdough loaves".into()),
             xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
+            expires_at: None,
         }
     }
 

@@ -779,7 +779,7 @@ impl Db {
         let urgency = policy::urgency(sale.event);
         // An engine clock ahead of this one doesn't lengthen it.
         let happened = sale.at.min(at);
-        let ttl = policy::ttl(sale.event, order.expires_at, happened, queueing.default_ttl);
+        let ttl = policy::ttl(sale.event, sale.expires_at, happened, queueing.default_ttl);
         let expires_at = happened.saturating_add(i64::from(ttl.as_secs()));
         let stale = expires_at <= at;
         // Each made once, for the targets that take it.

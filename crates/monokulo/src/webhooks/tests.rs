@@ -137,6 +137,7 @@ fn event(seq: i64, store: &str, order: &str, event_type: &str) -> LoggedEvent {
         merchant_order_id: None,
         description: None,
         xmr_amount_piconero: pricing::xmr_amount::Piconero(1_000_000_000_000),
+        expires_at: None,
     }
 }
 

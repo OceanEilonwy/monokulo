@@ -177,6 +177,10 @@ fn routes(p: &Principal) -> Vec<Route> {
             "POST",
             format!("/api/v1/admin/tenant/orders/{}/cancel", p.order),
         ),
+        (
+            "POST",
+            format!("/api/v1/admin/tenant/orders/{}/renew", p.order),
+        ),
         ("POST", "/api/v1/admin/tenant/payments/lookup".into()),
         ("GET", "/api/v1/admin/tenant/events".into()),
     ];

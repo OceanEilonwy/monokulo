@@ -454,6 +454,199 @@ pub async fn make(
     }
 }
 
+/// Why an order wasn't renewed ([`renew`]). The API answers each as a
+/// problem ([`RenewError::problem`]).
+#[derive(Debug)]
+pub enum RenewError {
+    /// Not the store's order.
+    NotFound,
+    /// An app's key, and an order no app made.
+    NotAnAppsOrder,
+    /// The engine refused (or there's no price on record), and why.
+    NotRenewable(String),
+    /// The order couldn't be priced again.
+    Price(MakeError),
+    /// The engine is down, or the store's scan is still catching up, as it
+    /// said.
+    Unavailable(Option<String>),
+    Internal,
+}
+
+impl RenewError {
+    pub fn problem(&self) -> ProblemDetails {
+        match self {
+            RenewError::NotFound => crate::http::ApiError::NotFound.into(),
+            RenewError::NotAnAppsOrder => {
+                Problem::Forbidden.detail("An app's key renews only orders the store's apps made.")
+            }
+            RenewError::NotRenewable(why) => {
+                Problem::OrderNotRenewable.detail(format!("This order can't be renewed: {why}."))
+            }
+            RenewError::Price(e) => e.problem(),
+            RenewError::Unavailable(None) => crate::http::ApiError::EngineUnavailable.into(),
+            RenewError::Unavailable(Some(why)) => {
+                Problem::EngineUnavailable.detail(format!("{}.", capitalised(why)))
+            }
+            RenewError::Internal => internal(),
+        }
+    }
+}
+
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// What [`renew`] came to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Renewed {
+    /// Renewed now.
+    Now,
+    /// Its quote wasn't the one asked about any more (another caller renewed
+    /// it, or it was never that one): unchanged.
+    Already,
+}
+
+/// Renews the store's order `order_id` (docs/decisions/order-renewal.md):
+/// re-prices its own amount and currency at the store's present rate and
+/// asks the engine to give it that amount and a fresh expiry at the same
+/// address, if its quote is still the one that ended at `expires_at` and
+/// nothing can have reached it (the engine decides, in one transaction).
+/// `app` is the app whose key asked, which may renew only orders the
+/// store's apps made. A renewal is announced by the engine's
+/// `order.pending`, which the store's apps hear as `sale.waiting` with the
+/// new amount and expiry; the order's local records are updated here.
+pub async fn renew(
+    state: &AppState,
+    store: &StoreConnectionRow,
+    sk: &credentials::auth::RawToken,
+    order_id: &OrderId,
+    expires_at: i64,
+    app: Option<&crate::db::AppConnection>,
+) -> Result<Renewed, RenewError> {
+    let detail = match state.engine.client.get_order_detail(sk, order_id).await {
+        Ok(detail) => detail,
+        Err(EngineClientError::EngineError { status, .. })
+            if status == reqwest::StatusCode::NOT_FOUND =>
+        {
+            return Err(RenewError::NotFound)
+        }
+        Err(e) => {
+            tracing::warn!(order.id = %order_id, error = %e, "an order to renew could not be read");
+            return Err(RenewError::Unavailable(None));
+        }
+    };
+    let (id, order) = (store.id.clone(), order_id.clone());
+    let (metadata, app_order) = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.get_order_currency_metadata(&id, &order)?,
+                db.app_order(&order)?,
+            ))
+        })
+        .await
+        .map_err(|_| RenewError::Internal)?;
+    if app.is_some() && app_order.is_none_or(|o| o.store_id != store.id) {
+        return Err(RenewError::NotAnAppsOrder);
+    }
+    // Asked about a quote it no longer has: answered as it is, priced at
+    // nothing (another till renewed it first, or this is a retry).
+    if detail.order.expires_at != expires_at {
+        return Ok(Renewed::Already);
+    }
+    let Some(metadata) = metadata else {
+        return Err(RenewError::NotRenewable(
+            "Monokulo has no price on record for it".to_owned(),
+        ));
+    };
+    let asked = metadata.currency.clone();
+    let currency = state
+        .db
+        .read(move |db| KnownCurrency::resolve(db, &asked))
+        .await
+        .map_err(|_| RenewError::Internal)?
+        .ok_or_else(|| RenewError::Price(MakeError::UnknownCurrency(metadata.currency.clone())))?;
+    let (piconero_per_unit, provider) = match state
+        .exchange_rate
+        .piconero_per_unit_for(store, &currency)
+        .await
+    {
+        Ok(Some(rate)) => rate,
+        Ok(None) | Err(ExchangeRateLookupError::ProviderNotConfigured(_)) => {
+            return Err(RenewError::Price(MakeError::UnsupportedCurrency(currency)))
+        }
+        Err(e) => {
+            tracing::warn!(store.id = %store.id, currency = %currency, error = %e, "no usable exchange rate to renew an order");
+            return Err(RenewError::Price(
+                e.unavailable(currency.as_str())
+                    .map_or(MakeError::Internal, MakeError::RatesUnavailable),
+            ));
+        }
+    };
+    let xmr_amount_piconero = pricing::exchange_rate::compute_order_amount(
+        currency.as_str(),
+        &metadata.amount,
+        piconero_per_unit,
+    )
+    .map_err(|e| RenewError::Price(MakeError::InvalidAmount(e.to_string())))?;
+    let renewed = match state
+        .engine
+        .client
+        .renew_order(sk, order_id, xmr_amount_piconero, expires_at)
+        .await
+    {
+        Ok(renewed) => renewed,
+        Err(EngineClientError::EngineError { status, message }) => {
+            return Err(match status {
+                reqwest::StatusCode::NOT_FOUND => RenewError::NotFound,
+                reqwest::StatusCode::CONFLICT => RenewError::NotRenewable(message),
+                reqwest::StatusCode::SERVICE_UNAVAILABLE => RenewError::Unavailable(Some(message)),
+                _ => {
+                    tracing::error!(order.id = %order_id, %status, message, "the engine refused to renew an order");
+                    RenewError::Internal
+                }
+            })
+        }
+        Err(e) if e.is_unavailable() => {
+            tracing::warn!(order.id = %order_id, error = %e, "the engine couldn't renew an order");
+            return Err(RenewError::Unavailable(None));
+        }
+        Err(e) => {
+            tracing::error!(order.id = %order_id, error = %e, "the engine's answer to renewing an order wasn't understood");
+            return Err(RenewError::Internal);
+        }
+    };
+    if !renewed.renewed {
+        return Ok(Renewed::Already);
+    }
+    tracing::info!(order.id = %order_id, store.id = %store.id, "an order was renewed");
+    let (id, order) = (store.id.clone(), order_id.clone());
+    let recorded = state
+        .db
+        .write(move |db| {
+            db.record_renewal(
+                &id,
+                &order,
+                renewed.xmr_amount_piconero,
+                renewed.expires_at,
+                piconero_per_unit,
+                provider,
+            )
+        })
+        .await;
+    // The engine's order is the truth and already renewed: a failed write
+    // costs the local copies (a late stream's first look, the rate the
+    // order page shows), never the renewal or its events, which carry
+    // their own amount and expiry.
+    if let Err(e) = recorded {
+        tracing::warn!(order.id = %order_id, error = %e, "a renewed order's local records could not be updated");
+    }
+    Ok(Renewed::Now)
+}
+
 /// What a key, and the purchase it was asked for, are: the amount as sent,
 /// the currency, the reference, the description and whether the reference
 /// shows.

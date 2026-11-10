@@ -609,3 +609,4 @@ async fn the_entry_can_be_cached() {
 mod custom_page;
 mod orders;
 mod push_targets;
+mod renew;

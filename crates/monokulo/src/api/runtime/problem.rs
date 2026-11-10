@@ -75,6 +75,15 @@ pub enum Problem {
     /// choice of whether the reference shows.
     #[problem(status = 409, title = "Key used for another order")]
     IdempotencyConflict,
+    /// The order can't be renewed (`renew-order`): it isn't expired, a
+    /// payment has reached it (even one still in the pool, or one later
+    /// reversed), it ended too long ago for Monokulo to still be watching its
+    /// address, it's on a wallet the store has since left, or Monokulo has no
+    /// price on record to quote it again from. `detail` says which. Nothing
+    /// changed. Make a new order instead, or, when a payment reached it,
+    /// settle that one.
+    #[problem(status = 409, title = "Order can't be renewed")]
+    OrderNotRenewable,
     /// The app already has as many push targets as it may (8, a few for
     /// each push service its device uses). Unregister one it no longer
     /// uses first, or register again with the `client_id` of one it has,
