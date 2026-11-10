@@ -209,7 +209,8 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // settings by the registry, which reconfigures them in place whenever
     // the admin page saves or reloads the options file.
     let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only());
-    let abuse = Arc::new(abuse::AbuseProtection::default());
+    let clock = clock::Clock::System;
+    let abuse = Arc::new(abuse::AbuseProtection::default().with_clock(clock.clone()));
     let onion = settings::OnionReloadable::default();
     let monokulo_settings = match settings::MonokuloSettings::load(
         settings::DbSettings::new(db.clone(), encryption_key.clone()),
@@ -236,17 +237,19 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         &db_path,
         stopping.clone(),
         monokulo_settings.relay.clone(),
+        clock.clone(),
     )
     .await
     .unwrap_or_else(|e| stop(e));
 
-    monokulo::embed_domains::spawn_rechecks(db.clone(), proofs.clone());
+    monokulo::embed_domains::spawn_rechecks(db.clone(), proofs.clone(), clock.clone());
     // Changes to existing stores that need the running process, each run
     // once (`monokulo::db::BACKFILL_STEP`).
     let key = encryption_key.clone();
+    let now = clock.now();
     if let Err(e) = db
         .write(move |db| {
-            monokulo::stores::backfill_at_start(db, &key);
+            monokulo::stores::backfill_at_start(db, &key, now);
             Ok::<_, monokulo::db::DbError>(())
         })
         .await
@@ -256,7 +259,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // This instance's VAPID key, made at the first start: a stored one
     // that can't be read stops the process, as any other secret does.
     let push = Arc::new(
-        monokulo::push::Push::load_or_make(&db, &encryption_key)
+        monokulo::push::Push::load_or_make(&db, &encryption_key, clock.now())
             .await
             .unwrap_or_else(|e| stop(format!("failed to read this Monokulo's VAPID key: {e}"))),
     );
@@ -274,6 +277,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             apps.clone(),
         );
         let addresses = monokulo::webhooks::Addresses::new(monokulo_settings.clone(), tor.clone());
+        let clock = clock.clone();
         service_runtime::supervise::supervise("order-event subscriber", move || {
             monokulo::webhooks::subscriber::run_subscriber(
                 db.clone(),
@@ -282,15 +286,17 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
                 push.clone(),
                 apps.clone(),
                 addresses.clone(),
+                clock.clone(),
             )
         });
     }
     {
-        let (db, settings, webhooks, key) = (
+        let (db, settings, webhooks, key, clock) = (
             db.clone(),
             monokulo_settings.clone(),
             webhooks.clone(),
             encryption_key.clone(),
+            clock.clone(),
         );
         service_runtime::supervise::supervise("webhook delivery", move || {
             monokulo::webhooks::delivery::run_delivery_loop(
@@ -298,13 +304,24 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
                 key.clone(),
                 settings.clone(),
                 webhooks.clone(),
+                clock.clone(),
             )
         });
     }
     {
-        let (db, settings, push) = (db.clone(), monokulo_settings.clone(), push.clone());
+        let (db, settings, push, clock) = (
+            db.clone(),
+            monokulo_settings.clone(),
+            push.clone(),
+            clock.clone(),
+        );
         service_runtime::supervise::supervise("push delivery", move || {
-            monokulo::push::delivery::run_delivery_loop(db.clone(), settings.clone(), push.clone())
+            monokulo::push::delivery::run_delivery_loop(
+                db.clone(),
+                settings.clone(),
+                push.clone(),
+                clock.clone(),
+            )
         });
     }
     let engine = monokulo::http::Engine::new(engine_client);
@@ -326,7 +343,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         relay: relay.clone(),
         revocations: Default::default(),
         stopping: stopping.clone(),
-        clock: clock::Clock::System,
+        clock,
         tor: tor.clone(),
         engine,
     };

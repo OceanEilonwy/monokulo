@@ -29,7 +29,6 @@ use crate::db::{Database, DbError, LoggedEvent};
 use crate::engine_client::EngineClient;
 use crate::live::{SseEvent, SseParser};
 
-use super::delivery::Clock;
 use pricing::xmr_amount::Piconero;
 
 /// The longest wait between attempts to open the stream.
@@ -122,7 +121,7 @@ pub async fn follow(
     push: &crate::push::Push,
     apps: &AppEvents,
     addresses: &super::Addresses,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
     on_open: impl FnOnce(),
 ) -> Result<(), FollowError> {
     let after = db.read(|db| db.order_event_position()).await?;
@@ -156,13 +155,13 @@ async fn handle(
     push: &crate::push::Push,
     apps: &AppEvents,
     addresses: &super::Addresses,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
     event: &SseEvent,
 ) -> Result<(), FollowError> {
     match event.event.as_str() {
         "order_event" => {
             let seq = parse_seq(&event.id).map_err(FollowError::Malformed)?;
-            let now = clock.now();
+            let now = clock.now().as_secs();
             let logged = match parse_event(seq, &event.data) {
                 Ok(logged) => logged,
                 Err(error) => {
@@ -218,7 +217,7 @@ async fn handle(
             let lost: WireLost = serde_json::from_str(&event.data).map_err(|e| {
                 FollowError::Malformed(format!("an events_lost can't be read: {e}"))
             })?;
-            let now = clock.now();
+            let now = clock.now().as_secs();
             let resume = lost.resume_after;
             db.write(move |db| db.skip_order_events_to(resume, now))
                 .await?;
@@ -276,6 +275,7 @@ pub async fn run_subscriber(
     push: Arc<crate::push::Push>,
     apps: Arc<AppEvents>,
     addresses: super::Addresses,
+    clock: clock::Clock,
 ) {
     let mut delay = Duration::from_secs(1);
     loop {
@@ -287,7 +287,7 @@ pub async fn run_subscriber(
             &push,
             &apps,
             &addresses,
-            &super::delivery::SystemClock,
+            &clock,
             || opened = true,
         )
         .await;

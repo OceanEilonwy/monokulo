@@ -53,7 +53,6 @@ use crate::db::{
 };
 use crate::outbound::{request_error_text, Outbound};
 use crate::settings::PushConfig;
-use crate::webhooks::delivery::{Clock, SystemClock};
 use outbound::{check_host, Reach};
 
 /// Most pushes picked per batch, and most sent at once (one target's one
@@ -203,12 +202,12 @@ pub async fn run_delivery_tick(
     client: &PushClient,
     config: &PushConfig,
     reach: Reach,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
 ) -> Result<usize, DbError> {
     use futures_util::stream::{self, StreamExt as _};
 
     client.budget.set_limit(config.per_store_per_minute);
-    let now = clock.now();
+    let now = clock.now().as_secs();
     let due = db
         .read(move |db| db.due_push_deliveries(now, DELIVERY_BATCH))
         .await?;
@@ -224,7 +223,7 @@ pub async fn run_delivery_tick(
                     error = %unreadable.error,
                     "a push can't be read; giving up on it"
                 );
-                let at = clock.now();
+                let at = clock.now().as_secs();
                 let id = unreadable.id;
                 let error = format!("unreadable: {}", unreadable.error);
                 if let Err(e) = db.write(move |db| db.give_up_push(id, at, &error)).await {
@@ -306,7 +305,7 @@ pub async fn send_now(
     push: &DuePush,
     config: &PushConfig,
     reach: Reach,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
 ) -> Result<Option<TargetDropped>, DbError> {
     client.budget.set_limit(config.per_store_per_minute);
     let done =
@@ -350,12 +349,12 @@ async fn record(
     push: &DuePush,
     done: Done,
     config: &PushConfig,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
 ) -> Result<Option<TargetDropped>, DbError> {
     let (id, target) = (push.id, push.target.clone());
     let written = match done {
         Done::GaveUp(reason) => {
-            let at = clock.now();
+            let at = clock.now().as_secs();
             db.write(move |db| db.give_up_push(id, at, &reason))
                 .await
                 .map(|()| None)
@@ -425,12 +424,12 @@ async fn deliver(
     push: &DuePush,
     config: &PushConfig,
     reach: Reach,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
 ) -> Done {
     if push.attempt_count >= config.max_attempts {
         return Done::GaveUp(NO_ATTEMPTS_LEFT.to_owned());
     }
-    let at = clock.now();
+    let at = clock.now().as_secs();
     let Some(ttl) = remaining(push.expires_at, at) else {
         tracing::info!("a push expired before it could be sent; given up");
         return Done::GaveUp(EXPIRED_UNSENT.to_owned());
@@ -460,7 +459,7 @@ async fn deliver(
         ttl,
         topic: Some(push.topic.clone()),
     };
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let sender = client.sender(reach);
     let sent = match check_host(push.target.endpoint.as_url(), reach) {
         Err(refused) => Err(Failure::counted(refused.to_string())),
@@ -503,7 +502,12 @@ async fn deliver(
             }
             .filter(|_| made < config.max_attempts)
             // Timed from when the attempt was made, never past the TTL.
-            .map(|wait| clock.now().saturating_add(wait))
+            .map(|wait| {
+                clock
+                    .now()
+                    .saturating_add(Duration::from_secs(u64::try_from(wait).unwrap_or(0)))
+                    .as_secs()
+            })
             .filter(|next| *next < push.expires_at);
             if failure.retry == Retry::Never {
                 tracing::error!(
@@ -677,6 +681,7 @@ pub async fn run_delivery_loop(
     db: Database,
     settings: Arc<crate::settings::MonokuloSettings>,
     push: Arc<super::Push>,
+    clock: clock::Clock,
 ) {
     let client = loop {
         match push.client().await {
@@ -695,11 +700,11 @@ pub async fn run_delivery_loop(
         client.set_contact(contact(&settings));
         if pruned_at.is_none_or(|at| at.elapsed() >= PRUNE_EVERY) {
             pruned_at = Some(tokio::time::Instant::now());
-            if let Err(e) = prune_deliveries(&db, &config, crate::now_unix()).await {
+            if let Err(e) = prune_deliveries(&db, &config, clock.now().as_secs()).await {
                 tracing::warn!(error = %e, "old pushes could not be deleted");
             }
         }
-        let picked = match run_delivery_tick(&db, client, &config, reach, &SystemClock).await {
+        let picked = match run_delivery_tick(&db, client, &config, reach, &clock).await {
             Ok(picked) => picked,
             Err(e) => {
                 tracing::warn!(error = %e, "a push delivery batch failed");

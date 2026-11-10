@@ -60,7 +60,7 @@ async fn code(State(control): State<Controls>) -> Json<serde_json::Value> {
                 &hash,
                 &engine_protocol::ids::ConnectionId::new(STORE),
                 "",
-                monokulo::now_unix(),
+                clock::Clock::System.now().as_secs(),
             )
         })
         .await
@@ -129,7 +129,7 @@ async fn main() {
     db.create_session(
         &credentials::auth::RawToken::presented(SESSION).hash(),
         &user,
-        monokulo::now_unix(),
+        clock::Clock::System.now().as_secs(),
     )
     .unwrap();
     db.create_wallet(&monokulo::db::NewWalletRow {
@@ -186,6 +186,7 @@ async fn main() {
         state.push.clone(),
         state.apps.clone(),
         monokulo::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
+        state.clock.clone(),
     ));
     let controls = Router::new()
         .route("/__dev/code", post(code))

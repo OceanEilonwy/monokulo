@@ -29,7 +29,9 @@ fn checks_out_as_documented(secret: &str, headers: &HeaderMap, body: &str) -> bo
     let v1 = hex::decode(v1.strip_prefix("v1=").unwrap()).unwrap();
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
     mac.update(format!("{t}.{body}").as_bytes());
-    (crate::now_unix() - t).abs() <= 300 && mac.verify_slice(&v1).is_ok()
+    let (now, sent) = (clock::Clock::System.now(), clock::UnixTime::from_secs(t));
+    let apart = now.since(sent).max(sent.since(now));
+    apart <= std::time::Duration::from_secs(300) && mac.verify_slice(&v1).is_ok()
 }
 
 impl Shop {
@@ -364,7 +366,7 @@ async fn a_failed_test_says_why_and_is_retried_like_any_delivery() {
         .deliveries_page(&webhook.id, 0, 10)
         .unwrap();
     let oldest = first.last().unwrap().clone();
-    let clock = ManualClock::at(oldest.next_attempt_at.unwrap());
+    let (clock, _hand) = manual(oldest.next_attempt_at.unwrap());
     tick(&shop.state.db, &client(), &config(true, 8), &clock).await;
     let retried = shop
         .state

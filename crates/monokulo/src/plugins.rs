@@ -214,8 +214,15 @@ pub async fn connect(
     } = connecting;
     let (webhook_id, webhook_signing_secret) = match &webhook_url {
         Some(url) => {
-            let created =
-                crate::webhooks::create(db, key, &store_id, url, &Default::default()).await?;
+            let created = crate::webhooks::create(
+                db,
+                key,
+                &store_id,
+                url,
+                &Default::default(),
+                clock::UnixTime::from_secs(at),
+            )
+            .await?;
             (
                 Some(created.webhook.id.to_string()),
                 Some(created.signing_secret),

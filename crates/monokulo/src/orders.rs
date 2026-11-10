@@ -317,7 +317,7 @@ pub async fn make(
         Some(Reserved::Conflict) => return Err(MakeError::IdempotencyConflict),
         None => {
             let price = price_of(state, &row, &policy, &sk, &currency, &amount).await?;
-            let at = crate::now_unix();
+            let at = state.clock.now().as_secs();
             match &key {
                 None => (price, at),
                 Some(key) => {
@@ -415,11 +415,20 @@ pub async fn make(
     // unrecorded order.
     let (id, recorded_order) = (row.id.clone(), order_record(&order));
     let queueing = crate::push::Queueing::now(&state.settings);
+    let now = state.clock.now().as_secs();
     let recorded = state
         .db
         .write(move |db| {
             db.in_transaction(|db| {
-                record(db, &id, &recorded_order, key.as_deref(), &origin, &queueing)
+                record(
+                    db,
+                    &id,
+                    &recorded_order,
+                    key.as_deref(),
+                    &origin,
+                    &queueing,
+                    now,
+                )
             })
         })
         .await;
@@ -767,9 +776,10 @@ fn record(
     key: Option<&str>,
     origin: &Origin,
     queueing: &crate::push::Queueing,
+    now: i64,
 ) -> Result<Recorded, crate::db::DbError> {
     let (source, plugin) = source_of(db, store, origin);
-    seen(db, store, origin, &source, plugin, crate::now_unix())?;
+    seen(db, store, origin, &source, plugin, now)?;
     if let Some(key) = key {
         if !db.order_request_made(store, key, &order.order_id)? {
             return Ok(Recorded::Before);
@@ -811,7 +821,7 @@ fn record(
                 created_at: order.created_at,
             };
             db.record_app_order(&app_order)?;
-            let pushes = db.queue_waiting_push(&app_order, crate::now_unix(), queueing)?;
+            let pushes = db.queue_waiting_push(&app_order, now, queueing)?;
             Ok(Recorded::Now {
                 app_order: Some(Box::new(app_order)),
                 pushes,
@@ -846,11 +856,12 @@ async fn found(
 ) -> Result<Made, MakeError> {
     if let Origin::Api(_) = origin {
         let id = row.id.clone();
+        let now = state.clock.now().as_secs();
         let noted = state
             .db
             .write(move |db| {
                 let (source, plugin) = source_of(db, &id, &origin);
-                seen(db, &id, &origin, &source, plugin, crate::now_unix())
+                seen(db, &id, &origin, &source, plugin, now)
             })
             .await;
         if let Err(e) = noted {

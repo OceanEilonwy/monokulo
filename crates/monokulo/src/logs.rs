@@ -308,7 +308,7 @@ mod tests {
                 }
             });
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
         while store
             .query(&telemetry::store::LogQuery {
                 limit: 100,
@@ -319,7 +319,7 @@ mod tests {
             < lines.len()
         {
             assert!(
-                std::time::Instant::now() < deadline,
+                tokio::time::Instant::now() < deadline,
                 "the lines were never stored"
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -332,7 +332,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "monokulo-log-reader-{}-{}",
             std::process::id(),
-            crate::now_unix()
+            clock::Clock::System.now()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let local_store = store_with("monokulo", &dir, &["monokulo one", "monokulo two"]);
