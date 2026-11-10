@@ -1071,9 +1071,14 @@ fn priced_in_fiat(data: &CheckoutViewModel) -> bool {
 /// minute; without JavaScript, the server's words, moved on by the refresh.
 /// It turns the warning colour at five minutes and the error colour at two.
 fn countdown(data: &CheckoutViewModel) -> ui::Countdown {
-    let remaining = u64::try_from(data.expires_at - data.clock.now()).unwrap_or(0);
-    let total = u64::try_from(data.expires_at - data.created_at)
-        .unwrap_or(0)
+    let remaining = data
+        .clock
+        .now()
+        .until(clock::UnixTime::from_secs(data.expires_at))
+        .as_secs();
+    let total = clock::UnixTime::from_secs(data.created_at)
+        .until(clock::UnixTime::from_secs(data.expires_at))
+        .as_secs()
         .max(remaining);
     let at = if data.local_times {
         data.clock.time_local(data.expires_at)
@@ -1327,7 +1332,11 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/api/v1/checkout/pay_abc123")
+        PageChrome::from_user(
+            None,
+            "/api/v1/checkout/pay_abc123",
+            clock::Clock::System.now(),
+        )
     }
 
     fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
@@ -1354,7 +1363,7 @@ mod tests {
             progress_percent: 0,
             is_terminal,
             double_spend_detected_at: None,
-            clock: crate::views::time::Clock::utc(0),
+            clock: crate::views::time::Clock::utc(clock::UnixTime::EPOCH),
             local_times: true,
             expires_in_display: "30m".to_string(),
             created_at: -1800,

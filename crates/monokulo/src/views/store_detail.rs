@@ -311,7 +311,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/stores/conn_1")
+        PageChrome::from_user(None, "/stores/conn_1", clock::Clock::System.now())
     }
 
     fn base_store() -> StoreDetailData {

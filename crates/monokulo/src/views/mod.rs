@@ -199,7 +199,14 @@ impl PageChrome {
     /// already resolved, or `None` for an unauthenticated page (still real
     /// per-request state for `/status`, which shows the account menu to a
     /// visitor who happens to have a session).
-    pub fn from_user(user: Option<&UserRow>, current_path: impl Into<String>) -> Self {
+    ///
+    /// `now` is the moment the caller read once for the whole page: the
+    /// times on it are shown relative to it.
+    pub fn from_user(
+        user: Option<&UserRow>,
+        current_path: impl Into<String>,
+        now: clock::UnixTime,
+    ) -> Self {
         match user {
             Some(u) => PageChrome {
                 logged_in: true,
@@ -211,7 +218,7 @@ impl PageChrome {
                 health: None,
                 alerts: Vec::new(),
                 browser_reports: true,
-                clock: time::Clock::for_user(u),
+                clock: time::Clock::for_user(u, now),
                 query_enabled: false,
             },
             None => PageChrome {
@@ -224,7 +231,7 @@ impl PageChrome {
                 health: None,
                 alerts: Vec::new(),
                 browser_reports: true,
-                clock: time::Clock::utc(crate::now_unix()),
+                clock: time::Clock::utc(now),
                 query_enabled: false,
             },
         }
@@ -919,7 +926,7 @@ mod tests {
             health: None,
             alerts: Vec::new(),
             browser_reports: true,
-            clock: time::Clock::new(Some("Australia/Perth"), None, 0),
+            clock: time::Clock::new(Some("Australia/Perth"), None, clock::UnixTime::EPOCH),
             query_enabled: is_admin,
         }
     }

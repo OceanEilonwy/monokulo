@@ -1714,7 +1714,7 @@ mod tests {
     #[test]
     fn the_no_javascript_pages_hold_the_dialogs_content() {
         let w = summary("Shop takings", "mainnet", 0).wallet;
-        let chrome = PageChrome::from_user(None, "");
+        let chrome = PageChrome::from_user(None, "", clock::Clock::System.now());
         let state = RetireState::Checked {
             stores: 0,
             orders: 0,
