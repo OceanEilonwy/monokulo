@@ -150,9 +150,19 @@ async fn push(
         .push(&handle.sender, &handle.id, now)
         .map_err(rate_limited)?;
 
+    let started = std::time::Instant::now();
     let delivery = hand_on(&shared, &handle, &request, now).await?;
     shared.last_delivery.record(delivery.into());
-    tracing::debug!(handle = %handle.id.tag(), platform = %handle.platform, app = %handle.app, outcome = ?delivery, "push handed on");
+    // How long APNs or FCM took to take it: with the Bell's "dings sent",
+    // where a slow push's time went before it reached the device.
+    tracing::info!(
+        handle = %handle.id.tag(),
+        platform = %handle.platform,
+        app = %handle.app,
+        outcome = ?delivery,
+        duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "push handed on"
+    );
     // Past here the push is handed on or the token is gone: the answer
     // says so even when the bookkeeping fails, since a 500 would have the
     // sender send the same push again.

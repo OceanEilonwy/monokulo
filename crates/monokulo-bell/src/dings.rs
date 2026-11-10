@@ -121,7 +121,7 @@ impl Dings {
             .unwrap_or_else(PoisonError::into_inner)
             .first((ring.integration, ring.payment_id.clone()), now);
         if !first {
-            tracing::debug!("a payment rung already: no dings");
+            tracing::info!("a payment rung already: no dings");
             return;
         }
         let dings = Arc::clone(self);
@@ -141,6 +141,7 @@ impl Dings {
     }
 
     async fn ring_now(self: &Arc<Self>, ring: &Ring) {
+        let started = std::time::Instant::now();
         let registrations = match self
             .store
             .at_location(ring.integration, &ring.merchant_id, &ring.location_id)
@@ -162,7 +163,12 @@ impl Dings {
         }
         let rung = sending.len();
         while sending.join_next().await.is_some() {}
-        tracing::debug!(rung, "dings sent");
+        // From the webhook to the last push service's answer.
+        tracing::info!(
+            rung,
+            duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "dings sent"
+        );
     }
 
     /// One ding to `merchant`'s `registration` at its integration, and
