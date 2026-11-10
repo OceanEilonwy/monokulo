@@ -50,6 +50,8 @@
 
 use std::collections::HashMap;
 
+use clock::Clock;
+
 use crate::exchange_rate::{piconero_per_unit_from_price, ExchangeRateError};
 
 /// RetoSwap's network id on `haveno.markets`.
@@ -90,6 +92,8 @@ impl HavenoPolicy {
 pub struct HavenoRateProvider {
     base_url: String,
     client: reqwest_middleware::ClientWithMiddleware,
+    /// What time it is, for a `Retry-After` date.
+    clock: Clock,
     cache: std::sync::Arc<tokio::sync::Mutex<Cache>>,
 }
 
@@ -118,10 +122,11 @@ impl HavenoRateProvider {
     /// `base_url` is scheme+host with no trailing slash
     /// (`"https://haveno.markets"` in production) - a parameter so a test can
     /// point at a local server and an operator can use a proxy or mirror.
-    pub fn new(base_url: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, clock: Clock) -> Self {
         HavenoRateProvider {
             base_url: base_url.into(),
             client: crate::exchange_rate::rates_client(),
+            clock,
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(Cache::default())),
         }
     }
@@ -131,7 +136,8 @@ impl HavenoRateProvider {
             "{}/api/v1/tickers?network={NETWORK}&time_period=24h",
             self.base_url
         );
-        let response = crate::exchange_rate::checked(self.client.get(&url).send().await?)?;
+        let response =
+            crate::exchange_rate::checked(self.client.get(&url).send().await?, self.clock.now())?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         let tickers = body.as_object().ok_or_else(|| {
             ExchangeRateError::UnexpectedResponse(format!(
@@ -181,7 +187,8 @@ impl HavenoRateProvider {
             "{}/api/v1/depth/XMR_{currency_upper}?network={NETWORK}",
             self.base_url
         );
-        let response = crate::exchange_rate::checked(self.client.get(&url).send().await?)?;
+        let response =
+            crate::exchange_rate::checked(self.client.get(&url).send().await?, self.clock.now())?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         let side = |name: &str| -> Result<(u64, f64), ExchangeRateError> {
             let levels = body
@@ -332,6 +339,12 @@ impl HavenoRateProvider {
 
 #[cfg(test)]
 mod tests {
+    /// The time every provider in these tests reads: pinned, so a date's
+    /// wait is exact and nothing depends on when the test runs.
+    fn pinned() -> clock::Clock {
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000))
+    }
+
     use super::*;
     use axum::extract::{Path, Query, State};
     use axum::response::{IntoResponse, Response};
@@ -443,7 +456,7 @@ mod tests {
     #[tokio::test]
     async fn the_price_is_the_bid_ask_midpoint_never_the_stale_last_price() {
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         // midpoint 101.0 -> 1e12 / 101 rounded; last_price 581.49 would be far off.
         assert_eq!(
             provider
@@ -464,7 +477,7 @@ mod tests {
     #[tokio::test]
     async fn a_one_sided_book_a_missing_currency_and_a_crypto_pair_are_unpriced() {
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         assert_eq!(
             provider
                 .piconero_per_unit_cached("EUR", TTL, &policy())
@@ -507,7 +520,7 @@ mod tests {
             "GBP":{"pair":"XMR_GBP","highest_bid":-5.0,"lowest_ask":100.0}
         }"#;
         let server = spawn_server(move |_| json_body(body), |_, _| json_body(DEPTH)).await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         for code in ["USD", "EUR", "GBP"] {
             assert_eq!(
                 provider
@@ -524,7 +537,7 @@ mod tests {
     async fn the_spread_limit_is_the_policys_own() {
         // USD: bid 100, ask 102 -> 2 / 101 = 1.980198...% wide.
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let at = |max_spread_pct| HavenoPolicy {
             max_spread_pct,
             ..policy()
@@ -557,7 +570,7 @@ mod tests {
     #[tokio::test]
     async fn depth_is_fetched_only_when_the_policy_needs_it() {
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         provider
             .piconero_per_unit_cached("USD", TTL, &policy())
             .await
@@ -591,7 +604,7 @@ mod tests {
     async fn the_offer_count_minimum_applies_to_each_side() {
         // Bids have 3 offers, asks 2.
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let at = |min_offers_per_side| HavenoPolicy {
             min_offers_per_side,
             ..policy()
@@ -615,7 +628,7 @@ mod tests {
     async fn the_xmr_depth_minimum_applies_to_each_side() {
         // Bids list 5 XMR, asks 1.5.
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let at = |min_depth_xmr_per_side| HavenoPolicy {
             min_depth_xmr_per_side,
             ..policy()
@@ -659,7 +672,7 @@ mod tests {
             },
         )
         .await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let strict = HavenoPolicy {
             min_offers_per_side: 2,
             ..policy()
@@ -682,7 +695,7 @@ mod tests {
     #[tokio::test]
     async fn depth_is_not_fetched_for_a_currency_with_no_book_or_a_too_wide_spread() {
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let strict = HavenoPolicy {
             min_offers_per_side: 2,
             max_spread_pct: 0.5,
@@ -708,7 +721,7 @@ mod tests {
     #[tokio::test]
     async fn one_request_prices_every_currency_and_a_fresh_cache_is_reused() {
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         provider
             .piconero_per_unit_cached("USD", TTL, &policy())
             .await
@@ -732,7 +745,7 @@ mod tests {
     #[tokio::test]
     async fn stale_depth_is_refetched() {
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let strict = HavenoPolicy {
             min_offers_per_side: 2,
             ..policy()
@@ -761,7 +774,7 @@ mod tests {
             |_, _| json_body(DEPTH),
         )
         .await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         assert!(provider
             .piconero_per_unit_cached("USD", TTL, &policy())
             .await
@@ -792,7 +805,7 @@ mod tests {
             |_, _| json_body(DEPTH),
         )
         .await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let fresh = provider
             .piconero_per_unit_cached("USD", TTL, &policy())
             .await
@@ -809,7 +822,7 @@ mod tests {
         assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 2);
 
         let server = spawn_server(|_| status(503), |_, _| json_body(DEPTH)).await;
-        let err = HavenoRateProvider::new(&server.url)
+        let err = HavenoRateProvider::new(&server.url, pinned())
             .piconero_per_unit_cached("USD", TTL, &policy())
             .await
             .unwrap_err();
@@ -822,7 +835,7 @@ mod tests {
     #[tokio::test]
     async fn ticker_failures_are_errors_and_are_not_cached() {
         let server = spawn_server(|_| status(429), |_, _| json_body(DEPTH)).await;
-        assert!(HavenoRateProvider::new(&server.url)
+        assert!(HavenoRateProvider::new(&server.url, pinned())
             .piconero_per_unit_cached("USD", TTL, &policy())
             .await
             .is_err());
@@ -832,7 +845,7 @@ mod tests {
             |_, _| json_body(DEPTH),
         )
         .await;
-        let err = HavenoRateProvider::new(&server.url)
+        let err = HavenoRateProvider::new(&server.url, pinned())
             .piconero_per_unit_cached("USD", TTL, &policy())
             .await
             .unwrap_err();
@@ -843,7 +856,7 @@ mod tests {
 
         let server = spawn_server(|_| json_body("[1,2]"), |_, _| json_body(DEPTH)).await;
         assert!(matches!(
-            HavenoRateProvider::new(&server.url)
+            HavenoRateProvider::new(&server.url, pinned())
                 .piconero_per_unit_cached("USD", TTL, &policy())
                 .await
                 .unwrap_err(),
@@ -861,7 +874,7 @@ mod tests {
             |_, _| json_body(DEPTH),
         )
         .await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         assert!(provider
             .piconero_per_unit_cached("USD", TTL, &policy())
             .await
@@ -876,10 +889,10 @@ mod tests {
         );
         assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 2);
 
-        assert!(HavenoRateProvider::new(format!(
-            "http://{}",
-            service_runtime::unreachable::address()
-        ))
+        assert!(HavenoRateProvider::new(
+            format!("http://{}", service_runtime::unreachable::address()),
+            pinned()
+        )
         .piconero_per_unit_cached("USD", TTL, &policy())
         .await
         .is_err());
@@ -893,7 +906,7 @@ mod tests {
         };
 
         let server = spawn_server(|_| json_body(TICKERS), |_, _| status(500)).await;
-        assert!(HavenoRateProvider::new(&server.url)
+        assert!(HavenoRateProvider::new(&server.url, pinned())
             .piconero_per_unit_cached("USD", TTL, &strict)
             .await
             .is_err());
@@ -903,7 +916,7 @@ mod tests {
             |_, _| json_body(r#"{"status":404,"message":"no such pair"}"#),
         )
         .await;
-        let err = HavenoRateProvider::new(&server.url)
+        let err = HavenoRateProvider::new(&server.url, pinned())
             .piconero_per_unit_cached("USD", TTL, &strict)
             .await
             .unwrap_err();
@@ -923,7 +936,7 @@ mod tests {
             },
         )
         .await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         assert!(provider
             .piconero_per_unit_cached("USD", TTL, &strict)
             .await
@@ -945,7 +958,7 @@ mod tests {
             |_, _| json_body(r#"{"bids":[],"asks":[{"amount":1.0,"offer_count":1}]}"#),
         )
         .await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let strict = HavenoPolicy {
             min_offers_per_side: 2,
             ..policy()
@@ -1005,7 +1018,7 @@ mod tests {
 
         let mut expected = Vec::new();
         for policy in &policies {
-            let fresh = HavenoRateProvider::new(&standard().await.url);
+            let fresh = HavenoRateProvider::new(&standard().await.url, pinned());
             expected.push(
                 fresh
                     .piconero_per_unit_cached("USD", TTL, policy)
@@ -1027,7 +1040,7 @@ mod tests {
         ];
         for order in orders {
             let server = standard().await;
-            let shared = HavenoRateProvider::new(&server.url);
+            let shared = HavenoRateProvider::new(&server.url, pinned());
             for &i in &order {
                 let got = shared
                     .piconero_per_unit_cached("USD", TTL, &policies[i])
@@ -1057,7 +1070,7 @@ mod tests {
     #[tokio::test]
     async fn a_rejection_is_not_cached_for_the_next_caller() {
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let strict_spread = HavenoPolicy {
             max_spread_pct: 1.0,
             ..policy()
@@ -1094,7 +1107,7 @@ mod tests {
     #[tokio::test]
     async fn every_policy_that_passes_gets_the_same_price() {
         let server = standard().await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let mut prices = std::collections::HashSet::new();
         for policy in every_kind_of_policy() {
             if let Some(price) = provider
@@ -1114,12 +1127,12 @@ mod tests {
     async fn concurrent_callers_with_different_policies_share_one_fetch_and_keep_their_own_answers()
     {
         let server = standard().await;
-        let provider = Arc::new(HavenoRateProvider::new(&server.url));
+        let provider = Arc::new(HavenoRateProvider::new(&server.url, pinned()));
         let policies = every_kind_of_policy();
         let mut expected = Vec::new();
         for policy in &policies {
             expected.push(
-                HavenoRateProvider::new(&standard().await.url)
+                HavenoRateProvider::new(&standard().await.url, pinned())
                     .piconero_per_unit_cached("USD", TTL, policy)
                     .await
                     .unwrap(),
@@ -1167,7 +1180,7 @@ mod tests {
             }
         })
         .await;
-        let provider = HavenoRateProvider::new(&server.url);
+        let provider = HavenoRateProvider::new(&server.url, pinned());
         let wants_5_offers = HavenoPolicy {
             min_offers_per_side: 5,
             ..policy()
@@ -1234,7 +1247,7 @@ mod tests {
     // Run daily by `cargo xtask live` (live-network.yml), never per change.
     #[ignore = "needs the live haveno.markets API"]
     async fn live_haveno_markets_api_prices_fiat_under_both_policies() {
-        let provider = HavenoRateProvider::new("https://haveno.markets");
+        let provider = HavenoRateProvider::new("https://haveno.markets", pinned());
         let strict = HavenoPolicy {
             min_offers_per_side: 2,
             min_depth_xmr_per_side: 1.0,

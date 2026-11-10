@@ -154,13 +154,14 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let outcome = match verify::verify(&client, args.product, &parsed).await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("error: attestation verification FAILED: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let outcome =
+        match verify::verify(&client, args.product, &parsed, clock::Clock::System.now()).await {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("error: attestation verification FAILED: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     println!("    chain ok: report signature verifies against a genuine AMD-issued VCEK, chained to the pinned AMD root, and not on AMD's revocation list");
     println!(

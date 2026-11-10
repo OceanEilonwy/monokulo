@@ -25,6 +25,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use clock::UnixTime;
 use rusqlite::params;
 
 use super::{OrderId, Result, Store};
@@ -53,7 +54,7 @@ impl Store {
         &self,
         order_id: &OrderId,
         network: monero::Network,
-        now: i64,
+        now: UnixTime,
     ) -> Result<Conflicts> {
         let mut groups: BTreeMap<String, Vec<Row>> = BTreeMap::new();
         {
@@ -169,14 +170,14 @@ impl Store {
     }
 
     /// Voids payment `id` for `by` (`Some`), or brings it back (`None`).
-    fn supersede(&self, order_id: &OrderId, id: i64, by: Option<i64>, now: i64) -> Result<()> {
+    fn supersede(&self, order_id: &OrderId, id: i64, by: Option<i64>, now: UnixTime) -> Result<()> {
         match by {
             Some(winner) => {
                 self.conn.execute(
                     "UPDATE order_payments
                      SET voided_at_utc = COALESCE(voided_at_utc, ?2), superseded_by = ?3
                      WHERE id = ?1 AND (voided_at_utc IS NULL OR superseded_by IS NOT NULL)",
-                    params![id, now, winner],
+                    params![id, now.as_secs(), winner],
                 )?;
                 tracing::info!(
                     order.id = %order_id,
@@ -219,7 +220,7 @@ mod tests {
                     confirmations_required: Some(confirmations),
                     order_expiry_seconds: None,
                 },
-                1000,
+                UnixTime::from_secs(1000),
             )
             .unwrap();
         let index = store.allocate_minor_index(&tenant.tenant.id).unwrap();
@@ -257,7 +258,9 @@ mod tests {
 
     /// (status, amount received) after a recompute at tip 50.
     fn recompute(store: &Store, order: &OrderId) -> (OrderStatus, u64) {
-        store.recompute_order_status(order, 50, 2000).unwrap();
+        store
+            .recompute_order_status(order, 50, UnixTime::from_secs(2000))
+            .unwrap();
         let order = store.get_order_by_id(order).unwrap().unwrap();
         (order.status, order.amount_received_piconero.get())
     }
@@ -306,7 +309,9 @@ mod tests {
             .voided_payments_page(NET, 0, 0, 10)
             .unwrap()
             .is_empty());
-        store.void_payment(&order, "real", 0, 2100).unwrap();
+        store
+            .void_payment(&order, "real", 0, UnixTime::from_secs(2100))
+            .unwrap();
         assert_eq!(
             store.voided_payments_page(NET, 0, 0, 10).unwrap().len(),
             1,
@@ -336,14 +341,18 @@ mod tests {
         store
             .update_payment_block_height(&order, "a", 0, None)
             .unwrap();
-        store.recompute_order_status(&order, 50, 2000).unwrap();
+        store
+            .recompute_order_status(&order, 50, UnixTime::from_secs(2000))
+            .unwrap();
         assert_eq!(payment(&store, &order, "b").superseded_by, None);
         assert_eq!(payment(&store, &order, "a").superseded_by, Some(b));
 
         store
             .update_payment_block_height(&order, "b", 0, None)
             .unwrap();
-        store.recompute_order_status(&order, 50, 2000).unwrap();
+        store
+            .recompute_order_status(&order, 50, UnixTime::from_secs(2000))
+            .unwrap();
         assert!(store
             .get_all_payments(&order)
             .unwrap()
@@ -359,7 +368,9 @@ mod tests {
         pay(&store, &order, "a", Some(30));
         pay(&store, &order, "b", Some(35));
         recompute(&store, &order);
-        store.void_payment(&order, "a", 0, 1500).unwrap();
+        store
+            .void_payment(&order, "a", 0, UnixTime::from_secs(1500))
+            .unwrap();
         assert_eq!(recompute(&store, &order), (OrderStatus::Paid, 5));
         let b = payment(&store, &order, "b");
         assert_eq!((b.voided_at, b.superseded_by), (None, None));
@@ -370,7 +381,7 @@ mod tests {
     #[test]
     fn under_checking_only_a_proven_block_settles_a_conflict() {
         let (store, order) = shop(1);
-        store.enable_proof(NET, 1).unwrap();
+        store.enable_proof(NET, UnixTime::from_secs(1)).unwrap();
         let block = |height: u64| engine_pow::ProvenBlock {
             height,
             id: [7; 32],
@@ -386,7 +397,7 @@ mod tests {
                     window: (20..=50).map(block).collect(),
                     seeds: vec![],
                 },
-                1,
+                UnixTime::from_secs(1),
             )
             .unwrap();
         for h in 20..=50 {

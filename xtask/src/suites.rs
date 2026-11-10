@@ -12,7 +12,6 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
-    time::Instant,
 };
 
 pub(crate) const HELP: &str = "\
@@ -143,7 +142,7 @@ struct Outcome {
 
 fn timed(runner: &Runner, command: &mut Command, log: Option<PathBuf>) -> Outcome {
     eprintln!("+ {} {}", runner.program, runner.args.join(" "));
-    let start = Instant::now();
+    let start = crate::support::instant();
     let passed = command.status().is_ok_and(|s| s.success());
     Outcome {
         name: runner.name,
@@ -210,7 +209,7 @@ pub(crate) fn test(args: &[&str]) -> io::Result<Exit> {
     }
     let logs = root.join("target/xtask-test");
     fs::create_dir_all(&logs).map_err(|e| at(&logs, e))?;
-    let start = Instant::now();
+    let start = crate::support::instant();
     let alongside: Vec<_> = ALONGSIDE
         .iter()
         .map(|runner| {

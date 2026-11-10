@@ -7,7 +7,7 @@
 //! caller (or a person reporting a problem) can find it.
 
 use std::net::SocketAddr;
-use std::time::Instant;
+use tokio::time::Instant;
 
 use axum::extract::{ConnectInfo, MatchedPath, Request};
 use axum::http::{HeaderValue, Method};

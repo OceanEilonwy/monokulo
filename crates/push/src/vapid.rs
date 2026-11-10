@@ -11,6 +11,7 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::time::Duration;
 
+use clock::UnixTime;
 use http::HeaderValue;
 use p256::ecdsa::VerifyingKey;
 use p256::elliptic_curve::Generate as _;
@@ -70,11 +71,11 @@ impl VapidKey {
         &self,
         aud: &Origin,
         sub: Option<&Contact>,
-        now: i64,
+        now: UnixTime,
     ) -> Result<Authorization, VapidError> {
         let claims = Claims {
             aud: aud.clone(),
-            exp: now.saturating_add(EXPIRY.as_secs() as i64),
+            exp: now.saturating_add(EXPIRY).as_secs(),
             sub: sub.cloned(),
         };
         let header = jwt::Header {
@@ -301,7 +302,7 @@ pub fn verify(
     authorization: &Authorization,
     key: &VapidPublicKey,
     aud: &Origin,
-    now: i64,
+    now: UnixTime,
 ) -> Result<Claims, VapidError> {
     if authorization.key != *key {
         return Err(VapidError::KeyMismatch);
@@ -310,10 +311,11 @@ pub fn verify(
     if claims.aud != *aud {
         return Err(VapidError::Audience);
     }
-    if claims.exp <= now {
+    let exp = UnixTime::from_secs(claims.exp);
+    if exp <= now {
         return Err(VapidError::Expired);
     }
-    if claims.exp > now.saturating_add(MAX_EXPIRY.as_secs() as i64) {
+    if exp > now.saturating_add(MAX_EXPIRY) {
         return Err(VapidError::ExpiryTooFar);
     }
     Ok(claims)
@@ -324,7 +326,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const NOW: i64 = 1_800_000_000;
+    const NOW_SECS: i64 = 1_800_000_000;
+    const NOW: UnixTime = UnixTime::from_secs(NOW_SECS);
+
+    fn at(secs: i64) -> UnixTime {
+        UnixTime::from_secs(secs)
+    }
 
     fn origin() -> Origin {
         Origin::parse("https://push.example.net").unwrap()
@@ -338,7 +345,7 @@ mod tests {
     fn the_rfc_8292_example_verifies() {
         let authorization = Authorization::parse(RFC8292_HEADER).unwrap();
         let key = *authorization.key();
-        let claims = verify(&authorization, &key, &origin(), RFC8292_EXP - 60).unwrap();
+        let claims = verify(&authorization, &key, &origin(), at(RFC8292_EXP - 60)).unwrap();
         assert_eq!(
             claims,
             Claims {
@@ -348,7 +355,7 @@ mod tests {
             }
         );
         assert!(matches!(
-            verify(&authorization, &key, &origin(), RFC8292_EXP),
+            verify(&authorization, &key, &origin(), at(RFC8292_EXP)),
             Err(VapidError::Expired)
         ));
     }
@@ -367,7 +374,7 @@ mod tests {
         assert_eq!(read, authorization);
         let claims = verify(&read, &key.public(), &origin(), NOW).unwrap();
         assert_eq!(claims.aud, origin());
-        assert_eq!(claims.exp, NOW + 12 * 60 * 60);
+        assert_eq!(claims.exp, NOW_SECS + 12 * 60 * 60);
         assert_eq!(claims.sub, Some(contact));
 
         // Without a contact the claim is left out.
@@ -428,8 +435,14 @@ mod tests {
     fn an_expired_authorization_is_refused() {
         let key = VapidKey::generate();
         let authorization = key.authorization(&origin(), None, NOW).unwrap();
-        let exp = NOW + EXPIRY.as_secs() as i64;
-        assert!(verify(&authorization, &key.public(), &origin(), exp - 1).is_ok());
+        let exp = NOW.saturating_add(EXPIRY);
+        assert!(verify(
+            &authorization,
+            &key.public(),
+            &origin(),
+            exp.saturating_sub(Duration::from_secs(1))
+        )
+        .is_ok());
         assert!(matches!(
             verify(&authorization, &key.public(), &origin(), exp),
             Err(VapidError::Expired)
@@ -451,9 +464,9 @@ mod tests {
             key: key.public(),
         };
         let day = MAX_EXPIRY.as_secs() as i64;
-        assert!(verify(&sign(NOW + day), &key.public(), &origin(), NOW).is_ok());
+        assert!(verify(&sign(NOW_SECS + day), &key.public(), &origin(), NOW).is_ok());
         assert!(matches!(
-            verify(&sign(NOW + day + 1), &key.public(), &origin(), NOW),
+            verify(&sign(NOW_SECS + day + 1), &key.public(), &origin(), NOW),
             Err(VapidError::ExpiryTooFar)
         ));
         // An audience that isn't an origin doesn't read as claims.
@@ -461,7 +474,7 @@ mod tests {
             token: Es256Key::from_secret(&key.0)
                 .sign(
                     &jwt::Header::default(),
-                    &json!({"aud": "https://push.example.net/p", "exp": NOW + 60}),
+                    &json!({"aud": "https://push.example.net/p", "exp": NOW_SECS + 60}),
                 )
                 .unwrap(),
             key: key.public(),
@@ -565,7 +578,7 @@ mod tests {
             json!({"aud": "https://push.example.net", "exp": "1800000060"}),
             json!({"aud": "https://push.example.net", "exp": 1_800_000_060.5}),
             json!({"aud": "https://push.example.net", "exp": null}),
-            json!({"exp": NOW + 60}),
+            json!({"exp": NOW_SECS + 60}),
         ] {
             assert!(
                 matches!(
@@ -592,21 +605,21 @@ mod tests {
             &jwt::Header::default(),
             json!({
                 "aud": "https://push.example.net",
-                "exp": NOW + 3600,
-                "iat": NOW,
+                "exp": NOW_SECS + 3600,
+                "iat": NOW_SECS,
                 "jti": "x",
                 "sub": "mailto:ops@example.net",
             }),
         );
         let claims = verify(&authorization, &key.public(), &origin(), NOW).unwrap();
-        assert_eq!(claims.exp, NOW + 3600);
+        assert_eq!(claims.exp, NOW_SECS + 3600);
         assert_eq!(claims.sub.unwrap().as_str(), "mailto:ops@example.net");
 
         // A `sub` that isn't a contact URL makes the claims unreadable.
         let bad_sub = hand_signed(
             &key,
             &jwt::Header::default(),
-            json!({"aud": "https://push.example.net", "exp": NOW + 60, "sub": "ops"}),
+            json!({"aud": "https://push.example.net", "exp": NOW_SECS + 60, "sub": "ops"}),
         );
         assert!(matches!(
             verify(&bad_sub, &key.public(), &origin(), NOW),
@@ -651,7 +664,8 @@ mod tests {
             Err(VapidError::Jwt(JwtError::Algorithm(ref alg))) if alg == "none"
         ));
 
-        let longer = segment(json!({"aud": "https://push.example.net", "exp": NOW + 20 * 60 * 60}));
+        let longer =
+            segment(json!({"aud": "https://push.example.net", "exp": NOW_SECS + 20 * 60 * 60}));
         let header_segment = genuine.token.as_str().split('.').next().unwrap();
         let stretched = format!("{header_segment}.{longer}.{signature}");
         let read = Authorization::parse(&header(&stretched)).unwrap();
@@ -674,7 +688,7 @@ mod tests {
                 &authorization,
                 &key,
                 &Origin::parse("https://relay.example.net").unwrap(),
-                RFC8292_EXP - 60
+                at(RFC8292_EXP - 60)
             ),
             Err(VapidError::Audience)
         ));
@@ -683,7 +697,7 @@ mod tests {
                 &authorization,
                 &VapidKey::generate().public(),
                 &origin(),
-                RFC8292_EXP - 60
+                at(RFC8292_EXP - 60)
             ),
             Err(VapidError::KeyMismatch)
         ));

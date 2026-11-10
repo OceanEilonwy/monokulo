@@ -994,7 +994,7 @@ mod tests {
             .expect("the shell did not write its pid within the 500 ms deadline")
             .trim()
             .to_string();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = crate::support::instant() + Duration::from_secs(2);
         let alive = loop {
             let status = Command::new("ps")
                 .args(["-o", "stat=", "-p", &pid])
@@ -1002,7 +1002,7 @@ mod tests {
                 .unwrap();
             let status = String::from_utf8_lossy(&status.stdout).trim().to_string();
             let alive = !status.is_empty() && !status.starts_with('Z');
-            if !alive || std::time::Instant::now() >= deadline {
+            if !alive || crate::support::instant() >= deadline {
                 break alive;
             }
             std::thread::sleep(Duration::from_millis(20));

@@ -8,6 +8,7 @@
 
 use std::net::SocketAddr;
 
+use clock::UnixTime;
 use serde::Serialize;
 use service_runtime::status::Event;
 
@@ -98,9 +99,9 @@ pub struct Platforms {
 
 impl Relay {
     /// The relay's status now, listening on `listen` since `started_at`.
-    pub async fn report(&self, listen: SocketAddr, started_at: i64) -> Report {
+    pub async fn report(&self, listen: SocketAddr, started_at: UnixTime) -> Report {
         let shared = &self.shared;
-        let stored = match self.handles_stored(service_runtime::time::now_unix()).await {
+        let stored = match self.handles_stored().await {
             Ok(stored) => Some(stored),
             Err(error) => {
                 tracing::warn!(error = %error, "the status couldn't count the handles");
@@ -111,7 +112,7 @@ impl Relay {
             service: "monokulo-push-relay",
             version: env!("CARGO_PKG_VERSION"),
             commit: service_runtime::status::commit(),
-            started_at,
+            started_at: started_at.as_secs(),
             listen,
             public_uri: shared.public_uri.origin().to_string(),
             apps: shared

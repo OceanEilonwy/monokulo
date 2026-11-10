@@ -7,12 +7,12 @@ name = "abuse"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "clock",
  "hex",
  "hmac 0.13.0",
  "parking_lot",
  "rand 0.10.2",
  "serde",
- "service-runtime",
  "sha2 0.11.0",
  "tokio",
  "tracing",
@@ -1118,6 +1118,7 @@ name = "credentials"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "clock",
  "hex",
  "hmac 0.13.0",
  "rand 0.10.2",
@@ -1669,6 +1670,7 @@ dependencies = [
 name = "domain-proof"
 version = "0.1.0"
 dependencies = [
+ "clock",
  "dns-client",
  "domain-proof",
  "outbound",
@@ -1715,6 +1717,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "cli-wallet",
+ "clock",
  "credentials",
  "domain-proof",
  "engine",
@@ -1861,6 +1864,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "clock",
  "credentials",
  "engine-daemon",
  "engine-pow",
@@ -1905,6 +1909,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "clock",
  "engine-daemon",
  "engine-pow",
  "engine-protocol",
@@ -1918,7 +1923,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "service-runtime",
  "telemetry",
  "thiserror 2.0.20",
  "tokio",
@@ -1930,6 +1934,7 @@ dependencies = [
 name = "engine-pow"
 version = "0.1.0"
 dependencies = [
+ "clock",
  "hex",
  "monero",
  "randomx-rs",
@@ -1960,6 +1965,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "clock",
  "credentials",
  "engine",
  "engine-daemon",
@@ -1971,7 +1977,6 @@ dependencies = [
  "pricing",
  "reqwest",
  "serde_json",
- "service-runtime",
  "snp-attest",
  "telemetry",
  "tokio",
@@ -3259,6 +3264,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
+ "clock",
  "engine-protocol",
  "futures-util",
  "getrandom 0.4.3",
@@ -3288,6 +3294,7 @@ name = "key-custody-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "clock",
  "hex",
  "key-custody",
  "reqwest",
@@ -3570,6 +3577,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "cli-wallet",
+ "clock",
  "credentials",
  "engine-daemon",
  "engine-protocol",
@@ -3581,7 +3589,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "service-runtime",
  "thiserror 2.0.20",
  "tokio",
  "url",
@@ -3840,6 +3847,7 @@ dependencies = [
  "bytes",
  "checkout-template",
  "clap",
+ "clock",
  "credentials",
  "domain-proof",
  "engine",
@@ -3908,6 +3916,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "clap",
+ "clock",
  "hex",
  "hmac 0.13.0",
  "http-body-util",
@@ -4615,6 +4624,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "clock",
  "engine-protocol",
  "http",
  "httpdate",
@@ -4786,6 +4796,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
+ "clock",
  "hkdf 0.13.0",
  "http",
  "http-body-util",
@@ -4816,6 +4827,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "clap",
+ "clock",
  "hex",
  "hkdf 0.13.0",
  "hmac 0.13.0",
@@ -5109,6 +5121,7 @@ checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
 name = "rate-limit"
 version = "0.1.0"
 dependencies = [
+ "clock",
  "parking_lot",
 ]
 
@@ -5890,6 +5903,7 @@ name = "service-runtime"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "clock",
  "http-body-util",
  "parking_lot",
  "serde",
@@ -6091,6 +6105,7 @@ checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
 name = "snp-attest"
 version = "0.1.0"
 dependencies = [
+ "clock",
  "hex",
  "libc",
  "p384 0.14.0",
@@ -6415,6 +6430,7 @@ name = "telemetry"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "clock",
  "live-settings",
  "opentelemetry",
  "opentelemetry-proto",
@@ -7821,6 +7837,7 @@ dependencies = [
  "arti-client",
  "axum",
  "bytes",
+ "clock",
  "futures-util",
  "http-body-util",
  "hyper",
@@ -7828,7 +7845,6 @@ dependencies = [
  "outbound",
  "parking_lot",
  "safelog",
- "service-runtime",
  "sha3",
  "tokio",
  "tor-cell",
@@ -8798,6 +8814,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "api-reference",
+ "clock",
  "getrandom 0.4.3",
  "hex",
  "image",

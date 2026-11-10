@@ -15,6 +15,8 @@ description = "Web Push for a sender and a relay: RFC 8291 encryption, VAPID (RF
 test-support = []
 
 [dependencies]
+# What time it is: a sender is handed the moment (`Sender::send`).
+clock = { path = "../clock" }
 # RFC 8291's content encoding: AES-128-GCM under a key and nonce from HKDF
 # (SHA-256) over a P-256 ECDH secret. The RustCrypto generation the rest
 # of the workspace is on (aes-gcm 0.11, hkdf 0.13, sha2 0.11).
@@ -45,7 +47,7 @@ hyper = { version = "1.11.1", features = ["http1", "server"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 # The test-support decryption, to read a push as the device would.
 push = { path = ".", features = ["test-support"] }
-tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 # The provider reqwest's rustls already uses, so the test build adds no
 # second one.
 tokio-rustls = { version = "0.26.5", default-features = false, features = ["aws_lc_rs"] }

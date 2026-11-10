@@ -26,7 +26,7 @@ pub const TEMPLATE: Scheme = Scheme {
 /// The domains that must approve a store's custom page: all it has that count. A
 /// stolen dashboard adding a domain of its own can't approve a version by itself, as
 /// the shop's domain has to as well.
-pub fn approvers(domains: &[StoreDomainRow], now: i64) -> Vec<&StoreDomainRow> {
+pub fn approvers(domains: &[StoreDomainRow], now: clock::UnixTime) -> Vec<&StoreDomainRow> {
     domains
         .iter()
         .filter(|row| row.state(now).counts())
@@ -39,7 +39,7 @@ pub fn approvers(domains: &[StoreDomainRow], now: i64) -> Vec<&StoreDomainRow> {
 pub fn showing_on<'a>(
     page: &PublishedCheckoutPage,
     domains: &'a [StoreDomainRow],
-    now: i64,
+    now: clock::UnixTime,
 ) -> Vec<&'a StoreDomainRow> {
     approvers(domains, now)
         .into_iter()
@@ -51,7 +51,7 @@ pub fn showing_on<'a>(
 pub fn waiting_on(
     page: &PublishedCheckoutPage,
     domains: &[StoreDomainRow],
-    now: i64,
+    now: clock::UnixTime,
 ) -> Vec<String> {
     approver_names(domains, now)
         .into_iter()
@@ -71,7 +71,7 @@ pub fn proof_token(token: &str, domain: &str) -> String {
 }
 
 /// [`approvers`]' names.
-pub fn approver_names(domains: &[StoreDomainRow], now: i64) -> Vec<String> {
+pub fn approver_names(domains: &[StoreDomainRow], now: clock::UnixTime) -> Vec<String> {
     approvers(domains, now)
         .into_iter()
         .map(|row| row.domain.clone())
@@ -134,7 +134,7 @@ pub enum PageStanding {
     Working,
     /// Its proof has been missing since `since`: still showing, until its grace
     /// period ends.
-    Failing { since: i64 },
+    Failing { since: clock::UnixTime },
     /// Its proof has been gone too long, its domain no longer counts, or it no
     /// longer passes the checks.
     NotShowing,
@@ -152,7 +152,7 @@ impl PageStanding {
 pub fn standing(
     page: &PublishedCheckoutPage,
     domains: &[StoreDomainRow],
-    now: i64,
+    now: clock::UnixTime,
 ) -> PageStanding {
     if page.turned_off_at.is_some() {
         return PageStanding::TurnedOff;
@@ -216,7 +216,7 @@ pub fn chosen_page(
     frame: &Frame,
     over_tor: bool,
     asked_for_a_layout: bool,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Option<ChosenPage> {
     if asked_for_a_layout || *frame == Frame::NotFramed {
         return None;
@@ -263,7 +263,7 @@ pub fn page_still_showing(
     db: &crate::db::Db,
     id: &ConnectionId,
     token: &str,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Result<Option<PublishedCheckoutPage>, crate::db::DbError> {
     let Some(page) = db
         .published_checkout_page(id)?
@@ -341,7 +341,7 @@ pub async fn check_and_record(
     id: &ConnectionId,
     domains: &[String],
     token: &str,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Result<Approved, crate::db::DbError> {
     let approved = approved(&check_every(proofs, domains, token).await);
     let (id, token, domains, result) = (
@@ -364,16 +364,22 @@ pub async fn check_and_record(
 /// Whether a page is due a look at its proofs: daily, or hourly while something's
 /// wrong or a domain hasn't approved it, so a fix or a new domain is noticed well
 /// inside the grace period.
-pub fn check_due(page: &PublishedCheckoutPage, domains: &[StoreDomainRow], now: i64) -> bool {
+pub fn check_due(
+    page: &PublishedCheckoutPage,
+    domains: &[StoreDomainRow],
+    now: clock::UnixTime,
+) -> bool {
     let every = if page.failing_since.is_some()
         || page.last_error.is_some()
         || !waiting_on(page, domains, now).is_empty()
     {
-        domain_proof::FAILING_RECHECK_EVERY_SECS
+        domain_proof::FAILING_RECHECK_EVERY
     } else {
-        domain_proof::RECHECK_EVERY_SECS
+        domain_proof::RECHECK_EVERY
     };
-    page.last_checked_at.unwrap_or(page.published_at) + every <= now
+    clock::UnixTime::from_secs(page.last_checked_at.unwrap_or(page.published_at))
+        .saturating_add(every)
+        <= now
 }
 
 /// Looks at a page's proof in the background if it's due. A view never waits for
@@ -383,7 +389,7 @@ pub fn recheck_if_due(
     proofs: Proofs,
     page: &PublishedCheckoutPage,
     domains: &[StoreDomainRow],
-    now: i64,
+    now: clock::UnixTime,
 ) {
     static CHECKING: LazyLock<Mutex<HashSet<ConnectionId>>> = LazyLock::new(Mutex::default);
     if page.turned_off_at.is_some() || !check_due(page, domains, now) {
@@ -409,6 +415,11 @@ pub fn recheck_if_due(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A span as the whole seconds a stored column holds.
+    fn secs(span: std::time::Duration) -> i64 {
+        i64::try_from(span.as_secs()).unwrap()
+    }
 
     fn domain(name: &str, verified: Option<i64>, failing: Option<i64>) -> StoreDomainRow {
         StoreDomainRow {
@@ -460,15 +471,24 @@ mod tests {
         let lapsed = domain(
             "lapsed.example",
             Some(1),
-            Some(NOW - domain_proof::GRACE_SECS),
+            Some(NOW - secs(domain_proof::GRACE)),
         );
         assert_eq!(
-            approver_names(&[onion.clone(), web.clone()], NOW),
+            approver_names(
+                &[onion.clone(), web.clone()],
+                clock::UnixTime::from_secs(NOW)
+            ),
             [ONION, "shop.example"]
         );
-        assert_eq!(approver_names(std::slice::from_ref(&onion), NOW), [ONION]);
         assert_eq!(
-            approver_names(&[pending, lapsed], NOW),
+            approver_names(
+                std::slice::from_ref(&onion),
+                clock::UnixTime::from_secs(NOW)
+            ),
+            [ONION]
+        );
+        assert_eq!(
+            approver_names(&[pending, lapsed], clock::UnixTime::from_secs(NOW)),
             Vec::<String>::new()
         );
     }
@@ -538,26 +558,40 @@ mod tests {
     #[test]
     fn a_page_stands_by_its_proof_its_domain_and_its_operator() {
         let domains = [domain("shop.example", Some(1), None)];
-        assert_eq!(standing(&page(), &domains, NOW), PageStanding::Working);
+        assert_eq!(
+            standing(&page(), &domains, clock::UnixTime::from_secs(NOW)),
+            PageStanding::Working
+        );
         let failing = PublishedCheckoutPage {
             failing_since: Some(NOW - 60),
             ..page()
         };
         assert_eq!(
-            standing(&failing, &domains, NOW),
-            PageStanding::Failing { since: NOW - 60 }
+            standing(&failing, &domains, clock::UnixTime::from_secs(NOW)),
+            PageStanding::Failing {
+                since: clock::UnixTime::from_secs(NOW - 60)
+            }
         );
         let gone = PublishedCheckoutPage {
-            failing_since: Some(NOW - domain_proof::GRACE_SECS),
+            failing_since: Some(NOW - secs(domain_proof::GRACE)),
             ..page()
         };
-        assert_eq!(standing(&gone, &domains, NOW), PageStanding::NotShowing);
-        assert_eq!(standing(&page(), &[], NOW), PageStanding::NotShowing);
+        assert_eq!(
+            standing(&gone, &domains, clock::UnixTime::from_secs(NOW)),
+            PageStanding::NotShowing
+        );
+        assert_eq!(
+            standing(&page(), &[], clock::UnixTime::from_secs(NOW)),
+            PageStanding::NotShowing
+        );
         let off = PublishedCheckoutPage {
             turned_off_at: Some(NOW),
             ..page()
         };
-        assert_eq!(standing(&off, &domains, NOW), PageStanding::TurnedOff);
+        assert_eq!(
+            standing(&off, &domains, clock::UnixTime::from_secs(NOW)),
+            PageStanding::TurnedOff
+        );
     }
 
     /// The whole decision: each of these alone means the store's own layout.
@@ -573,7 +607,15 @@ mod tests {
             } else {
                 Frame::NotFramed
             };
-            chosen_page(page, domains, &frame, false, asked, NOW).is_some()
+            chosen_page(
+                page,
+                domains,
+                &frame,
+                false,
+                asked,
+                clock::UnixTime::from_secs(NOW),
+            )
+            .is_some()
         };
         assert!(shown(Some(&page()), &domains, true, false));
         assert!(!shown(None, &domains, true, false), "no page");
@@ -603,8 +645,15 @@ mod tests {
     #[test]
     fn a_chosen_page_can_only_be_framed_by_its_stores_sites() {
         let domains = [domain("shop.example", Some(1), None)];
-        let chosen =
-            chosen_page(Some(&page()), &domains, &shop_frame(), false, false, NOW).unwrap();
+        let chosen = chosen_page(
+            Some(&page()),
+            &domains,
+            &shop_frame(),
+            false,
+            false,
+            clock::UnixTime::from_secs(NOW),
+        )
+        .unwrap();
         assert_eq!(
             chosen.frame_ancestors.as_deref(),
             Some("frame-ancestors 'self' https://shop.example https://*.shop.example")
@@ -624,7 +673,14 @@ mod tests {
             referrer: referrer.map(str::to_string),
         };
         let on = |frame: &Frame, over_tor| {
-            chosen_page(Some(&page()), &both, frame, over_tor, false, NOW)
+            chosen_page(
+                Some(&page()),
+                &both,
+                frame,
+                over_tor,
+                false,
+                clock::UnixTime::from_secs(NOW),
+            )
         };
         let web = on(&frame(Some("https://shop.example")), false).unwrap();
         let web_policy = web.frame_ancestors.unwrap();
@@ -664,7 +720,14 @@ mod tests {
             let frame = Frame::OfAnotherSite {
                 referrer: Some(referrer.to_string()),
             };
-            chosen_page(Some(&theirs), &domains, &frame, false, false, NOW)
+            chosen_page(
+                Some(&theirs),
+                &domains,
+                &frame,
+                false,
+                false,
+                clock::UnixTime::from_secs(NOW),
+            )
         };
         assert!(chosen("https://shop.example").is_none());
         let policy = chosen(&format!("https://{thief}"))
@@ -672,30 +735,42 @@ mod tests {
             .frame_ancestors
             .unwrap();
         assert!(!policy.contains("shop.example"), "{policy}");
-        assert_eq!(waiting_on(&theirs, &domains, NOW), ["shop.example"]);
+        assert_eq!(
+            waiting_on(&theirs, &domains, clock::UnixTime::from_secs(NOW)),
+            ["shop.example"]
+        );
         assert!(check_due(
             &PublishedCheckoutPage {
-                last_checked_at: Some(NOW - domain_proof::FAILING_RECHECK_EVERY_SECS),
+                last_checked_at: Some(NOW - secs(domain_proof::FAILING_RECHECK_EVERY)),
                 ..theirs.clone()
             },
             &domains,
-            NOW
+            clock::UnixTime::from_secs(NOW)
         ));
         // A page with nowhere left to show isn't showing, as its card says.
         let shop_only = [domain("shop.example", Some(1), None)];
-        assert_eq!(standing(&theirs, &shop_only, NOW), PageStanding::NotShowing);
+        assert_eq!(
+            standing(&theirs, &shop_only, clock::UnixTime::from_secs(NOW)),
+            PageStanding::NotShowing
+        );
     }
 
     /// One domain lapsing leaves the other showing, and it's no longer asked.
     #[test]
     fn a_lapsed_or_pending_domain_isnt_asked_and_the_other_stays() {
-        let lapsed = domain(ONION, Some(1), Some(NOW - domain_proof::GRACE_SECS));
+        let lapsed = domain(ONION, Some(1), Some(NOW - secs(domain_proof::GRACE)));
         let pending = domain(ONION, None, None);
         let web = domain("shop.example", Some(1), None);
         for other in [lapsed, pending] {
             let domains = [web.clone(), other];
-            assert_eq!(approver_names(&domains, NOW), ["shop.example"]);
-            assert_eq!(standing(&page(), &domains, NOW), PageStanding::Working);
+            assert_eq!(
+                approver_names(&domains, clock::UnixTime::from_secs(NOW)),
+                ["shop.example"]
+            );
+            assert_eq!(
+                standing(&page(), &domains, clock::UnixTime::from_secs(NOW)),
+                PageStanding::Working
+            );
         }
     }
 
@@ -717,7 +792,15 @@ mod tests {
             let frame = Frame::OfAnotherSite {
                 referrer: referrer.map(str::to_string),
             };
-            chosen_page(Some(&page()), &domains, &frame, false, false, NOW).is_some()
+            chosen_page(
+                Some(&page()),
+                &domains,
+                &frame,
+                false,
+                false,
+                clock::UnixTime::from_secs(NOW),
+            )
+            .is_some()
         };
         assert!(shown(Some("https://shop.example")));
         assert!(shown(Some("https://www.shop.example")));
@@ -774,7 +857,15 @@ mod tests {
     fn a_page_that_no_longer_passes_the_checks_doesnt_show() {
         let domains = [domain("shop.example", Some(1), None)];
         let shown = |page: PublishedCheckoutPage| {
-            chosen_page(Some(&page), &domains, &shop_frame(), false, false, NOW).is_some()
+            chosen_page(
+                Some(&page),
+                &domains,
+                &shop_frame(),
+                false,
+                false,
+                clock::UnixTime::from_secs(NOW),
+            )
+            .is_some()
         };
         assert!(!shown(PublishedCheckoutPage {
             token: "no-address".to_string(),
@@ -797,12 +888,12 @@ mod tests {
         assert!(!check_due(
             &fine,
             &[],
-            NOW + domain_proof::RECHECK_EVERY_SECS - 1
+            clock::UnixTime::from_secs(NOW + secs(domain_proof::RECHECK_EVERY) - 1)
         ));
         assert!(check_due(
             &fine,
             &[],
-            NOW + domain_proof::RECHECK_EVERY_SECS
+            clock::UnixTime::from_secs(NOW + secs(domain_proof::RECHECK_EVERY))
         ));
         let failing = PublishedCheckoutPage {
             failing_since: Some(NOW),
@@ -811,7 +902,7 @@ mod tests {
         assert!(check_due(
             &failing,
             &[],
-            NOW + domain_proof::FAILING_RECHECK_EVERY_SECS
+            clock::UnixTime::from_secs(NOW + secs(domain_proof::FAILING_RECHECK_EVERY))
         ));
         let no_answer = PublishedCheckoutPage {
             last_error: Some("x".to_string()),
@@ -820,7 +911,7 @@ mod tests {
         assert!(check_due(
             &no_answer,
             &[],
-            NOW + domain_proof::FAILING_RECHECK_EVERY_SECS
+            clock::UnixTime::from_secs(NOW + secs(domain_proof::FAILING_RECHECK_EVERY))
         ));
     }
 }

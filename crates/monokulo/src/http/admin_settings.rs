@@ -374,7 +374,7 @@ async fn fetch_engine_settings(
 /// Settings that hold a Unix time until which something stays on get the
 /// "off / on for N hours" control instead of a number box.
 fn with_time_limits(fields: &mut [AdminScalarFieldView], clock: &views::time::Clock) {
-    let now = u64::try_from(crate::now_unix()).unwrap_or(0);
+    let now = u64::try_from(clock.now().as_secs()).unwrap_or(0);
     for field in fields
         .iter_mut()
         .filter(|f| f.key == "logging.dev_mode_until")
@@ -487,7 +487,7 @@ async fn build_view_model(
         relay_open,
         relay_apps,
     } = result;
-    let clock = views::time::Clock::for_user(admin);
+    let clock = views::time::Clock::for_user(admin, state.clock.now());
     // By form name: monokulo and the engine both have `logging.level`.
     let problem = |field: &mut AdminScalarFieldView| {
         if let Some((_, message)) = field_errors
@@ -2111,7 +2111,7 @@ fn relay_row_action(state: &AppState, form: &HashMap<String, String>, action: &s
 /// to (post, redirect, get), shown once.
 struct Flash {
     result: SaveResult,
-    created: std::time::Instant,
+    created: tokio::time::Instant,
 }
 
 /// Flashes waiting for their page, by a random token in the redirect's
@@ -2171,7 +2171,7 @@ pub async fn save(
         if !fx.0 {
             let token = put_flash(Flash {
                 result,
-                created: std::time::Instant::now(),
+                created: tokio::time::Instant::now(),
             });
             return crate::base::see_other(format!(
                 "{}&relay=edit&saved={token}#card-relay",
@@ -2182,7 +2182,8 @@ pub async fn save(
         return axum::response::Html(views::admin::settings_fragment(&view, false).into_string())
             .into_response();
     }
-    let at = views::time::Clock::for_user(&admin_user).text(crate::now_unix());
+    let now = state.clock.now();
+    let at = views::time::Clock::for_user(&admin_user, now).text(now.as_secs());
     let result = SaveResult::from(save_tab(&state, &form, at).await);
     let (refused, card) = match &result.outcome {
         Some(SaveOutcome::Refused { failures } | SaveOutcome::PartlySaved { failures, .. }) => {
@@ -2194,7 +2195,7 @@ pub async fn save(
     if !fx.0 {
         let token = put_flash(Flash {
             result,
-            created: std::time::Instant::now(),
+            created: tokio::time::Instant::now(),
         });
         let anchor = card
             .map(|card| format!("#{}", card.card_id()))
@@ -2376,7 +2377,7 @@ pub async fn reload(
             });
             let token = put_flash(Flash {
                 result,
-                created: std::time::Instant::now(),
+                created: tokio::time::Instant::now(),
             });
             crate::base::see_other(format!("{}&saved={token}", tab.href()))
         }
@@ -2414,7 +2415,11 @@ mod tests {
 
     fn test_exchange_rate_provider(
     ) -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
+        std::sync::Arc::new(
+            crate::exchange_rate_config::ExchangeRateProviders::xmr_only(clock::Clock::Fixed(
+                clock::UnixTime::EPOCH,
+            )),
+        )
     }
 
     /// A real engine, which accepts the test engine token every test
@@ -2478,7 +2483,9 @@ mod tests {
         db.seed_test_admin();
         let db = db.into_shared();
         let exchange_rate = test_exchange_rate_provider();
-        let abuse: std::sync::Arc<abuse::AbuseProtection> = Default::default();
+        let base = AppState::for_tests_with_db(db.clone());
+        let abuse =
+            std::sync::Arc::new(abuse::AbuseProtection::default().with_clock(base.clock.clone()));
         let settings = crate::settings::MonokuloSettings::load(
             crate::settings::DbSettings::new(
                 crate::db::Database::inline(db.clone()),
@@ -2497,7 +2504,7 @@ mod tests {
             exchange_rate,
             abuse,
             settings,
-            ..AppState::for_tests_with_db(db)
+            ..base
         }
     }
 
@@ -2664,7 +2671,9 @@ mod tests {
 
         {
             let store = engine.store().lock();
-            store.enable_proof(monero::Network::Mainnet, 1).unwrap();
+            store
+                .enable_proof(monero::Network::Mainnet, clock::UnixTime::from_secs(1))
+                .unwrap();
             let block = |height: u64| engine_pow::ProvenBlock {
                 height,
                 id: [height as u8; 32],
@@ -2680,7 +2689,7 @@ mod tests {
                         window: (1..=3).map(block).collect(),
                         seeds: vec![],
                     },
-                    2,
+                    clock::UnixTime::from_secs(2),
                 )
                 .unwrap();
         }
@@ -4945,7 +4954,11 @@ mod tests {
     #[test]
     fn development_logging_ends_in_the_admins_own_zone() {
         use crate::views::admin::{AdminScalarFieldView, SettingKindView};
-        let clock = crate::views::time::Clock::new(Some("Australia/Perth"), None, 1_790_000_000);
+        let clock = crate::views::time::Clock::new(
+            Some("Australia/Perth"),
+            None,
+            clock::UnixTime::from_secs(1_790_000_000),
+        );
         let mut fields = [AdminScalarFieldView {
             key: "logging.dev_mode_until".into(),
             value: "1790000600".into(),

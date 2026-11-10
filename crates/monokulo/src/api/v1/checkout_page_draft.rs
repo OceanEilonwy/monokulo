@@ -55,7 +55,7 @@ pub(crate) async fn current(
     state: &crate::http::AppState,
     id: &crate::db::ConnectionId,
 ) -> Result<Option<Body>, crate::db::DbError> {
-    let now = crate::now_unix();
+    let now = state.clock.now();
     let store_id = id.clone();
     let (draft, domains) = state
         .db
@@ -95,7 +95,9 @@ pub(crate) async fn current(
             &draft.preview_token,
         ),
         created_at: draft.created_at,
-        expires_at: draft.created_at + crate::db::DRAFT_SECS,
+        expires_at: clock::UnixTime::from_secs(draft.created_at)
+            .saturating_add(crate::db::DRAFT_LIFETIME)
+            .as_secs(),
         approvals,
         page: Link::new(checkout_page::Path {}),
         check_approval: Form::new(),
@@ -141,7 +143,7 @@ struct Input {
 )]
 async fn save(store: Store, instance: Instance, input: Input) -> api::Result<Body> {
     let state = instance.0;
-    let now = crate::now_unix();
+    let now = state.clock.now();
     if !pages::SAVES.check(store.id.clone(), now) {
         return Err(too_often(
             "That's a lot of saves. Wait a minute, then try again.",

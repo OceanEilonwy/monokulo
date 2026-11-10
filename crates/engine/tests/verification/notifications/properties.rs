@@ -47,7 +47,7 @@ async fn poll_recovery(mode: u8, burst: usize) {
     };
     Arc::get_mut(&mut settings).unwrap().scan = live_settings::Live::new(scan);
     let wakes = Arc::new(NodeWakes::default());
-    let state = Arc::new(crate::work::ScanState::default().with_wakes(Arc::clone(&wakes)));
+    let state = Arc::new(crate::node_test_support::scan_state().with_wakes(Arc::clone(&wakes)));
     let live = crate::key_custody::LiveWallet::of_store(&store.lock(), &tenant, handle);
     let handles = Arc::new(crate::key_custody::WalletHandles::from(
         std::collections::HashMap::from([(tenant, live)]),
@@ -154,10 +154,10 @@ mod zmq {
     /// real sockets get real time to answer. Waits are therefore bounded in
     /// real time, by `within`, rather than by Tokio timeouts.
     async fn within(what: &str, mut done: impl FnMut() -> bool) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = crate::property_support::real_now() + Duration::from_secs(5);
         while !done() {
             assert!(
-                std::time::Instant::now() < deadline,
+                crate::property_support::real_now() < deadline,
                 "timed out waiting for {what}"
             );
             tokio::task::yield_now().await;
@@ -193,20 +193,20 @@ mod zmq {
             now.pool_announcements > before.pool_announcements
                 || now.block_announcements > before.block_announcements
         };
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = crate::property_support::real_now() + Duration::from_secs(5);
         // A frame sent before the subscription reaches the publisher is
         // dropped, so send again every 10ms of real time until one counts.
         loop {
             publisher.send(&format!("{topic}:deliberately ignored JSON"));
-            let resend = std::time::Instant::now() + Duration::from_millis(10);
-            while std::time::Instant::now() < resend {
+            let resend = crate::property_support::real_now() + Duration::from_millis(10);
+            while crate::property_support::real_now() < resend {
                 if counted() {
                     return;
                 }
                 tokio::task::yield_now().await;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                crate::property_support::real_now() < deadline,
                 "timed out waiting for {topic}"
             );
         }
@@ -247,6 +247,7 @@ mod zmq {
             monero::Network::Mainnet,
             Arc::clone(&wakes),
             Arc::clone(&settings),
+            crate::node_test_support::clock(),
         )));
         save(&settings, Some(&endpoints[0]), true).await;
         until(&wakes, |a| {

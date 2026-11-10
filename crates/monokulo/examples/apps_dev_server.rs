@@ -60,7 +60,7 @@ async fn code(State(control): State<Controls>) -> Json<serde_json::Value> {
                 &hash,
                 &engine_protocol::ids::ConnectionId::new(STORE),
                 "",
-                monokulo::now_unix(),
+                clock::Clock::System.now(),
             )
         })
         .await
@@ -124,12 +124,18 @@ async fn main() {
     let view = client.get_tenant(&tenant.secret_token).await.unwrap();
     let db = Db::open_in_memory().unwrap();
     let user = engine_protocol::ids::UserId::new("dev-merchant");
-    db.create_user(&user, "dev@example.test", "unused", false, 0)
-        .unwrap();
+    db.create_user(
+        &user,
+        "dev@example.test",
+        "unused",
+        false,
+        clock::UnixTime::from_secs(0),
+    )
+    .unwrap();
     db.create_session(
         &credentials::auth::RawToken::presented(SESSION).hash(),
         &user,
-        monokulo::now_unix(),
+        clock::Clock::System.now(),
     )
     .unwrap();
     db.create_wallet(&monokulo::db::NewWalletRow {
@@ -160,7 +166,7 @@ async fn main() {
             tenant.secret_token.expose(),
         ),
         &tenant.secret_token.hash(),
-        0,
+        clock::UnixTime::from_secs(0),
         "USD",
         &monokulo::db::WalletId::new("w_dev"),
     )
@@ -173,7 +179,10 @@ async fn main() {
     let state = AppState {
         encryption_key: ENCRYPTION_KEY,
         // Prices from the stand-in below: 1 XMR = 250 USD.
-        exchange_rate: Arc::new(ExchangeRateProviders::coingecko_only(own.clone())),
+        exchange_rate: Arc::new(ExchangeRateProviders::coingecko_only(
+            own.clone(),
+            clock::Clock::System,
+        )),
         settings: AppState::test_settings(Some(&public_uri)),
         engine: monokulo::http::Engine::new(client.clone()),
         ..AppState::for_tests_with_db(db.into_shared())
@@ -186,6 +195,7 @@ async fn main() {
         state.push.clone(),
         state.apps.clone(),
         monokulo::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
+        state.clock.clone(),
     ));
     let controls = Router::new()
         .route("/__dev/code", post(code))

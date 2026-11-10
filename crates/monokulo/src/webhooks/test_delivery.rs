@@ -15,7 +15,7 @@
 //! this Monokulo.
 
 use super::body::{self, LinkBases, TEST_EVENT};
-use super::delivery::{attempt_delivery, backoff_seconds, log_attempt};
+use super::delivery::{attempt_delivery, backoff, log_attempt};
 use crate::db::{
     Attempt, AttemptOutcome, ConnectionId, DbError, DeliveryRow, DueDelivery, NewTestDelivery,
     StoreConnectionRow, WebhookRow,
@@ -83,7 +83,10 @@ pub async fn send(
         tracing::error!(webhook.id = %webhook.id, error = %e, "a webhook's signing secret can't be read; no test sent");
         TestError::Failed(e.to_string())
     })?;
-    let at = crate::now_unix();
+    // One moment for the whole attempt: what it is signed and recorded at,
+    // and what its retry is timed from.
+    let now = state.clock.now();
+    let at = now.as_secs();
     let event_id = format!("evt_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
     let bases = LinkBases {
         web: state.settings.public_uri(),
@@ -113,7 +116,8 @@ pub async fn send(
     );
     let result = tracing::Instrument::instrument(
         async {
-            let result = attempt_delivery(client, &due, &secret, config.delivery_timeout, at).await;
+            let result =
+                attempt_delivery(client, &due, &secret, config.delivery_timeout, now).await;
             log_attempt(&due, &result, config.max_attempts);
             result
         },
@@ -134,7 +138,7 @@ pub async fn send(
         // Tried again like any delivery: a receiver that was down for the
         // test still gets it once it's back.
         next_attempt_at: (config.max_attempts > 1)
-            .then(|| crate::now_unix().saturating_add(backoff_seconds(1))),
+            .then(|| now.saturating_add(backoff(1)).as_secs()),
     };
     let (webhook_id, store_id) = (webhook.id.clone(), store.id.clone());
     let delivery = state

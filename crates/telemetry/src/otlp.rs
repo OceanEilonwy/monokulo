@@ -356,8 +356,8 @@ async fn run(
         }
     };
     let mut batch = Vec::with_capacity(BATCH);
-    let mut last_failure: Option<std::time::Instant> = None;
-    let mut last_dropped_report = std::time::Instant::now();
+    let mut last_failure: Option<tokio::time::Instant> = None;
+    let mut last_dropped_report = tokio::time::Instant::now();
     loop {
         let open =
             match tokio::time::timeout(FLUSH_EVERY, receiver.recv_many(&mut batch, BATCH)).await {
@@ -379,7 +379,7 @@ async fn run(
             // At most one line a minute about it: the line itself is exported too.
             if let Err(e) = result {
                 if last_failure.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
-                    last_failure = Some(std::time::Instant::now());
+                    last_failure = Some(tokio::time::Instant::now());
                     tracing::warn!(error = %e, endpoint = %config.endpoint, "OTLP export failed; records were dropped");
                 }
             }
@@ -390,7 +390,7 @@ async fn run(
         if last_dropped_report.elapsed() >= Duration::from_secs(60) {
             let dropped = progress.dropped.swap(0, Ordering::Relaxed);
             if dropped > 0 {
-                last_dropped_report = std::time::Instant::now();
+                last_dropped_report = tokio::time::Instant::now();
                 tracing::warn!(dropped, endpoint = %config.endpoint, "OTLP export fell behind; some records were not exported");
             }
         }

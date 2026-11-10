@@ -8,6 +8,8 @@
 //! voided - see `double_spend_detected_at` in the schema, which is why that fact lives
 //! outside this function entirely.
 
+use clock::UnixTime;
+
 /// Shared with monokulo, which reads it from the admin API.
 pub use engine_protocol::amount::Piconero;
 pub use engine_protocol::order_status::OrderStatus;
@@ -26,8 +28,8 @@ pub struct StatusInputs {
     /// trusts a mempool-only sighting as final the instant the full amount is seen -
     /// see `derive_status`'s own doc comment for why this needs no special-casing.
     pub confirmations_required: u64,
-    pub now: i64,
-    pub expires_at: i64,
+    pub now: UnixTime,
+    pub expires_at: UnixTime,
 }
 
 /// Derive an order's status from its currently-valid (non-voided) payments.
@@ -135,7 +137,16 @@ mod boundaries;
 mod tests {
     use super::*;
 
-    fn inputs(expected: u64, conf_required: u64, now: i64, expires_at: i64) -> StatusInputs {
+    fn at(secs: i64) -> UnixTime {
+        UnixTime::from_secs(secs)
+    }
+
+    fn inputs(
+        expected: u64,
+        conf_required: u64,
+        now: UnixTime,
+        expires_at: UnixTime,
+    ) -> StatusInputs {
         StatusInputs {
             xmr_amount_piconero: Piconero(expected),
             confirmations_required: conf_required,
@@ -164,9 +175,9 @@ mod tests {
     /// follows. Times are `now` against `expires_at` 1000 unless a row says.
     #[test]
     fn derive_status_decides_each_case() {
-        let before = |amount, required| inputs(amount, required, 500, 1000);
-        let after = |amount, required| inputs(amount, required, 1500, 1000);
-        let long_past = |amount, required| inputs(amount, required, 9_999_999, 1000);
+        let before = |amount, required| inputs(amount, required, at(500), at(1000));
+        let after = |amount, required| inputs(amount, required, at(1500), at(1000));
+        let long_past = |amount, required| inputs(amount, required, at(9_999_999), at(1000));
         let nothing = PaymentView {
             amount_piconero: Piconero::ZERO,
             confirmations: 0,
@@ -279,19 +290,19 @@ mod tests {
             (
                 "a zero-threshold payment once mined",
                 vec![confirmed(100, 1)],
-                inputs(100, 0, 600, 100_000),
+                inputs(100, 0, at(600), at(100_000)),
                 OrderStatus::Paid,
             ),
             (
                 "a zero-threshold payment 12 deep",
                 vec![confirmed(100, 12)],
-                inputs(100, 0, 700, 100_000),
+                inputs(100, 0, at(700), at(100_000)),
                 OrderStatus::Paid,
             ),
             (
                 "mined and pooled at threshold zero, later",
                 vec![confirmed(60, 2), zero_conf(40)],
-                inputs(100, 0, 800, 100_000),
+                inputs(100, 0, at(800), at(100_000)),
                 OrderStatus::Paid,
             ),
             // Every open order is recomputed on every tick, long after its

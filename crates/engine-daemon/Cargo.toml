@@ -5,6 +5,8 @@ repository.workspace = true
 edition = "2021"
 
 [dependencies]
+# What time the link's measurements are stamped with.
+clock = { path = "../clock" }
 async-trait = "0.1.92"
 # The fallback client asks every node about key images at once.
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
@@ -31,7 +33,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # The link snapshot types the engine's `/status` reports.
 engine-protocol = { path = "../engine-protocol" }
-service-runtime = { path = "../service-runtime" }
 telemetry = { path = "../telemetry" }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt", "sync", "time"] }

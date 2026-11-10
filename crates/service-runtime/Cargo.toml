@@ -19,6 +19,8 @@ status = ["dep:axum"]
 # `status`'s one route. The features the relay and the Bell already build
 # axum with.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"], optional = true }
+# What time it is, passed in (`resources::Sampler::sample`, `status::Last`).
+clock = { path = "../clock" }
 parking_lot = "0.12.5"
 serde = { version = "1.0.229", features = ["derive"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }

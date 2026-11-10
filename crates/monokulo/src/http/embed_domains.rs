@@ -66,7 +66,7 @@ pub(crate) fn api_route_problems(method: &Method, route: &str) -> &'static [Prob
 /// framed by monokulo alone, since a store that restricted itself may be
 /// the one asking.
 pub async fn embed_policy_middleware(
-    State(db): State<Database>,
+    State(state): State<super::AppState>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -77,7 +77,7 @@ pub async fn embed_policy_middleware(
         .is_some_and(|caller| caller.credential.is_store_key());
     let policy = match request.extensions().get::<RequestStore>() {
         Some(RequestStore(store)) => {
-            embed_domains::policy_for_public_key(&db, &store.tenant_public_key).await
+            embed_domains::policy_for_public_key(&state.db, &store.tenant_public_key).await
         }
         None => Ok(None),
     };
@@ -100,7 +100,7 @@ pub async fn embed_policy_middleware(
     let Some(policy) = policy else {
         return next.run(request).await;
     };
-    let now = crate::now_unix();
+    let now = state.clock.now();
 
     if creates_order && !has_key {
         let error = match request.headers().get(header::ORIGIN) {
@@ -147,7 +147,7 @@ fn add_policy(headers: &mut axum::http::HeaderMap, policy: &str) {
 pub(super) fn domain_view(
     row: StoreDomainRow,
     rows: &[StoreDomainRow],
-    now: i64,
+    now: clock::UnixTime,
     wait: Option<i64>,
 ) -> DomainView {
     let replaces = row.replaces_id.as_ref().and_then(|id| {
@@ -205,7 +205,7 @@ pub(super) fn domain_view(
         DomainState::Failing { since } => {
             let (missing, left) = (
                 format_duration_since(since, now),
-                format_duration_until(since + domain_proof::GRACE_SECS, now),
+                format_duration_until(since.saturating_add(domain_proof::GRACE), now),
             );
             (
                 DomainStatus::Failing,
@@ -243,7 +243,7 @@ pub(super) fn domain_view(
 }
 
 /// The settings page's cards for a store's domains.
-pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<DomainView> {
+pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: clock::UnixTime) -> Vec<DomainView> {
     rows.iter()
         .map(|row| domain_view(row.clone(), &rows, now, None))
         .collect()
@@ -253,7 +253,7 @@ pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<DomainVie
 pub(super) async fn store_page_warnings(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    now: i64,
+    now: clock::UnixTime,
 ) -> EmbedWarnings {
     let id = connection_id.clone();
     let (dismissed, restricted, rows) = state
@@ -281,7 +281,7 @@ pub(super) async fn store_page_warnings(
                 domain: row.domain,
                 missing_for: format_duration_since(since, now),
                 lapsed,
-                counts_for: format_duration_until(since + domain_proof::GRACE_SECS, now),
+                counts_for: format_duration_until(since.saturating_add(domain_proof::GRACE), now),
             })
         })
         .collect();
@@ -316,7 +316,7 @@ pub async fn set_embed_restriction(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let restricted = form.restricted == "on";
-    let now = crate::now_unix();
+    let now = state.clock.now();
     let store_id = row.id.clone();
     let result = state
         .db
@@ -474,6 +474,7 @@ pub async fn add_domain(
     let domain_id = uuid::Uuid::new_v4().to_string();
     let (store_id, new_domain, new_id) = (row.id.clone(), domain.clone(), domain_id.clone());
     let replaces = form.replaces.clone();
+    let now = state.clock.now();
     let created = state
         .db
         .write(move |db| {
@@ -482,7 +483,7 @@ pub async fn add_domain(
                 &store_id,
                 &new_domain,
                 &embed_domains::new_token(),
-                crate::now_unix(),
+                now,
                 replaces.as_deref(),
             )
         })
@@ -553,7 +554,7 @@ pub async fn record_page(
         Ok(loaded) => loaded,
         Err(status) => return status.into_response(),
     };
-    let view = domain_view(domain, &[], crate::now_unix(), None);
+    let view = domain_view(domain, &[], state.clock.now(), None);
     store_page(&state, &user, &row, |chrome, store| {
         crate::views::domains::record_page(chrome, store, &view)
     })
@@ -573,7 +574,7 @@ pub async fn check_page(
         Err(status) => return status.into_response(),
     };
     let checked = domain.last_checked_at.is_some();
-    let view = domain_view(domain, &[], crate::now_unix(), None);
+    let view = domain_view(domain, &[], state.clock.now(), None);
     store_page(&state, &user, &row, |chrome, store| {
         crate::views::domains::check_page(chrome, store, &view, checked)
     })
@@ -591,7 +592,7 @@ pub struct CheckForm {
 
 /// `POST /stores/{id}/settings/domains/{domain_id}/check` - looks
 /// the domain's record up now, unless it was looked up moments ago
-/// ([`domain_proof::MIN_CHECK_GAP_SECS`]: then the answer says when it can
+/// ([`domain_proof::MIN_CHECK_GAP`]: then the answer says when it can
 /// be, in place). The result is never a "saved" toast: with JavaScript it's
 /// swapped in where it was asked for (the check page's result, or the
 /// domain's card, with the restriction banner, which a verified domain may
@@ -607,11 +608,14 @@ pub async fn check_domain(
         Ok(loaded) => loaded,
         Err(status) => return status.into_response(),
     };
-    let now = crate::now_unix();
+    let now = state.clock.now();
     let replaced = domain.replaces_id.clone();
     let wait = domain
         .last_checked_at
-        .map(|last| domain_proof::MIN_CHECK_GAP_SECS - (now - last))
+        .map(|last| {
+            let waited = now.since(clock::UnixTime::from_secs(last));
+            i64::try_from(domain_proof::MIN_CHECK_GAP.saturating_sub(waited).as_secs()).unwrap_or(0)
+        })
         .filter(|wait| *wait > 0);
     if wait.is_none()
         && embed_domains::check_and_record(&state.db, &state.proofs, &domain, now)
@@ -683,7 +687,7 @@ pub async fn delete_domain(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let now = crate::now_unix();
+    let now = state.clock.now();
     let store_id = row.id.clone();
     let deleted = state
         .db
@@ -763,9 +767,14 @@ mod tests {
     use crate::embed_domains;
     use crate::engine_client::EngineClient;
     use domain_proof::test_support::FakeDns;
-    use domain_proof::{GRACE_SECS, RECHECK_EVERY_SECS};
+    use domain_proof::{GRACE, RECHECK_EVERY};
 
     use super::super::{build_router, AppState};
+
+    /// A span as the whole seconds a stored column holds.
+    fn secs(span: std::time::Duration) -> i64 {
+        i64::try_from(span.as_secs()).unwrap()
+    }
 
     /// Which sites `response` lets frame it, of its Content-Security-Policy
     /// headers.
@@ -968,7 +977,11 @@ mod tests {
         // engine), and its key's hash recorded from its stored key.
         state.db.lock().reset_store_backfills_for_test(&id);
         assert_eq!(found_by_key(&state), None);
-        crate::stores::backfill_at_start(&state.db.lock(), &state.encryption_key);
+        crate::stores::backfill_at_start(
+            &state.db.lock(),
+            &state.encryption_key,
+            state.clock.now(),
+        );
         assert_eq!(domains(&state), vec!["store-home.example".to_string()]);
         assert_eq!(found_by_key(&state), Some(id.clone()));
 
@@ -976,7 +989,11 @@ mod tests {
         // removed, and neither step runs at the next start, whatever the
         // store's row says.
         state.db.lock().reset_store_backfills_for_test(&id);
-        crate::stores::backfill_at_start(&state.db.lock(), &state.encryption_key);
+        crate::stores::backfill_at_start(
+            &state.db.lock(),
+            &state.encryption_key,
+            state.clock.now(),
+        );
         assert!(domains(&state).is_empty());
         assert_eq!(found_by_key(&state), None);
     }
@@ -1057,11 +1074,14 @@ mod tests {
         let dns = Arc::new(FakeDns::default());
         let (mut state, _engine) = test_state(dns.clone()).await;
         // A per-client budget of 4 a minute: key requests must not spend it.
-        state.abuse = Arc::new(abuse::AbuseProtection::new(abuse::AbuseConfig {
-            soft_per_min: 4,
-            per_store_key_per_min: 5,
-            ..Default::default()
-        }));
+        state.abuse = Arc::new(
+            abuse::AbuseProtection::new(abuse::AbuseConfig {
+                soft_per_min: 4,
+                per_store_key_per_min: 5,
+                ..Default::default()
+            })
+            .with_clock(state.clock.clone()),
+        );
         let router = build_router(state.clone());
         let session = session_for(&router, "keys@example.com").await;
         let (id, pk) = create_store_with_key(&router, &state, &session).await;
@@ -1112,7 +1132,7 @@ mod tests {
             "_monokulo.store-home.example",
             &domain_proof::VERIFY.value(&row.token),
         );
-        embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
+        embed_domains::check_and_record(&state.db, &state.proofs, &row, state.clock.now())
             .await
             .unwrap();
         state
@@ -1228,7 +1248,7 @@ mod tests {
             "_monokulo.store-home.example",
             &domain_proof::VERIFY.value(&row.token),
         );
-        embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
+        embed_domains::check_and_record(&state.db, &state.proofs, &row, state.clock.now())
             .await
             .unwrap();
         state
@@ -1490,7 +1510,7 @@ mod tests {
             "_monokulo.store-home.example",
             &domain_proof::VERIFY.value(&row.token),
         );
-        embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
+        embed_domains::check_and_record(&state.db, &state.proofs, &row, state.clock.now())
             .await
             .unwrap();
         assert_eq!(
@@ -1625,13 +1645,20 @@ mod tests {
         let warnings = super::store_page_warnings(
             &state,
             &engine_protocol::ids::ConnectionId::new(id.to_string()),
-            crate::now_unix(),
+            state.clock.now(),
         )
         .await;
         assert!(!warnings.shown_nowhere);
         dns.remove("_monokulo.store-home.example");
-        let later = crate::now_unix() + domain_proof::RECHECK_EVERY_SECS;
-        embed_domains::recheck_due(&state.db, &state.proofs, later).await;
+        let later = state
+            .clock
+            .now()
+            .saturating_add(std::time::Duration::from_secs(
+                secs(domain_proof::RECHECK_EVERY).unsigned_abs(),
+            ))
+            .as_secs();
+        embed_domains::recheck_due(&state.db, &state.proofs, clock::UnixTime::from_secs(later))
+            .await;
         let failing_since = state
             .db
             .lock()
@@ -1643,7 +1670,7 @@ mod tests {
             super::store_page_warnings(
                 &state,
                 &engine_protocol::ids::ConnectionId::new(id.to_string()),
-                failing_since + GRACE_SECS
+                clock::UnixTime::from_secs(failing_since + secs(GRACE))
             )
             .await
             .shown_nowhere
@@ -1740,7 +1767,7 @@ mod tests {
         state
             .db
             .lock()
-            .record_store_domain_check(&row.id, 0, None)
+            .record_store_domain_check(&row.id, clock::UnixTime::from_secs(0), None)
             .unwrap();
         post_location(&router, &check, &session, "from=check").await;
         let (_, html) = send(&router, "GET", &check, &session, None).await;
@@ -1909,7 +1936,7 @@ mod tests {
             "_monokulo.shop.example",
             &domain_proof::VERIFY.value(&row.token),
         );
-        let now = crate::now_unix();
+        let now = state.clock.now();
         embed_domains::check_and_record(&state.db, &state.proofs, &row, now)
             .await
             .unwrap();
@@ -1923,7 +1950,8 @@ mod tests {
         // The record disappears: the daily re-check finds it missing and the
         // store page warns, with no way to dismiss that warning.
         dns.remove("_monokulo.shop.example");
-        embed_domains::recheck_due(&state.db, &state.proofs, now + RECHECK_EVERY_SECS).await;
+        embed_domains::recheck_due(&state.db, &state.proofs, now.saturating_add(RECHECK_EVERY))
+            .await;
         let row = shop(&state);
         assert!(row.failing_since.is_some());
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;
@@ -1934,7 +1962,7 @@ mod tests {
         let warnings = super::store_page_warnings(
             &state,
             &engine_protocol::ids::ConnectionId::new(id.to_string()),
-            row.failing_since.unwrap() + GRACE_SECS,
+            clock::UnixTime::from_secs(row.failing_since.unwrap() + secs(GRACE)),
         )
         .await;
         assert!(
@@ -2093,7 +2121,15 @@ mod tests {
             .lock()
             .record_store_domain_check(
                 &row.id,
-                crate::now_unix() - domain_proof::MIN_CHECK_GAP_SECS,
+                clock::UnixTime::from_secs(
+                    state
+                        .clock
+                        .now()
+                        .saturating_sub(std::time::Duration::from_secs(
+                            secs(domain_proof::MIN_CHECK_GAP).unsigned_abs(),
+                        ))
+                        .as_secs(),
+                ),
                 Some("missing"),
             )
             .unwrap();
@@ -2203,7 +2239,7 @@ mod tests {
         // DNS is back and the record published: verified; the store is
         // restricted to it.
         dns.publish(name, &domain_proof::VERIFY.value(&row.token));
-        let now = crate::now_unix();
+        let now = state.clock.now();
         embed_domains::check_and_record(&state.db, &state.proofs, &row, now)
             .await
             .unwrap();
@@ -2231,15 +2267,17 @@ mod tests {
                 .unwrap()
         };
         dns.fail(name, "SERVFAIL");
-        let outage = now + RECHECK_EVERY_SECS;
+        let outage = now.saturating_add(RECHECK_EVERY);
         embed_domains::recheck_due(&state.db, &state.proofs, outage).await;
         let checked = row_now(&state);
         assert_eq!(checked.failing_since, None);
-        assert_eq!(checked.last_checked_at, Some(outage));
-        let retried = outage + domain_proof::FAILING_RECHECK_EVERY_SECS;
+        assert_eq!(checked.last_checked_at, Some(outage.as_secs()));
+        let retried = outage.saturating_add(domain_proof::FAILING_RECHECK_EVERY);
         embed_domains::recheck_due(&state.db, &state.proofs, retried).await;
-        assert_eq!(row_now(&state).last_checked_at, Some(retried));
-        let long_after = retried + GRACE_SECS + domain_proof::FAILING_RECHECK_EVERY_SECS;
+        assert_eq!(row_now(&state).last_checked_at, Some(retried.as_secs()));
+        let long_after = retried
+            .saturating_add(GRACE)
+            .saturating_add(domain_proof::FAILING_RECHECK_EVERY);
         embed_domains::recheck_due(&state.db, &state.proofs, long_after).await;
         let checked = row_now(&state);
         assert_eq!(
@@ -2262,7 +2300,7 @@ mod tests {
 
         // Then DNS answers, without the record: that is what starts the clock.
         dns.remove(name);
-        let answered = long_after + domain_proof::FAILING_RECHECK_EVERY_SECS;
+        let answered = long_after.saturating_add(domain_proof::FAILING_RECHECK_EVERY);
         embed_domains::recheck_due(&state.db, &state.proofs, answered).await;
         let failing_since = state
             .db
@@ -2283,7 +2321,7 @@ mod tests {
         let warnings = super::store_page_warnings(
             &state,
             &engine_protocol::ids::ConnectionId::new(id.to_string()),
-            failing_since + GRACE_SECS - 60,
+            clock::UnixTime::from_secs(failing_since + secs(GRACE) - 60),
         )
         .await;
         assert!(
@@ -2303,7 +2341,9 @@ mod tests {
         embed_domains::recheck_due(
             &state.db,
             &state.proofs,
-            failing_since + domain_proof::FAILING_RECHECK_EVERY_SECS + 1,
+            clock::UnixTime::from_secs(
+                failing_since + secs(domain_proof::FAILING_RECHECK_EVERY) + 1,
+            ),
         )
         .await;
         let row = state
@@ -2407,7 +2447,7 @@ mod tests {
             &domain_proof::VERIFY.record_name(&old.domain),
             &domain_proof::VERIFY.value(&old.token),
         );
-        let now = crate::now_unix();
+        let now = state.clock.now();
         embed_domains::check_and_record(&state.db, &state.proofs, &old, now)
             .await
             .unwrap();
@@ -2520,9 +2560,20 @@ mod tests {
             &domain_proof::VERIFY.record_name(&old.domain),
             &domain_proof::VERIFY.value(&old.token),
         );
-        embed_domains::check_and_record(&state.db, &state.proofs, &old, crate::now_unix() - 60)
-            .await
-            .unwrap();
+        embed_domains::check_and_record(
+            &state.db,
+            &state.proofs,
+            &old,
+            clock::UnixTime::from_secs(
+                state
+                    .clock
+                    .now()
+                    .saturating_sub(std::time::Duration::from_secs(60))
+                    .as_secs(),
+            ),
+        )
+        .await
+        .unwrap();
         state.db.lock().set_embed_restricted(&store, true).unwrap();
         post_location(
             &router,
@@ -2656,8 +2707,8 @@ mod tests {
                 .lock()
                 .list_store_domains_due_for_recheck(
                     at,
-                    domain_proof::RECHECK_EVERY_SECS,
-                    domain_proof::FAILING_RECHECK_EVERY_SECS,
+                    domain_proof::RECHECK_EVERY,
+                    domain_proof::FAILING_RECHECK_EVERY,
                 )
                 .unwrap()
                 .len()
@@ -2668,17 +2719,27 @@ mod tests {
         dns.publish(&web_name, &domain_proof::VERIFY.value(&web_row.token));
         onion.serve(ONION, &domain_proof::VERIFY.value(&onion_row.token));
         for row in [&web_row, &onion_row] {
-            embed_domains::check_and_record(&state.db, &state.proofs, row, t0)
-                .await
-                .unwrap();
+            embed_domains::check_and_record(
+                &state.db,
+                &state.proofs,
+                row,
+                clock::UnixTime::from_secs(t0),
+            )
+            .await
+            .unwrap();
         }
         dns.fail(&web_name, "timed out");
         onion.fail(ONION, "the onion service couldn't be found");
-        let t1 = t0 + domain_proof::RECHECK_EVERY_SECS;
+        let t1 = t0 + secs(domain_proof::RECHECK_EVERY);
         for row in [&web_row, &onion_row] {
-            embed_domains::check_and_record(&state.db, &state.proofs, row, t1)
-                .await
-                .unwrap();
+            embed_domains::check_and_record(
+                &state.db,
+                &state.proofs,
+                row,
+                clock::UnixTime::from_secs(t1),
+            )
+            .await
+            .unwrap();
             assert_eq!(current(row).failing_since, None, "{}", row.domain);
             assert!(current(row).last_error.is_some(), "{}", row.domain);
         }
@@ -2687,28 +2748,48 @@ mod tests {
             Some("Fetching the file over Tor failed: the onion service couldn't be found")
         );
         // Sooner than a day, since nothing is known.
-        assert_eq!(due(t1 + domain_proof::FAILING_RECHECK_EVERY_SECS), 2);
+        assert_eq!(
+            due(clock::UnixTime::from_secs(
+                t1 + secs(domain_proof::FAILING_RECHECK_EVERY)
+            )),
+            2
+        );
 
         // An answer with the proof: back to the daily schedule.
         dns.publish(&web_name, &domain_proof::VERIFY.value(&web_row.token));
-        let t2 = t1 + domain_proof::FAILING_RECHECK_EVERY_SECS;
-        embed_domains::check_and_record(&state.db, &state.proofs, &web_row, t2)
-            .await
-            .unwrap();
+        let t2 = t1 + secs(domain_proof::FAILING_RECHECK_EVERY);
+        embed_domains::check_and_record(
+            &state.db,
+            &state.proofs,
+            &web_row,
+            clock::UnixTime::from_secs(t2),
+        )
+        .await
+        .unwrap();
         assert_eq!(current(&web_row).last_error, None);
 
         // A clock already running keeps running through no answer.
         dns.remove(&web_name);
-        let t3 = t2 + domain_proof::RECHECK_EVERY_SECS;
-        embed_domains::check_and_record(&state.db, &state.proofs, &web_row, t3)
-            .await
-            .unwrap();
+        let t3 = t2 + secs(domain_proof::RECHECK_EVERY);
+        embed_domains::check_and_record(
+            &state.db,
+            &state.proofs,
+            &web_row,
+            clock::UnixTime::from_secs(t3),
+        )
+        .await
+        .unwrap();
         assert_eq!(current(&web_row).failing_since, Some(t3));
         dns.fail(&web_name, "timed out");
-        let t4 = t3 + domain_proof::FAILING_RECHECK_EVERY_SECS;
-        embed_domains::check_and_record(&state.db, &state.proofs, &web_row, t4)
-            .await
-            .unwrap();
+        let t4 = t3 + secs(domain_proof::FAILING_RECHECK_EVERY);
+        embed_domains::check_and_record(
+            &state.db,
+            &state.proofs,
+            &web_row,
+            clock::UnixTime::from_secs(t4),
+        )
+        .await
+        .unwrap();
         assert_eq!(current(&web_row).failing_since, Some(t3));
     }
 
@@ -2723,11 +2804,15 @@ mod tests {
         let id = create_store(&router, &state, &session).await;
         let store = engine_protocol::ids::ConnectionId::new(id.to_string());
         let domain = state.db.lock().list_store_domains(&store).unwrap()[0].clone();
-        let now = crate::now_unix();
+        let now = state.clock.now();
         state
             .db
             .lock()
-            .record_store_domain_check(&domain.id, now - 60, None)
+            .record_store_domain_check(
+                &domain.id,
+                now.saturating_sub(std::time::Duration::from_secs(60)),
+                None,
+            )
             .unwrap();
         state
             .db

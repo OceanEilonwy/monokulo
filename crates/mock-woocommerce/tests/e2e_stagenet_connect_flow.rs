@@ -133,12 +133,14 @@ async fn spawn_test_monokulo(engine: &engine_test_support::TestEngineHandle) -> 
         state.push.clone(),
         state.apps.clone(),
         monokulo::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
+        state.clock.clone(),
     );
     let worker = monokulo::webhooks::delivery::run_delivery_loop(
         state.db.clone(),
         state.encryption_key.clone(),
         state.settings.clone(),
         state.webhooks.clone(),
+        state.clock.clone(),
     );
     let router = build_router(state);
 
@@ -192,6 +194,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
                 node_fixture::PORT,
                 node_fixture::SSL,
                 node_fixture::ACCEPT_SELF_SIGNED_CERTS,
+                clock::Clock::System,
             )
             .expect("failed to build daemon RPC client"),
         );
@@ -320,6 +323,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
             node_fixture::PORT,
             node_fixture::SSL,
             node_fixture::ACCEPT_SELF_SIGNED_CERTS,
+            clock::Clock::System,
         )
         .expect("failed to build daemon RPC client"),
     );
@@ -401,7 +405,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
             &credentials.webhook_signing_secret,
             &event.raw_body,
             &event.signature,
-            service_runtime::time::now_unix()
+            clock::Clock::System.now()
         ),
         "the delivered signature must verify against this store's real signing secret"
     );
@@ -410,7 +414,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
             "definitely-the-wrong-secret",
             &event.raw_body,
             &event.signature,
-            service_runtime::time::now_unix()
+            clock::Clock::System.now()
         ),
         "an arbitrary wrong secret must not verify the same real bytes/signature"
     );

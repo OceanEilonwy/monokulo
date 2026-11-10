@@ -194,10 +194,12 @@ fn crash_process_child() {
             .unwrap()
             .parse()
             .unwrap();
-        let now: i64 = std::env::var("MONOKULO_PROPERTY_CRASH_NOW")
-            .unwrap()
-            .parse()
-            .unwrap();
+        let now = clock::UnixTime::from_secs(
+            std::env::var("MONOKULO_PROPERTY_CRASH_NOW")
+                .unwrap()
+                .parse()
+                .unwrap(),
+        );
         let _clock = std::env::var_os("MONOKULO_SCANNER_CRASH_WORKER")
             .is_some()
             .then(crate::property_support::hold_virtual_clock);
@@ -263,7 +265,7 @@ fn crash_process_child() {
         for _ in 0..40 {
             // No invariant reads after a partially completed round: those are
             // the recovery process's responsibility, after this process dies.
-            h.now += RETRY_TIME.as_secs() as i64;
+            h.now = h.now.saturating_add(RETRY_TIME);
             tokio::time::advance(RETRY_TIME).await;
             run_round_at(&h.state, &inputs(&h, GRACE), Duration::ZERO, h.now)
                 .await
@@ -290,7 +292,7 @@ async fn assert_unrepresentable_amount(excess: u64, aggregate: bool) {
                 0,
                 crate::store::Piconero(STORED_MAX),
                 "[]",
-                h.now,
+                h.now.as_secs(),
                 None,
                 None,
             )?;
@@ -300,7 +302,7 @@ async fn assert_unrepresentable_amount(excess: u64, aggregate: bool) {
                 0,
                 crate::store::Piconero(excess),
                 "[]",
-                h.now,
+                h.now.as_secs(),
                 None,
                 None,
             )?;
@@ -311,7 +313,7 @@ async fn assert_unrepresentable_amount(excess: u64, aggregate: bool) {
                 0,
                 crate::store::Piconero(STORED_MAX + excess),
                 "[]",
-                h.now,
+                h.now.as_secs(),
                 None,
                 None,
             )?;
@@ -380,7 +382,7 @@ async fn crash_history_on(phase: u8, steps: usize, amount: u64, point: Option<&s
             .spawn()
             .unwrap(),
     ));
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = crate::property_support::real_now() + Duration::from_secs(10);
     let reached = loop {
         // Creating the marker and writing its contents are separate
         // operations: an empty file is not yet a rendezvous.
@@ -389,7 +391,7 @@ async fn crash_history_on(phase: u8, steps: usize, amount: u64, point: Option<&s
                 break ready;
             }
         }
-        if child.finished() || std::time::Instant::now() >= deadline {
+        if child.finished() || crate::property_support::real_now() >= deadline {
             break "failed".to_owned();
         }
         std::thread::sleep(Duration::from_millis(2));
@@ -732,7 +734,7 @@ mod properties {
                     let mut invoice = NewOrder {
                         tenant_id: tenant.clone(), merchant_order_id: None, minor_index: minor,
                         address: format!("boundary-{minor}"), xmr_amount_piconero: crate::store::Piconero(STORED_MAX + excess),
-                        description: None, created_at: h.now, expires_at: i64::MAX,
+                        description: None, created_at: h.now.as_secs(), expires_at: i64::MAX,
                         confirmations_required_override: Some(0), idempotency_key: Some("boundary-invoice".to_owned()),
                     };
                     s.create_order_claiming_minor_index(&h.tenants[0].1.wallet_id, minor, &invoice).unwrap_err();

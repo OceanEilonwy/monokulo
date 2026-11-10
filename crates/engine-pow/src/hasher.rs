@@ -15,7 +15,9 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use randomx_rs::{RandomXCache, RandomXFlag, RandomXVM};
 

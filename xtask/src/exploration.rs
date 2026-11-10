@@ -21,7 +21,7 @@ use std::{
         Arc, LazyLock,
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 pub(crate) const HELP: &str = "\
@@ -162,10 +162,9 @@ fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// Whole seconds since the epoch, as the report's start time and wall time.
 fn now() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64())
+    clock::Clock::System.now().as_secs() as f64
 }
 
 /// The reviewed seeds of a target, which must exist.
@@ -659,7 +658,7 @@ fn calibrate(
             .to_string_lossy()
             .into_owned();
         let log = output.join(format!("calibration-{name}.log"));
-        let started = Instant::now();
+        let started = crate::support::instant();
         let seed_path = seed.canonicalize().unwrap_or(seed.clone());
         let spec = Spec {
             program: binary
@@ -1547,7 +1546,7 @@ mod tests {
                 "trap 'echo \"INFO: libFuzzer: exiting as requested\"; exit 0' USR1; \
                  sleep 0.3; printf '#8\tINITED cov: 1 ft: 1\n'; while :; do sleep 0.05; done",
             );
-            let started = Instant::now();
+            let started = crate::support::instant();
             let done = Processes
                 .run(
                     &fuzzer,
@@ -1567,7 +1566,7 @@ mod tests {
         #[test]
         fn a_run_that_ends_by_itself_is_not_held_for_its_exploring_time() {
             let s = Scratch::new("exploration-explore-ends");
-            let started = Instant::now();
+            let started = crate::support::instant();
             let done = Processes
                 .run(
                     &sh("printf '#8\tINITED cov: 1 ft: 1\n'; echo '#9 DONE cov: 1 ft: 1'; exit 4"),

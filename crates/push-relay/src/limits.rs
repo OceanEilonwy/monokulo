@@ -9,6 +9,7 @@
 use std::net::IpAddr;
 
 use abuse::ClientIdentity;
+use clock::UnixTime;
 use push::VapidPublicKey;
 use rate_limit::RateLimiter;
 
@@ -60,7 +61,7 @@ impl Limits {
         &self,
         sender: &VapidPublicKey,
         handle: &HandleId,
-        now: i64,
+        now: UnixTime,
     ) -> Result<(), Refused> {
         self.handles
             .check_with_retry(handle.clone(), now)
@@ -74,7 +75,7 @@ impl Limits {
     }
 
     /// One registration from `client`.
-    pub fn register(&self, client: IpAddr, now: i64) -> Result<(), Refused> {
+    pub fn register(&self, client: IpAddr, now: UnixTime) -> Result<(), Refused> {
         self.registrations
             .check_with_retry(ClientIdentity::from_address(client), now)
             .map_err(Refused::Registrations)
@@ -86,7 +87,11 @@ mod tests {
     use super::*;
     use push::VapidKey;
 
-    const NOW: i64 = 1_800_000_000;
+    const NOW: UnixTime = UnixTime::from_secs(1_800_000_000);
+
+    fn after(secs: u64) -> UnixTime {
+        NOW.saturating_add(std::time::Duration::from_secs(secs))
+    }
 
     fn limits(per_sender: u32, per_handle: u32, registrations: u32) -> Limits {
         Limits::new(LimitsConfig {
@@ -115,7 +120,7 @@ mod tests {
         assert_eq!(limits.push(&b, &handle(2), NOW), Ok(()));
         assert_eq!(limits.push(&b, &handle(1), NOW), Err(Refused::Handle(60)));
         // A minute on, all is allowed again.
-        assert_eq!(limits.push(&a, &handle(1), NOW + 60), Ok(()));
+        assert_eq!(limits.push(&a, &handle(1), after(60)), Ok(()));
     }
 
     /// A push the handle's limit refuses isn't counted against its sender:
@@ -130,14 +135,14 @@ mod tests {
         }
         for _ in 0..50 {
             assert_eq!(
-                limits.push(&sender, &handle(1), NOW + 1),
+                limits.push(&sender, &handle(1), after(1)),
                 Err(Refused::Handle(59))
             );
         }
         // Two pushes handed on, so one more is left for another handle.
-        assert_eq!(limits.push(&sender, &handle(2), NOW + 10), Ok(()));
+        assert_eq!(limits.push(&sender, &handle(2), after(10)), Ok(()));
         assert_eq!(
-            limits.push(&sender, &handle(3), NOW + 10),
+            limits.push(&sender, &handle(3), after(10)),
             Err(Refused::Sender(50))
         );
     }
@@ -154,16 +159,16 @@ mod tests {
         // Handle 2's minute starts here, with the sender's spent.
         for _ in 0..5 {
             assert_eq!(
-                limits.push(&sender, &handle(2), NOW + 30),
+                limits.push(&sender, &handle(2), after(30)),
                 Err(Refused::Sender(30))
             );
         }
         // The sender's minute is over, handle 2's isn't: it has both its
         // pushes.
-        assert_eq!(limits.push(&sender, &handle(2), NOW + 60), Ok(()));
-        assert_eq!(limits.push(&sender, &handle(2), NOW + 60), Ok(()));
+        assert_eq!(limits.push(&sender, &handle(2), after(60)), Ok(()));
+        assert_eq!(limits.push(&sender, &handle(2), after(60)), Ok(()));
         assert_eq!(
-            limits.push(&sender, &handle(2), NOW + 61),
+            limits.push(&sender, &handle(2), after(61)),
             Err(Refused::Handle(29))
         );
     }
@@ -176,7 +181,7 @@ mod tests {
         let other: IpAddr = "192.0.2.1".parse().unwrap();
         assert_eq!(limits.register(one, NOW), Ok(()));
         assert_eq!(limits.register(same_64, NOW), Ok(()));
-        let refused = limits.register(one, NOW + 15);
+        let refused = limits.register(one, after(15));
         assert_eq!(refused, Err(Refused::Registrations(45)));
         assert_eq!(refused.unwrap_err().retry_after(), 45);
         assert_eq!(limits.register(other, NOW), Ok(()));

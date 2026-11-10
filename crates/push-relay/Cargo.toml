@@ -11,6 +11,8 @@ name = "monokulo-push-relay"
 path = "src/main.rs"
 
 [dependencies]
+# What time it is, read once per request (`Relay::start`'s clock).
+clock = { path = "../clock" }
 # Each handle's row sealed (AES-256-GCM) under a key derived (HKDF-SHA-256)
 # from its id, and found by the id's SHA-256: the RustCrypto generation
 # the push crate is on.

@@ -64,7 +64,7 @@ struct CachedDetail {
     /// The order's change count when it was read: a newer change means it
     /// is out of date.
     generation: u64,
-    read_at: std::time::Instant,
+    read_at: tokio::time::Instant,
     detail: OrderDetailResponse,
 }
 
@@ -98,7 +98,7 @@ impl SharedDetail {
             }
         }
         // Started after the change was seen, so it reads what changed.
-        let read_at = std::time::Instant::now();
+        let read_at = tokio::time::Instant::now();
         let detail = read.await?;
         *cached = Some(CachedDetail {
             generation,

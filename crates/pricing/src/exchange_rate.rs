@@ -108,14 +108,17 @@ impl ExchangeRateError {
 /// [`ExchangeRateError::Unavailable`] with the provider's `Retry-After`
 /// (seconds or an HTTP date); any other failure status is a `Request`
 /// error.
-pub(crate) fn checked(response: reqwest::Response) -> Result<reqwest::Response, ExchangeRateError> {
+pub(crate) fn checked(
+    response: reqwest::Response,
+    now: UnixTime,
+) -> Result<reqwest::Response, ExchangeRateError> {
     let status = response.status();
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
         let retry_after = response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
-            .and_then(parse_retry_after);
+            .and_then(|value| parse_retry_after(value, now));
         return Err(ExchangeRateError::Unavailable {
             status: status.as_u16(),
             retry_after,
@@ -125,17 +128,15 @@ pub(crate) fn checked(response: reqwest::Response) -> Result<reqwest::Response, 
 }
 
 /// A `Retry-After` value: delay seconds, or an HTTP date (a date already
-/// past is no wait at all).
-fn parse_retry_after(value: &str) -> Option<std::time::Duration> {
+/// past is no wait at all), judged from `now`.
+fn parse_retry_after(value: &str, now: UnixTime) -> Option<std::time::Duration> {
     let value = value.trim();
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(std::time::Duration::from_secs(seconds));
     }
     let when = httpdate::parse_http_date(value).ok()?;
-    Some(
-        when.duration_since(std::time::SystemTime::now())
-            .unwrap_or_default(),
-    )
+    let when = when.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(now.until(UnixTime::EPOCH.saturating_add(when)))
 }
 
 /// The client every rate provider fetches with. It has no response cache:
@@ -348,6 +349,8 @@ pub struct CoingeckoRateProvider {
     base_url: String,
     client: reqwest_middleware::ClientWithMiddleware,
     rates: RateCache,
+    /// What time it is, for a `Retry-After` date.
+    clock: Clock,
     /// The full list Coingecko itself reports supporting, plus when it was
     /// last fetched - its own independent cache entry/TTL, refreshed lazily
     /// by `supported_currencies_cached`, never eagerly.
@@ -368,7 +371,7 @@ impl CoingeckoRateProvider {
     /// unlike the now-removed `FixedRateProvider`, there is no config-
     /// supplied canonical casing to preserve any more, so this is simply
     /// the least surprising behavior for any caller.
-    pub fn new(base_url: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, clock: Clock) -> Self {
         CoingeckoRateProvider {
             base_url: base_url.into(),
             // A default (blank) user agent gets a flat `403` from the real
@@ -376,6 +379,7 @@ impl CoingeckoRateProvider {
             // message's wording).
             client: rates_client(),
             rates: RateCache::default(),
+            clock,
             supported_currencies: tokio::sync::Mutex::new(None),
         }
     }
@@ -394,7 +398,7 @@ impl CoingeckoRateProvider {
             "{}/api/v3/simple/price?ids=monero&vs_currencies={vs_currency}",
             self.base_url
         );
-        let response = checked(self.client.get(&url).send().await?)?;
+        let response = checked(self.client.get(&url).send().await?, self.clock.now())?;
         let body: serde_json::Value = read_json(response).await?;
         let monero = body
             .get("monero")
@@ -465,7 +469,7 @@ impl CoingeckoRateProvider {
         if stale {
             let url = format!("{}/api/v3/simple/supported_vs_currencies", self.base_url);
             let fetched = async {
-                let response = checked(self.client.get(&url).send().await?)?;
+                let response = checked(self.client.get(&url).send().await?, self.clock.now())?;
                 read_json::<Vec<String>>(response).await
             }
             .await;
@@ -503,6 +507,7 @@ pub use crate::xmr_amount::{
     MAX_AMOUNT_DECIMALS, MAX_ORDER_PICONERO,
 };
 use crate::xmr_amount::{parse_scaled, AMOUNT_SCALE};
+use clock::{Clock, UnixTime};
 
 /// A cached rate kept through misses (a provider that stops quoting a
 /// currency for a while, or is down or rate limited) is served at most this many `max_age`s after it
@@ -636,6 +641,12 @@ pub fn compute_order_amount(
 
 #[cfg(test)]
 mod tests {
+    /// The time every provider in these tests reads: pinned, so a date's
+    /// wait is exact and nothing depends on when the test runs.
+    fn pinned() -> clock::Clock {
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000))
+    }
+
     use super::*;
 
     #[test]
@@ -956,7 +967,7 @@ mod tests {
             // 1e12 / 149.23, rounded to the nearest piconero - hand-computed
             // independently of the implementation (Python: round(1e12/149.23)).
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"usd":149.23}}"#)).await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let rate = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
@@ -967,7 +978,7 @@ mod tests {
         #[tokio::test]
         async fn a_currency_coingecko_has_no_price_for_is_simply_none_not_a_panic() {
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"usd":150.0}}"#)).await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let rate = provider
                 .piconero_per_unit_cached("EUR", std::time::Duration::from_secs(30))
                 .await
@@ -980,7 +991,7 @@ mod tests {
             // Valid JSON, but not an object at all - `body.get("monero")` has
             // nothing to look up on it.
             let url = spawn_server(|_, _| json_body(r#"[1, 2, 3]"#)).await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let err = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
@@ -992,7 +1003,7 @@ mod tests {
 
             // Not even valid JSON.
             let url = spawn_server(|_, _| json_body("not json at all")).await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let err = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
@@ -1009,7 +1020,7 @@ mod tests {
             let padding = " ".repeat(MAX_RESPONSE_BYTES);
             let long = format!(r#"{{"monero":{{"usd":150.0}}}}{padding}"#);
             let url = spawn_server(move |_, _| json_body(&long)).await;
-            let err = CoingeckoRateProvider::new(url)
+            let err = CoingeckoRateProvider::new(url, pinned())
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
                 .unwrap_err();
@@ -1019,7 +1030,7 @@ mod tests {
             // start of the body, not all of it.
             let wrong = format!(r#"{{"other":"{}"}}"#, "x".repeat(10_000));
             let url = spawn_server(move |_, _| json_body(&wrong)).await;
-            let err = CoingeckoRateProvider::new(url)
+            let err = CoingeckoRateProvider::new(url, pinned())
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
                 .unwrap_err();
@@ -1039,7 +1050,7 @@ mod tests {
         #[tokio::test]
         async fn a_zero_or_negative_price_is_treated_as_unpriced_not_a_free_order() {
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"usd":0}}"#)).await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let rate = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
@@ -1047,7 +1058,7 @@ mod tests {
             assert_eq!(rate, None, "a zero price must not become a free order");
 
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"eur":-5.0}}"#)).await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let rate = provider
                 .piconero_per_unit_cached("EUR", std::time::Duration::from_secs(30))
                 .await
@@ -1059,10 +1070,10 @@ mod tests {
         async fn an_unreachable_base_url_is_a_clean_error() {
             // An upstream that accepts and hangs up at once, so the failure is
             // the same on every OS and never waits on a refused-connect retry.
-            let provider = CoingeckoRateProvider::new(format!(
-                "http://{}",
-                service_runtime::unreachable::address()
-            ));
+            let provider = CoingeckoRateProvider::new(
+                format!("http://{}", service_runtime::unreachable::address()),
+                pinned(),
+            );
             let err = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
@@ -1092,7 +1103,7 @@ mod tests {
                 }
             })
             .await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
 
             let rate = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
@@ -1137,7 +1148,8 @@ mod tests {
                     [(
                         "retry-after",
                         httpdate::fmt_http_date(
-                            std::time::SystemTime::now() + std::time::Duration::from_secs(120),
+                            std::time::UNIX_EPOCH
+                                + std::time::Duration::from_secs(1_800_000_000 + 120),
                         ),
                     )],
                     "down",
@@ -1147,7 +1159,8 @@ mod tests {
                 _ => axum::http::StatusCode::NOT_FOUND.into_response(),
             })
             .await;
-            let provider = CoingeckoRateProvider::new(url);
+            // The provider's clock is pinned, so the date's wait is exact.
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let lookup = || provider.piconero_per_unit_cached("USD", std::time::Duration::ZERO);
 
             let err = lookup().await.unwrap_err();
@@ -1162,12 +1175,7 @@ mod tests {
                 matches!(err, ExchangeRateError::Unavailable { status: 503, .. }),
                 "got {err:?}"
             );
-            let wait = err.retry_after().unwrap();
-            assert!(
-                wait > std::time::Duration::from_secs(100)
-                    && wait <= std::time::Duration::from_secs(120),
-                "{wait:?}"
-            );
+            assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(120)));
 
             let err = lookup().await.unwrap_err();
             assert!(
@@ -1188,7 +1196,7 @@ mod tests {
         #[tokio::test]
         async fn currency_lookups_are_case_insensitive() {
             let url = spawn_server(|_, _| json_body(r#"{"monero":{"usd":150.0}}"#)).await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let upper = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
@@ -1210,7 +1218,7 @@ mod tests {
                 json_body(r#"{"monero":{"usd":150.0}}"#)
             })
             .await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
 
             let rate = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
@@ -1233,7 +1241,7 @@ mod tests {
                 json_body(r#"{"monero":{"usd":150.0}}"#)
             })
             .await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
 
             // A generous 30s max_age: the second call happens well within that
             // window, so it must be served entirely from cache.
@@ -1288,7 +1296,7 @@ mod tests {
                     .into_response()
             })
             .await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
 
             let first = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
@@ -1319,7 +1327,7 @@ mod tests {
             let url =
                 spawn_server(|_, _| axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response())
                     .await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
 
             let err = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
@@ -1353,7 +1361,7 @@ mod tests {
                     .into_response()
             })
             .await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let max_age = std::time::Duration::from_secs(60);
             let seed = |age: std::time::Duration| {
                 let provider = &provider;
@@ -1398,7 +1406,7 @@ mod tests {
         #[tokio::test]
         async fn supported_currencies_cached_fetches_and_uppercases() {
             let url = spawn_server(|_, _| json_body(r#"["usd","eur","gbp"]"#)).await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
             let currencies = provider
                 .supported_currencies_cached(std::time::Duration::from_secs(30))
                 .await
@@ -1420,7 +1428,7 @@ mod tests {
                 json_body(r#"["usd"]"#)
             })
             .await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
 
             provider
                 .supported_currencies_cached(std::time::Duration::from_secs(30))
@@ -1452,7 +1460,7 @@ mod tests {
                 }
             })
             .await;
-            let provider = CoingeckoRateProvider::new(url);
+            let provider = CoingeckoRateProvider::new(url, pinned());
 
             provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
@@ -1479,7 +1487,7 @@ mod tests {
         // live network calls stay out of the per-change suite.
         #[ignore = "needs the live Coingecko API"]
         async fn live_coingecko_api_quotes_usd_and_lists_it_as_supported() {
-            let provider = CoingeckoRateProvider::new("https://api.coingecko.com");
+            let provider = CoingeckoRateProvider::new("https://api.coingecko.com", pinned());
             let usd = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await

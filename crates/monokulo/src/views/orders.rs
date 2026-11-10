@@ -619,7 +619,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/stores/conn_1/orders")
+        PageChrome::from_user(None, "/stores/conn_1/orders", clock::Clock::System.now())
     }
 
     /// A middle page of a search links to the newer and older pages, the

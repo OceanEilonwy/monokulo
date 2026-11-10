@@ -13,21 +13,22 @@
 //! of them can drift apart, or leak an onion name to DNS. Which domains a
 //! store has, and what proving one allows, is the caller's.
 
+use clock::UnixTime;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 /// How long a proof that has gone missing keeps counting.
-pub const GRACE_SECS: i64 = 3 * 24 * 60 * 60;
+pub const GRACE: Duration = Duration::from_secs(3 * 24 * 60 * 60);
 /// How often a proof is checked again.
-pub const RECHECK_EVERY_SECS: i64 = 24 * 60 * 60;
+pub const RECHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How often a proof is checked again while it's failing, or while the last
 /// check couldn't get an answer, so a fix is noticed well within the grace
 /// period without the merchant clicking anything.
-pub const FAILING_RECHECK_EVERY_SECS: i64 = 60 * 60;
+pub const FAILING_RECHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 /// The shortest gap between two checks of one domain the merchant can ask for.
-pub const MIN_CHECK_GAP_SECS: i64 = 30;
+pub const MIN_CHECK_GAP: Duration = Duration::from_secs(30);
 /// The largest proof file read: a few values, one per line.
 pub const WELL_KNOWN_MAX_BYTES: usize = 4096;
 /// A whole lookup: referrals, and the machine's resolvers if the root
@@ -139,22 +140,28 @@ pub enum DomainState {
     /// Proved, and no answer since has lacked the proof.
     Verified,
     /// Proved, but its proof has been missing since `since`; still counts
-    /// until `since + GRACE_SECS`.
-    Failing { since: i64 },
+    /// until `since` plus [`GRACE`].
+    Failing { since: UnixTime },
     /// Its proof has been missing for longer than the grace period, so it
     /// no longer counts until a check finds it again.
-    Lapsed { since: i64 },
+    Lapsed { since: UnixTime },
 }
 
 impl DomainState {
     /// Where a domain stands at `now`, from when it was last proved and
     /// since when its proof has been missing.
-    pub fn of(verified_at: Option<i64>, failing_since: Option<i64>, now: i64) -> Self {
+    pub fn of(verified_at: Option<i64>, failing_since: Option<i64>, now: UnixTime) -> Self {
         match (verified_at, failing_since) {
             (None, _) => DomainState::Pending,
             (Some(_), None) => DomainState::Verified,
-            (Some(_), Some(since)) if now - since < GRACE_SECS => DomainState::Failing { since },
-            (Some(_), Some(since)) => DomainState::Lapsed { since },
+            (Some(_), Some(since)) => {
+                let since = UnixTime::from_secs(since);
+                if now.since(since) < GRACE {
+                    DomainState::Failing { since }
+                } else {
+                    DomainState::Lapsed { since }
+                }
+            }
         }
     }
 
@@ -638,13 +645,24 @@ mod tests {
 
     #[test]
     fn a_missing_proof_keeps_counting_through_the_grace_period_then_lapses() {
-        assert_eq!(DomainState::of(None, None, 100), DomainState::Pending);
-        assert_eq!(DomainState::of(Some(10), None, 100), DomainState::Verified);
-        let failing = DomainState::of(Some(10), Some(100), 100 + GRACE_SECS - 1);
-        assert_eq!(failing, DomainState::Failing { since: 100 });
+        assert_eq!(
+            DomainState::of(None, None, UnixTime::from_secs(100)),
+            DomainState::Pending
+        );
+        assert_eq!(
+            DomainState::of(Some(10), None, UnixTime::from_secs(100)),
+            DomainState::Verified
+        );
+        let since = UnixTime::from_secs(100);
+        let failing = DomainState::of(
+            Some(10),
+            Some(100),
+            since.saturating_add(GRACE - Duration::from_secs(1)),
+        );
+        assert_eq!(failing, DomainState::Failing { since });
         assert!(failing.counts());
-        let lapsed = DomainState::of(Some(10), Some(100), 100 + GRACE_SECS);
-        assert_eq!(lapsed, DomainState::Lapsed { since: 100 });
+        let lapsed = DomainState::of(Some(10), Some(100), since.saturating_add(GRACE));
+        assert_eq!(lapsed, DomainState::Lapsed { since });
         assert!(!lapsed.counts());
         assert!(!DomainState::Pending.counts());
     }

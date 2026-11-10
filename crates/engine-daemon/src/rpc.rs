@@ -24,6 +24,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use clock::Clock;
 use monero::consensus::encode::deserialize;
 use monero::cryptonote::hash::Hashable as _;
 use monero::Transaction;
@@ -146,11 +147,13 @@ impl RpcDaemonClient {
     /// wrong-hostname certificates, so it is not scoped to self-signed
     /// specifically. A self-hoster pointing at a node with a real CA-signed cert
     /// (or running their own node over plain HTTP on localhost) never needs it.
+    /// `clock` stamps the link measurements the client keeps of the node.
     pub fn new(
         host: &str,
         port: u16,
         ssl: bool,
         danger_accept_invalid_certs: bool,
+        clock: Clock,
     ) -> Result<Self, DaemonError> {
         let scheme = if ssl { "https" } else { "http" };
         let client = reqwest::Client::builder()
@@ -181,7 +184,7 @@ impl RpcDaemonClient {
             unsupported,
             max_response_bytes: MAX_RESPONSE_BYTES,
             stats: parking_lot::Mutex::default(),
-            link: crate::link::Link::default(),
+            link: crate::link::Link::new(clock),
             pool: tokio::sync::Mutex::default(),
             pool_reuse: POOL_REUSE,
             pool_resync: POOL_RESYNC_INTERVAL,
@@ -2245,6 +2248,12 @@ impl MoneroDaemonClient for RpcDaemonClient {
     }
 }
 
+/// The clock the test clients' link measurements are stamped with: pinned.
+#[cfg(test)]
+fn test_clock() -> Clock {
+    Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000))
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -2765,7 +2774,7 @@ mod wire_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let client = RpcDaemonClient::new("127.0.0.1", port, false, false)
+        let client = RpcDaemonClient::new("127.0.0.1", port, false, false, test_clock())
             .unwrap()
             // Every poll asks; the plain list is never due.
             .with_pool_timing(Duration::ZERO, Duration::from_secs(3600));
@@ -3415,7 +3424,7 @@ mod wire_tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
             tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap()
+            RpcDaemonClient::new("127.0.0.1", port, false, false, test_clock()).unwrap()
         }
         assert_eq!(
             node(true).await.get_pool_outlook().await.unwrap(),
@@ -3452,7 +3461,7 @@ mod wire_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let client = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap();
+        let client = RpcDaemonClient::new("127.0.0.1", port, false, false, test_clock()).unwrap();
 
         let err = client
             .post_timed(
@@ -3482,7 +3491,7 @@ mod wire_tests {
     /// for being as big as asked.
     #[test]
     fn a_block_answer_is_capped_by_what_was_asked_for() {
-        let client = RpcDaemonClient::new("127.0.0.1", 1, false, false).unwrap();
+        let client = RpcDaemonClient::new("127.0.0.1", 1, false, false, test_clock()).unwrap();
         // 50 kB a block until measured.
         assert_eq!(client.blocks_cap(1), MAX_RESPONSE_BYTES);
         assert_eq!(client.blocks_cap(1_000), 200_000_000);
@@ -3929,7 +3938,7 @@ mod live_node_tests {
             Some((host, port)) => (host, port.parse().expect("a port number")),
             None => (TEST_NODE_HOST, TEST_NODE_PORT),
         };
-        RpcDaemonClient::new(host, port, true, true).unwrap()
+        RpcDaemonClient::new(host, port, true, true, test_clock()).unwrap()
     }
 
     #[tokio::test]
@@ -4159,7 +4168,7 @@ mod live_node_tests {
         // Just after a block the mainnet pool can be empty for a moment
         // (2026-10-23's run found it so); new transactions arrive within
         // seconds, so the test waits for some rather than fail on that.
-        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        let deadline = Instant::now() + Duration::from_secs(300);
         let pool: Vec<String> = loop {
             let pool: Vec<String> = c
                 .pool_hashes()
@@ -4173,7 +4182,7 @@ mod live_node_tests {
                 break pool;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                Instant::now() < deadline,
                 "the live mempool stayed empty for 5 minutes"
             );
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -4261,13 +4270,13 @@ mod live_node_tests {
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let small = RpcDaemonClient::new("127.0.0.1", port, false, false)
+        let small = RpcDaemonClient::new("127.0.0.1", port, false, false, test_clock())
             .unwrap()
             .with_max_response_bytes(1_000);
         let err = small.get_height().await.unwrap_err();
         assert!(err.to_string().contains("larger than"), "got: {err}");
 
-        let roomy = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap();
+        let roomy = RpcDaemonClient::new("127.0.0.1", port, false, false, test_clock()).unwrap();
         assert!(
             roomy.get_height().await.is_ok(),
             "the same response is fine under the default cap"

@@ -148,7 +148,7 @@ proptest! {
             let store = crate::store::Store::open_in_memory().unwrap().into_shared();
             let daemons = Daemons::default();
             let limiter = Arc::new(ApiRateLimits::new(100_000, Some(100_000)));
-            let settings = EngineSettings::load_with(Arc::clone(&store),Some(crate::engine_settings::NodesReloadable { daemons: daemons.clone() }),Arc::clone(&limiter),live_settings::Env::fixed(Vec::<(String,String)>::new())).await.unwrap();
+            let settings = EngineSettings::load_with(Arc::clone(&store),Some(crate::engine_settings::NodesReloadable { daemons: daemons.clone(), clock: crate::node_test_support::clock() }),Arc::clone(&limiter),live_settings::Env::fixed(Vec::<(String,String)>::new())).await.unwrap();
             let custody: Arc<dyn KeyCustody> = Arc::new(crate::key_custody::PlainKeyCustody::default());
             let wallet_handles: Arc<WalletHandles> = Arc::default();
             let status = scanner_status::new_scanner_status_map();
@@ -159,9 +159,10 @@ proptest! {
                 custody:crate::http::Custody { snp:None,backends:Arc::clone(&custody),wallet_handles:Arc::clone(&wallet_handles) },
                 networks:crate::http::Networks { daemons:daemons.clone(),scanner_status:Arc::clone(&status) },
                 activity_stream:crate::activity::StreamTuning::DEFAULT,
+                clock:crate::node_test_support::clock(),
             };
             let router = crate::http::build_router(state,1<<20);
-            let manager = tokio::spawn(manage_network_loops(Db::over_shared(Arc::clone(&store)),custody,daemons.clone(),wallet_handles,Arc::clone(&status),settings,RunningNetworks::default()));
+            let manager = tokio::spawn(manage_network_loops(Db::over_shared(Arc::clone(&store)),custody,daemons.clone(),wallet_handles,Arc::clone(&status),settings,RunningNetworks::default(),crate::node_test_support::clock()));
             let networks = [Network::Mainnet,Network::Stagenet,Network::Testnet];
             let mut previous = 0u8;
             for (mask,fallback) in actions.into_iter().chain([(0,false)]) {

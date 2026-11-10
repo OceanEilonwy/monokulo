@@ -459,7 +459,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/setup")
+        PageChrome::from_user(None, "/setup", clock::Clock::System.now())
     }
 
     #[test]

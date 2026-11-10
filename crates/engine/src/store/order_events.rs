@@ -7,6 +7,7 @@
 //! The engine sends no webhook itself: monokulo holds the merchant's side of
 //! an order (its price, its store) and delivers them.
 
+use clock::UnixTime;
 use engine_protocol::order_event::{LogPosition, OrderEventKind};
 use rusqlite::{params, OptionalExtension as _};
 
@@ -129,7 +130,7 @@ impl Store {
         order_id: &OrderId,
         kind: OrderEventKind,
         fields: &[(&str, &str)],
-        now: i64,
+        now: UnixTime,
     ) -> Result<i64> {
         let (tenant_id, merchant_order_id, description, xmr_amount, expires_at): (
             TenantId,
@@ -172,7 +173,7 @@ impl Store {
                 order_id,
                 kind.as_str(),
                 serde_json::Value::Object(payload).to_string(),
-                now
+                now.as_secs()
             ])?;
         self.note_order_event_appended();
         Ok(self.conn.last_insert_rowid())

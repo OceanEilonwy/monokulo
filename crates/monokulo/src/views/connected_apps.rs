@@ -363,7 +363,7 @@ pub enum CodeState {
 }
 
 /// How long a code lasts, in seconds.
-const CODE_SECONDS: u64 = crate::apps::CONNECT_TOKEN_TTL_SECONDS.unsigned_abs();
+const CODE_SECONDS: u64 = crate::apps::CONNECT_TOKEN_TTL.as_secs();
 
 /// The card a code's page shows it on: named for the device, if it was.
 fn code_card(device_name: &str, meta: &str, body: Markup) -> Markup {

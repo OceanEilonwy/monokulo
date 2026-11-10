@@ -2,13 +2,15 @@
 
 use rusqlite::{params, OptionalExtension};
 
+use std::time::Duration;
+
 use super::{ConnectionId, Db, Result};
 use crate::views::checkout_style::{stylesheet_hash, CheckoutStyle};
 
 /// How long a draft is kept, unsaved. Long enough to wait on DNS.
-pub const DRAFT_SECS: i64 = 7 * 24 * 60 * 60;
+pub const DRAFT_LIFETIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How long a stylesheet nothing links any more is kept, for pages still open.
-const REPLACED_STYLESHEET_SECS: i64 = 7 * 24 * 60 * 60;
+const REPLACED_STYLESHEET_KEPT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// A store's custom page being written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +93,7 @@ impl Db {
         css: &str,
         written_css: &str,
         preview_token: &str,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         // A draft's old stylesheet has no use once it's replaced: its preview link
@@ -103,7 +105,7 @@ impl Db {
              ON CONFLICT (connection_id) DO UPDATE SET template = excluded.template, css = excluded.css,
                 written_css = excluded.written_css, preview_token = excluded.preview_token,
                 created_at_utc = excluded.created_at_utc",
-            params![id, template, css, written_css, preview_token, now],
+            params![id, template, css, written_css, preview_token, now.as_secs()],
         )?;
         self.put_stylesheet(id, written_css, now)?;
         if let Some(replaced) = replaced.filter(|replaced| replaced != written_css) {
@@ -167,13 +169,13 @@ impl Db {
     pub fn checkout_page_draft(
         &self,
         id: &ConnectionId,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<Option<CheckoutPageDraft>> {
         Ok(self
             .conn
             .query_row(
                 &format!("SELECT {DRAFT_COLUMNS} FROM checkout_page_drafts WHERE connection_id = ?1 AND created_at_utc > ?2"),
-                params![id, now - DRAFT_SECS],
+                params![id, now.saturating_sub(DRAFT_LIFETIME).as_secs()],
                 draft_from_row,
             )
             .optional()?)
@@ -183,13 +185,13 @@ impl Db {
     pub fn checkout_page_draft_by_token(
         &self,
         preview_token: &str,
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<Option<CheckoutPageDraft>> {
         Ok(self
             .conn
             .query_row(
                 &format!("SELECT {DRAFT_COLUMNS} FROM checkout_page_drafts WHERE preview_token = ?1 AND created_at_utc > ?2"),
-                params![preview_token, now - DRAFT_SECS],
+                params![preview_token, now.saturating_sub(DRAFT_LIFETIME).as_secs()],
                 draft_from_row,
             )
             .optional()?)
@@ -231,7 +233,7 @@ impl Db {
         draft: &CheckoutPageDraft,
         token: &str,
         domains: &[String],
-        now: i64,
+        now: clock::UnixTime,
     ) -> Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         let id = &draft.connection_id;
@@ -255,7 +257,7 @@ impl Db {
                 draft.css,
                 draft.written_css,
                 token,
-                now,
+                now.as_secs(),
                 serde_json::to_string(domains).unwrap_or_default()
             ],
         )?;
@@ -288,7 +290,7 @@ impl Db {
         id: &ConnectionId,
         token: &str,
         domains: &[String],
-        checked_at: i64,
+        checked_at: clock::UnixTime,
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE checkout_pages SET last_checked_at_utc = ?3, failing_since_utc = NULL, last_error = NULL,
@@ -297,7 +299,7 @@ impl Db {
             params![
                 id,
                 token,
-                checked_at,
+                checked_at.as_secs(),
                 serde_json::to_string(domains).unwrap_or_default()
             ],
         )?;
@@ -310,7 +312,7 @@ impl Db {
         &self,
         id: &ConnectionId,
         token: &str,
-        checked_at: i64,
+        checked_at: clock::UnixTime,
         answered: bool,
         error: &str,
     ) -> Result<()> {
@@ -319,13 +321,13 @@ impl Db {
                 "UPDATE checkout_pages SET last_checked_at_utc = ?3, last_error = ?4,
                     failing_since_utc = COALESCE(failing_since_utc, ?3)
                  WHERE connection_id = ?1 AND token = ?2",
-                params![id, token, checked_at, error],
+                params![id, token, checked_at.as_secs(), error],
             )?;
         } else {
             self.conn.execute(
                 "UPDATE checkout_pages SET last_checked_at_utc = ?3, last_error = ?4
                  WHERE connection_id = ?1 AND token = ?2",
-                params![id, token, checked_at, error],
+                params![id, token, checked_at.as_secs(), error],
             )?;
         }
         Ok(())
@@ -335,7 +337,7 @@ impl Db {
     /// start: a release that fixes the sanitiser reaches pages already live. CSS it
     /// now refuses stays as it was, and the page doesn't show
     /// (`checkout_pages::parsed`). Returns how many changed.
-    pub fn refresh_checkout_pages(&self, now: i64) -> Result<usize> {
+    pub fn refresh_checkout_pages(&self, now: clock::UnixTime) -> Result<usize> {
         let pages: Vec<PublishedCheckoutPage> = self
             .conn
             .prepare(&format!("SELECT {PAGE_COLUMNS} FROM checkout_pages"))?
@@ -365,10 +367,10 @@ impl Db {
     pub fn set_checkout_page_turned_off(
         &self,
         id: &ConnectionId,
-        off: Option<(i64, &str)>,
+        off: Option<(clock::UnixTime, &str)>,
     ) -> Result<bool> {
         let (at, reason) = match off {
-            Some((at, reason)) => (Some(at), Some(reason)),
+            Some((at, reason)) => (Some(at.as_secs()), Some(reason)),
             None => (None, None),
         };
         let changed = self.conn.execute(
@@ -417,7 +419,12 @@ impl Db {
     }
 
     /// Keeps `css` for serving by its hash, as of `now`.
-    pub(super) fn put_stylesheet(&self, id: &ConnectionId, css: &str, now: i64) -> Result<()> {
+    pub(super) fn put_stylesheet(
+        &self,
+        id: &ConnectionId,
+        css: &str,
+        now: clock::UnixTime,
+    ) -> Result<()> {
         if css.is_empty() {
             return Ok(());
         }
@@ -425,21 +432,21 @@ impl Db {
             "INSERT INTO checkout_stylesheets (hash, connection_id, css, created_at_utc)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (hash, connection_id) DO UPDATE SET created_at_utc = excluded.created_at_utc",
-            params![stylesheet_hash(css), id, css, now],
+            params![stylesheet_hash(css), id, css, now.as_secs()],
         )?;
         Ok(())
     }
 
     /// Drops the store's stylesheets replaced long enough ago, keeping whatever
     /// its pages link now, however old: a page open that long has refreshed.
-    pub(super) fn prune_stylesheets(&self, id: &ConnectionId, now: i64) -> Result<()> {
+    pub(super) fn prune_stylesheets(&self, id: &ConnectionId, now: clock::UnixTime) -> Result<()> {
         let keep = self.linked_stylesheets(id)?;
         let old: Vec<String> = self
             .conn
             .prepare(
                 "SELECT hash FROM checkout_stylesheets WHERE connection_id = ?1 AND created_at_utc < ?2",
             )?
-            .query_map(params![id, now - REPLACED_STYLESHEET_SECS], |row| row.get(0))?
+            .query_map(params![id, now.saturating_sub(REPLACED_STYLESHEET_KEPT).as_secs()], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         for hash in old.iter().filter(|hash| !keep.contains(hash)) {
             self.conn.execute(

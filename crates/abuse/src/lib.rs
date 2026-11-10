@@ -26,8 +26,8 @@ pub mod proxy_protocol;
 pub mod stats;
 pub mod streams;
 
+use clock::{Clock, UnixTime};
 use parking_lot::RwLock;
-use service_runtime::time::Clock;
 use std::sync::Arc;
 
 pub use identity::{ClientIdentity, TrustedProxies};
@@ -137,8 +137,8 @@ impl AbuseProtection {
         AbuseProtection { clock, ..self }
     }
 
-    /// Seconds since the Unix epoch, by its clock.
-    pub fn now(&self) -> i64 {
+    /// What time it is, by its clock.
+    pub fn now(&self) -> UnixTime {
         self.clock.now()
     }
 
@@ -162,7 +162,7 @@ impl AbuseProtection {
         client: &ClientIdentity,
         class: RouteClass,
         challengeable: bool,
-        now: i64,
+        now: UnixTime,
     ) -> Tier {
         let config = self.config();
         let force_soft = challengeable && config.under_attack && !client.is_authenticated();
@@ -174,7 +174,7 @@ impl AbuseProtection {
     /// its limit: the report is dropped. Never a challenge, whoever the
     /// client is - solving a proof of work to deliver a log line would be
     /// absurd, and the page that sent it keeps working either way.
-    pub fn check_logs(&self, client: &ClientIdentity, now: i64) -> Result<(), u64> {
+    pub fn check_logs(&self, client: &ClientIdentity, now: UnixTime) -> Result<(), u64> {
         let per_min = self.config().client_logs_per_min;
         match self.log_limiter.check(
             client,

@@ -91,7 +91,11 @@ pub enum LoadError {
 impl Push {
     /// This instance's VAPID key from `db`, decrypted with `key`; made and
     /// stored first if there's none yet.
-    pub async fn load_or_make(db: &Database, key: &AtRestKey) -> Result<Push, LoadError> {
+    pub async fn load_or_make(
+        db: &Database,
+        key: &AtRestKey,
+        now: clock::UnixTime,
+    ) -> Result<Push, LoadError> {
         let stored = match db.read(|db| db.vapid_key()).await? {
             Some(stored) => stored,
             None => {
@@ -99,7 +103,7 @@ impl Push {
                 let new = StoredVapidKey {
                     public_key: made.public().to_string(),
                     private_key_encrypted: encrypt_private(key, &made),
-                    created_at: crate::now_unix(),
+                    created_at: now.as_secs(),
                 };
                 // Whoever stored one first, that one is kept: read back
                 // what is stored, below, never assume it's this one.

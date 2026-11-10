@@ -25,7 +25,7 @@ parking_lot = "0.12.5"
 # An issued challenge is sent as JSON.
 serde = { version = "1.0.229", features = ["derive"] }
 # The clock limits and challenges read (`Clock::System`).
-service-runtime = { path = "../service-runtime" }
+clock = { path = "../clock" }
 # The onion listener's sockets, its accept task and its header timeout.
 tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tracing = "0.1.44"

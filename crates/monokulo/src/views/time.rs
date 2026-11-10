@@ -5,6 +5,7 @@
 //! checkout takes `?timezone=`, and without one shows UTC until its script
 //! turns each time into the browser's own zone (`data-local`).
 
+use clock::UnixTime;
 use maud::{html, Markup};
 
 /// The zone a page shows times in, and the moment the page was made (a
@@ -15,11 +16,11 @@ pub struct Clock {
     name: String,
     /// No zone was chosen: it came from the browser, or is the UTC default.
     automatic: bool,
-    now: i64,
+    now: UnixTime,
 }
 
 impl Clock {
-    pub fn utc(now: i64) -> Self {
+    pub fn utc(now: UnixTime) -> Self {
         Clock {
             zone: jiff::tz::TimeZone::UTC,
             name: "UTC".into(),
@@ -28,18 +29,19 @@ impl Clock {
         }
     }
 
-    /// A signed-in user's clock, as every page of theirs shows times.
-    pub fn for_user(user: &crate::db::UserRow) -> Self {
+    /// A signed-in user's clock, as every page of theirs shows times, made
+    /// at `now`: the moment the caller read once for the whole page.
+    pub fn for_user(user: &crate::db::UserRow, now: UnixTime) -> Self {
         Clock::new(
             user.timezone.as_deref(),
             user.browser_timezone.as_deref(),
-            crate::now_unix(),
+            now,
         )
     }
 
     /// `chosen` wins; without it, `browser`; without that (or when neither
     /// names a real zone), UTC.
-    pub fn new(chosen: Option<&str>, browser: Option<&str>, now: i64) -> Self {
+    pub fn new(chosen: Option<&str>, browser: Option<&str>, now: UnixTime) -> Self {
         let named = |name: &str| {
             jiff::tz::TimeZone::get(name)
                 .ok()
@@ -74,14 +76,14 @@ impl Clock {
     }
 
     /// The moment the page was made.
-    pub fn now(&self) -> i64 {
+    pub fn now(&self) -> UnixTime {
         self.now
     }
 
     /// How long from the page's moment to `unix`, roughly: `in 6 min`,
     /// `2 min ago`, `just now`.
     pub fn relative(&self, unix: i64) -> String {
-        let delta = unix - self.now;
+        let delta = unix.saturating_sub(self.now.as_secs());
         let span = delta.unsigned_abs();
         let amount = if span < 45 {
             return if delta > 0 { "in a moment" } else { "just now" }.to_string();
@@ -122,7 +124,7 @@ impl Clock {
         let Some(zoned) = self.zoned(unix) else {
             return unix.to_string();
         };
-        let this_year = self.zoned(self.now).map(|now| now.year()) == Some(zoned.year());
+        let this_year = self.zoned(self.now.as_secs()).map(|now| now.year()) == Some(zoned.year());
         zoned
             .strftime(if this_year {
                 "%-d %b, %H:%M"
@@ -170,35 +172,36 @@ mod tests {
 
     // 2026-09-28 06:22:07 UTC.
     const T: i64 = 1_790_576_527;
+    const NOW: UnixTime = UnixTime::from_secs(T);
 
     #[test]
     fn a_chosen_zone_wins_then_the_browsers_then_utc() {
         assert_eq!(
-            Clock::new(Some("Asia/Tokyo"), Some("Australia/Perth"), T).name(),
+            Clock::new(Some("Asia/Tokyo"), Some("Australia/Perth"), NOW).name(),
             "Asia/Tokyo"
         );
-        let browser = Clock::new(None, Some("Australia/Perth"), T);
+        let browser = Clock::new(None, Some("Australia/Perth"), NOW);
         assert_eq!(
             (browser.name(), browser.is_automatic()),
             ("Australia/Perth", true)
         );
-        assert_eq!(Clock::new(None, Some("Not/AZone"), T).name(), "UTC");
-        assert_eq!(Clock::new(Some("Not/AZone"), None, T).name(), "UTC");
+        assert_eq!(Clock::new(None, Some("Not/AZone"), NOW).name(), "UTC");
+        assert_eq!(Clock::new(Some("Not/AZone"), None, NOW).name(), "UTC");
     }
 
     #[test]
     fn times_read_as_day_month_and_clock_time_in_the_zone() {
-        let perth = Clock::new(Some("Australia/Perth"), None, T);
+        let perth = Clock::new(Some("Australia/Perth"), None, NOW);
         assert_eq!(perth.text(T), "28 Sep, 14:22");
         // Another year shows its year.
         assert_eq!(perth.text(T - 365 * 86_400), "28 Sep 2025, 14:22");
-        assert_eq!(Clock::utc(T).text(T), "28 Sep, 06:22");
+        assert_eq!(Clock::utc(NOW).text(T), "28 Sep, 06:22");
         let html = perth.time(T).into_string();
         assert_eq!(
             html,
             r#"<time class="when" datetime="2026-09-28T06:22:07Z" title="Monday 28 September 2026, 14:22:07 (Australia/Perth)">28 Sep, 14:22</time>"#
         );
-        assert!(Clock::utc(T)
+        assert!(Clock::utc(NOW)
             .time_local(T)
             .into_string()
             .contains(" data-local>"));
@@ -206,7 +209,7 @@ mod tests {
 
     #[test]
     fn how_long_ago_rounds_minutes_up_then_hours_and_days_to_the_nearest() {
-        let clock = Clock::utc(T);
+        let clock = Clock::utc(NOW);
         let cases = [
             (-44, "just now"),
             (44, "in a moment"),

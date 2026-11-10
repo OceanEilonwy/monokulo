@@ -4,6 +4,7 @@
 
 #![cfg_attr(coverage_nightly, coverage(off))]
 
+use clock::UnixTime;
 use proptest::prelude::*;
 
 use super::{derive_status, OrderStatus, PaymentView, StatusInputs};
@@ -57,8 +58,8 @@ fn scenario() -> impl Strategy<Value = (Vec<PaymentView>, StatusInputs)> {
                         StatusInputs {
                             xmr_amount_piconero: crate::store::Piconero(xmr_amount_piconero),
                             confirmations_required,
-                            now,
-                            expires_at,
+                            now: UnixTime::from_secs(now),
+                            expires_at: UnixTime::from_secs(expires_at),
                         },
                     )
                 },
@@ -107,8 +108,8 @@ fn status_decision_boundaries_match_independent_grid() {
                         let inputs = StatusInputs {
                             xmr_amount_piconero: crate::store::Piconero(goal),
                             confirmations_required: required,
-                            now,
-                            expires_at: 0,
+                            now: UnixTime::from_secs(now),
+                            expires_at: UnixTime::from_secs(0),
                         };
                         assert_eq!(
                             derive_status(&payments, inputs),
@@ -194,7 +195,7 @@ mod properties {
                 is_zero_conf: true,
             });
             let before = derive_status(&payments, inputs);
-            prop_assert_eq!(derive_status(&payments, StatusInputs { now: later, ..inputs }), before);
+            prop_assert_eq!(derive_status(&payments, StatusInputs { now: UnixTime::from_secs(later), ..inputs }), before);
         }
 
         #[test]
@@ -221,8 +222,8 @@ mod properties {
             let inputs = StatusInputs {
                 xmr_amount_piconero: crate::store::Piconero(expected),
                 confirmations_required,
-                now: expires_at,
-                expires_at,
+                now: UnixTime::from_secs(expires_at),
+                expires_at: UnixTime::from_secs(expires_at),
             };
             let payments = [PaymentView {
                 amount_piconero: crate::store::Piconero(expected - 1),
@@ -232,7 +233,7 @@ mod properties {
             let at_deadline = if expected == 1 { OrderStatus::Pending } else { OrderStatus::Partial };
             prop_assert_eq!(derive_status(&payments, inputs), at_deadline);
             prop_assert_eq!(
-                derive_status(&payments, StatusInputs { now: expires_at + 1, ..inputs }),
+                derive_status(&payments, StatusInputs { now: UnixTime::from_secs(expires_at + 1), ..inputs }),
                 OrderStatus::Expired,
             );
         }

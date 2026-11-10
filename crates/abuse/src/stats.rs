@@ -3,6 +3,7 @@
 //! or wait token that didn't redeem, or a request past the hard limit).
 //! Sixty one-minute buckets in memory; nothing is stored.
 
+use clock::UnixTime;
 use parking_lot::Mutex;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,9 +33,15 @@ impl Default for ChallengeStats {
     }
 }
 
+/// Which minute since the epoch `now` falls in: the bucket's label.
+fn minute_of(now: UnixTime) -> i64 {
+    // Whole minutes, a label rather than a moment to do arithmetic on.
+    now.as_secs().div_euclid(60)
+}
+
 impl ChallengeStats {
-    pub fn record(&self, event: Event, now: i64) {
-        let minute = now.div_euclid(60);
+    pub fn record(&self, event: Event, now: UnixTime) {
+        let minute = minute_of(now);
         let mut buckets = self.buckets.lock();
         let bucket = &mut buckets[minute.rem_euclid(60) as usize];
         if bucket.0 != minute {
@@ -47,8 +54,8 @@ impl ChallengeStats {
         }
     }
 
-    pub fn last_hour(&self, now: i64) -> HourCounts {
-        let minute = now.div_euclid(60);
+    pub fn last_hour(&self, now: UnixTime) -> HourCounts {
+        let minute = minute_of(now);
         let buckets = self.buckets.lock();
         buckets
             .iter()
@@ -65,15 +72,19 @@ impl ChallengeStats {
 mod tests {
     use super::*;
 
+    fn at(secs: i64) -> UnixTime {
+        UnixTime::from_secs(secs)
+    }
+
     #[test]
     fn counts_cover_exactly_the_last_hour() {
         let stats = ChallengeStats::default();
-        stats.record(Event::Issued, 1_000_000);
-        stats.record(Event::Issued, 1_000_000 + 30 * 60);
-        stats.record(Event::Solved, 1_000_000 + 30 * 60);
-        stats.record(Event::Refused, 1_000_000 + 59 * 60);
+        stats.record(Event::Issued, at(1_000_000));
+        stats.record(Event::Issued, at(1_000_000 + 30 * 60));
+        stats.record(Event::Solved, at(1_000_000 + 30 * 60));
+        stats.record(Event::Refused, at(1_000_000 + 59 * 60));
         assert_eq!(
-            stats.last_hour(1_000_000 + 59 * 60),
+            stats.last_hour(at(1_000_000 + 59 * 60)),
             HourCounts {
                 issued: 2,
                 solved: 1,
@@ -81,13 +92,16 @@ mod tests {
             }
         );
         assert_eq!(
-            stats.last_hour(1_000_000 + 61 * 60),
+            stats.last_hour(at(1_000_000 + 61 * 60)),
             HourCounts {
                 issued: 1,
                 solved: 1,
                 refused: 1
             }
         );
-        assert_eq!(stats.last_hour(1_000_000 + 200 * 60), HourCounts::default());
+        assert_eq!(
+            stats.last_hour(at(1_000_000 + 200 * 60)),
+            HourCounts::default()
+        );
     }
 }

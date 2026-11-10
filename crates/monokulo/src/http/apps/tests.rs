@@ -590,7 +590,7 @@ async fn redeeming_refuses_clearly_and_spends_nothing_it_cant_use() {
     state
         .db
         .lock()
-        .create_app_connect_token(&hash, &store_id, "", crate::now_unix())
+        .create_app_connect_token(&hash, &store_id, "", state.clock.now())
         .unwrap();
     assert_problem(
         redeem(&router, connect_body("ct_test")).await,
@@ -658,14 +658,14 @@ fn connected_app(state: &AppState, store_id: &str, slug: &str, device: &str) -> 
     let db = state.db.lock();
     let raw = credentials::auth::generate_app_connect_token();
     let store = crate::db::ConnectionId::new(store_id);
-    let now = crate::now_unix();
+    let now = state.clock.now();
     db.create_app_connect_token(&raw.hash(), &store, device, now)
         .unwrap();
     let key = credentials::auth::generate_app_key();
     db.redeem_app_connect_token(
         &raw.hash(),
         now,
-        600,
+        std::time::Duration::from_secs(600),
         &crate::db::NewApp {
             slug,
             name: "Monokular",
@@ -718,7 +718,7 @@ fn target(
                 endpoint: &::push::Endpoint::parse(endpoint).unwrap(),
                 events: &crate::apps::SaleKind::ALL,
             },
-            crate::now_unix(),
+            state.clock.now(),
         )
         .unwrap();
     match registered {
@@ -737,7 +737,7 @@ fn attempted(
     status: u16,
 ) {
     let db = state.db.lock();
-    let now = crate::now_unix();
+    let now = state.clock.now();
     let id = db
         .queue_test_push(&crate::db::TestPush {
             store_id: &crate::db::ConnectionId::new(store),
@@ -746,7 +746,7 @@ fn attempted(
             event: crate::apps::SaleKind::Paid,
             at: now,
             ttl: ::push::Ttl::seconds(1800),
-            due_at: now + 60,
+            due_at: now.saturating_add(std::time::Duration::from_secs(60)),
         })
         .unwrap()
         .unwrap();
@@ -756,7 +756,7 @@ fn attempted(
     } else {
         crate::db::PushResult::Failed {
             error: format!("the push service answered {status}"),
-            retry_at: Some(now + 5),
+            retry_at: Some((now.saturating_add(std::time::Duration::from_secs(5))).as_secs()),
             failure_limit: Some(20),
         }
     };
@@ -1287,7 +1287,7 @@ fn an_apps_push_line_says_how_long_ago_its_last_push_and_failure_were() {
     use crate::db::{AppId, AppPushSummary, LastAttempt};
     use crate::views::connected_apps::PushLine;
     const NOW: i64 = 1_790_576_527;
-    let clock = crate::views::time::Clock::utc(NOW);
+    let clock = crate::views::time::Clock::utc(clock::UnixTime::from_secs(NOW));
     let summary = |failing: u32, worst_last: Option<LastAttempt>| AppPushSummary {
         app_id: AppId::new("app_front"),
         targets: 2,

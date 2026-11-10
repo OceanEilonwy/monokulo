@@ -40,7 +40,7 @@ impl Shop {
             ..fixture.state.clone()
         };
         // Only the domain this test says: the fixture's own isn't verified.
-        let at = crate::now_unix();
+        let at = state.clock.now();
         {
             let db = state.db.lock();
             let conn = db.conn_for_test();
@@ -53,7 +53,7 @@ impl Shop {
                 conn.execute(
                     "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc, verified_at_utc)
                      VALUES (?1, ?2, ?3, 't', ?4, ?4)",
-                    rusqlite::params![domain, fixture.store_id, domain, at],
+                    rusqlite::params![domain, fixture.store_id, domain, at.as_secs()],
                 )
                 .unwrap();
             }
@@ -275,10 +275,9 @@ async fn a_drafts_preview_link_can_be_sent_as_it_is() {
         link.starts_with(&format!("{PUBLIC_URI}/checkout-preview/")),
         "{link}"
     );
-    assert_eq!(
-        draft["expires_at"].as_i64().unwrap() - draft["created_at"].as_i64().unwrap(),
-        crate::db::DRAFT_SECS
-    );
+    let created = clock::UnixTime::from_secs(draft["created_at"].as_i64().unwrap());
+    let expires = clock::UnixTime::from_secs(draft["expires_at"].as_i64().unwrap());
+    assert_eq!(created.until(expires), crate::db::DRAFT_LIFETIME);
 }
 
 /// Each limit, and how long to wait, as a client reads it. Saves and lookups count
@@ -317,7 +316,14 @@ async fn a_draft_that_no_longer_passes_is_refused_as_such() {
     shop.state
         .db
         .lock()
-        .save_checkout_page_draft(&store, "{{status}}", "", "", "older", crate::now_unix())
+        .save_checkout_page_draft(
+            &store,
+            "{{status}}",
+            "",
+            "",
+            "older",
+            shop.state.clock.now(),
+        )
         .unwrap();
     let refused = shop.sk("POST", PUBLISH, None).await;
     assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -332,7 +338,7 @@ async fn a_draft_that_no_longer_passes_is_refused_as_such() {
 async fn a_store_with_both_domains_needs_both_to_approve() {
     const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
     let shop = Shop::new(Some("shop.example")).await;
-    let at = crate::now_unix();
+    let at = shop.state.clock.now();
     shop.state
         .db
         .lock()
@@ -340,7 +346,7 @@ async fn a_store_with_both_domains_needs_both_to_approve() {
         .execute(
             "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc, verified_at_utc)
              VALUES ('onion', ?1, ?2, 't', ?3, ?3)",
-            rusqlite::params![shop.fixture.store_id, ONION, at],
+            rusqlite::params![shop.fixture.store_id, ONION, at.as_secs()],
         )
         .unwrap();
     let draft = shop.save(TEMPLATE).await;
@@ -393,7 +399,7 @@ async fn a_store_with_both_domains_needs_both_to_approve() {
 async fn a_stores_two_proofs_cant_be_matched() {
     const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
     let shop = Shop::new(Some("shop.example")).await;
-    let at = crate::now_unix();
+    let at = shop.state.clock.now();
     shop.state
         .db
         .lock()
@@ -401,7 +407,7 @@ async fn a_stores_two_proofs_cant_be_matched() {
         .execute(
             "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc, verified_at_utc)
              VALUES ('onion', ?1, ?2, 't', ?3, ?3)",
-            rusqlite::params![shop.fixture.store_id, ONION, at],
+            rusqlite::params![shop.fixture.store_id, ONION, at.as_secs()],
         )
         .unwrap();
     let draft = shop.save(TEMPLATE).await;
@@ -430,7 +436,7 @@ async fn a_turned_off_page_stays_off() {
         .state
         .db
         .lock()
-        .set_checkout_page_turned_off(&store, Some((crate::now_unix(), "Wrong address")))
+        .set_checkout_page_turned_off(&store, Some((shop.state.clock.now(), "Wrong address")))
         .unwrap());
 
     let page = body_json(shop.sk("GET", PAGE, None).await).await;

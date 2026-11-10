@@ -142,6 +142,7 @@ async fn register(
         ));
     }
     let (client_id, app_id) = (input.client_id, app.id.clone());
+    let now = state.clock.now();
     let registered = state
         .db
         .write(move |db| {
@@ -153,7 +154,7 @@ async fn register(
                     endpoint: &endpoint,
                     events: &events,
                 },
-                crate::now_unix(),
+                now,
             )
         })
         .await;

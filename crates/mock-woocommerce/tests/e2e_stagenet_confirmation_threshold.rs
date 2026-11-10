@@ -186,6 +186,7 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
                 node_fixture::PORT,
                 node_fixture::SSL,
                 node_fixture::ACCEPT_SELF_SIGNED_CERTS,
+                clock::Clock::System,
             )
             .expect("failed to build daemon RPC client"),
         );
@@ -489,6 +490,7 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
             node_fixture::PORT,
             node_fixture::SSL,
             node_fixture::ACCEPT_SELF_SIGNED_CERTS,
+            clock::Clock::System,
         )
         .expect("failed to build daemon RPC client"),
     );

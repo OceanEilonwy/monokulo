@@ -52,12 +52,15 @@ impl Publisher {
     /// a closed publisher had (which may take a moment to be free again),
     /// or `ipc:///path`.
     pub(crate) async fn bind(endpoint: &str) -> Self {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::property_support::real_now() + std::time::Duration::from_secs(5);
         let (listener, endpoint) = loop {
             match listen(endpoint).await {
                 Ok(bound) => break bound,
                 Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
-                    assert!(std::time::Instant::now() < deadline, "{endpoint}: {error}");
+                    assert!(
+                        crate::property_support::real_now() < deadline,
+                        "{endpoint}: {error}"
+                    );
                     tokio::task::yield_now().await;
                 }
                 Err(error) => panic!("{endpoint}: {error}"),

@@ -21,6 +21,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use clock::{Clock, UnixTime};
 use parking_lot::Mutex;
 use push::jwt::{CompactJwt, Header, JwtError};
 use push::wire::PushRequest;
@@ -33,13 +34,13 @@ use crate::settings::{ApnsConfig, ApnsKey, AppleId, BundleId, ServiceUrl};
 use crate::upstream::{self, Delivery};
 
 /// How long a provider token is reused.
-pub const TOKEN_REUSE: i64 = 50 * 60;
+pub const TOKEN_REUSE: Duration = Duration::from_secs(50 * 60);
 
 /// How far the clock may go back (NTP stepping it, say) with the provider
 /// token still reused: further is a clock set back, which signs anew
 /// rather than reuse a token from its future. Apple answers a token
 /// renewed more than once every 20 minutes with 429.
-pub const CLOCK_SKEW: i64 = 60;
+pub const CLOCK_SKEW: Duration = Duration::from_secs(60);
 
 /// The largest payload APNs takes for a notification or a Live Activity.
 pub const MAX_PAYLOAD: usize = 4096;
@@ -160,10 +161,10 @@ pub fn translate(
     handle: &Handle,
     bundle: &BundleId,
     request: &PushRequest,
-    now: i64,
+    now: UnixTime,
 ) -> Result<ApnsPush, TranslateError> {
     let options = &request.options;
-    let ttl = i64::from(options.ttl.as_secs());
+    let ttl = Duration::from_secs(u64::from(options.ttl.as_secs()));
     let mut push = ApnsPush {
         push_type: PushType::Alert,
         topic: bundle.as_str().to_owned(),
@@ -172,7 +173,11 @@ pub fn translate(
         } else {
             5
         },
-        expiration: if ttl == 0 { 0 } else { now.saturating_add(ttl) },
+        expiration: if ttl.is_zero() {
+            0
+        } else {
+            now.saturating_add(ttl).as_secs()
+        },
         collapse_id: options
             .topic
             .as_ref()
@@ -215,13 +220,13 @@ fn live_activity_topic(bundle: &BundleId) -> String {
 
 /// An update to a running activity; a paid or expired sale is told with
 /// an alert, never by ending the activity.
-fn live_activity_update(json: &PlainJson, now: i64) -> Result<Value, TranslateError> {
+fn live_activity_update(json: &PlainJson, now: UnixTime) -> Result<Value, TranslateError> {
     let content: serde_json::Map<String, Value> = serde_json::from_slice(json.as_bytes())
         .map_err(|error| TranslateError::State(error.to_string()))?;
     let state: State = serde_json::from_value(Value::Object(content.clone()))
         .map_err(|error| TranslateError::State(error.to_string()))?;
     let mut aps = serde_json::Map::new();
-    aps.insert("timestamp".into(), now.into());
+    aps.insert("timestamp".into(), now.as_secs().into());
     aps.insert("event".into(), "update".into());
     aps.insert("content-state".into(), Value::Object(content));
     match state.phase {
@@ -242,7 +247,7 @@ fn live_activity_update(json: &PlainJson, now: i64) -> Result<Value, TranslateEr
 
 /// The JWT a request is authorised with, and when it was signed.
 struct ProviderToken {
-    issued_at: i64,
+    issued_at: UnixTime,
     jwt: CompactJwt,
 }
 
@@ -291,11 +296,13 @@ impl Apns {
     /// no more than [`CLOCK_SKEW`] in the future, else a new one. The clock
     /// is read under the lock, not when the request came in, so requests
     /// reaching here out of their arrival order still renew the token once.
-    pub fn token(&self, clock: impl FnOnce() -> i64) -> Result<CompactJwt, JwtError> {
+    pub fn token(&self, clock: impl FnOnce() -> UnixTime) -> Result<CompactJwt, JwtError> {
         let mut cached = self.token.lock();
         let now = clock();
         if let Some(token) = cached.as_ref().filter(|token| {
-            (token.issued_at - CLOCK_SKEW..token.issued_at + TOKEN_REUSE).contains(&now)
+            (token.issued_at.saturating_sub(CLOCK_SKEW)
+                ..token.issued_at.saturating_add(TOKEN_REUSE))
+                .contains(&now)
         }) {
             return Ok(token.jwt.clone());
         }
@@ -306,7 +313,7 @@ impl Apns {
             },
             &Claims {
                 iss: self.team_id.as_str(),
-                iat: now,
+                iat: now.as_secs(),
             },
         )?;
         *cached = Some(ProviderToken {
@@ -325,8 +332,14 @@ impl Apns {
     }
 
     /// Hands `push` to APNs for `handle`, and says what became of it.
-    pub async fn send(&self, handle: &Handle, push: &ApnsPush) -> Delivery {
-        let token = match self.token(service_runtime::time::now_unix) {
+    pub async fn send(
+        &self,
+        handle: &Handle,
+        push: &ApnsPush,
+        clock: &Clock,
+        now: UnixTime,
+    ) -> Delivery {
+        let token = match self.token(|| clock.now()) {
             Ok(token) => token,
             Err(error) => {
                 tracing::error!(error = %error, "the APNs provider token can't be signed");
@@ -363,7 +376,7 @@ impl Apns {
         if status == StatusCode::OK {
             return Delivery::Delivered;
         }
-        let retry_after = upstream::retry_after(response.headers(), std::time::SystemTime::now());
+        let retry_after = upstream::retry_after(response.headers(), now);
         let reason = serde_json::from_slice::<Reason>(&upstream::error_body(response).await)
             .map(|reason| reason.reason)
             .unwrap_or_default();
@@ -414,7 +427,12 @@ mod tests {
     use crate::settings::tests::apns_config;
     use push::{encrypt, Options, Topic, Ttl, VapidKey};
 
-    const NOW: i64 = 1_800_000_000;
+    const NOW_SECS: i64 = 1_800_000_000;
+    const NOW: UnixTime = UnixTime::from_secs(NOW_SECS);
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
 
     fn handle(platform: Platform) -> Handle {
         Handle {
@@ -423,7 +441,7 @@ mod tests {
             app: AppName::try_from("monokular".to_owned()).unwrap(),
             token: DeviceToken::parse(platform, &"ab".repeat(32)).unwrap(),
             sender: VapidKey::generate().public(),
-            expires_at: NOW + 60,
+            expires_at: NOW_SECS + 60,
         }
     }
 
@@ -467,7 +485,7 @@ mod tests {
         assert_eq!(push.push_type, PushType::Alert);
         assert_eq!(push.topic, "com.example.monokular");
         assert_eq!(push.priority, 10);
-        assert_eq!(push.expiration, NOW + 1800);
+        assert_eq!(push.expiration, NOW_SECS + 1800);
         assert_eq!(
             push.collapse_id.as_deref(),
             Some("0123456789abcdef0123456789abcdef")
@@ -494,7 +512,7 @@ mod tests {
     fn a_live_activity_state_is_its_content_state() {
         let state = json!({
             "phase": "seen", "sale": "#1042", "amount": "$24.50", "xmr": "0.1421",
-            "expiresAt": NOW + 900, "waitingCount": 0,
+            "expiresAt": NOW_SECS + 900, "waitingCount": 0,
         });
         let request = request(json(state.clone()), Urgency::Low, 900);
         let push = translate(
@@ -510,8 +528,8 @@ mod tests {
         assert_eq!(
             body(&push),
             json!({"aps": {
-                "timestamp": NOW, "event": "update", "content-state": state,
-                "stale-date": NOW + 900,
+                "timestamp": NOW_SECS, "event": "update", "content-state": state,
+                "stale-date": NOW_SECS + 900,
             }})
         );
     }
@@ -530,7 +548,7 @@ mod tests {
         assert_eq!(
             body(&push),
             json!({"aps": {
-                "timestamp": NOW, "event": "update", "content-state": paid,
+                "timestamp": NOW_SECS, "event": "update", "content-state": paid,
                 "alert": {"title": "Paid · $24.50"},
             }})
         );
@@ -559,7 +577,7 @@ mod tests {
         assert_eq!(
             body(&push),
             json!({"aps": {
-                "timestamp": NOW, "event": "update", "content-state": expired,
+                "timestamp": NOW_SECS, "event": "update", "content-state": expired,
                 "alert": {"title": "No payment yet"},
             }})
         );
@@ -627,19 +645,33 @@ mod tests {
     #[test]
     fn a_provider_token_is_reused_for_50_minutes_then_renewed() {
         let apns = Apns::new(&apns_config(), Duration::from_secs(5)).unwrap();
-        let at = |now: i64| move || now;
+        let at = |now: UnixTime| move || now;
         let first = apns.token(at(NOW)).unwrap();
-        assert_eq!(apns.token(at(NOW + TOKEN_REUSE - 1)).unwrap(), first);
-        let renewed = apns.token(at(NOW + TOKEN_REUSE)).unwrap();
+        assert_eq!(
+            apns.token(at(NOW.saturating_add(TOKEN_REUSE).saturating_sub(secs(1))))
+                .unwrap(),
+            first
+        );
+        let renewed = apns.token(at(NOW.saturating_add(TOKEN_REUSE))).unwrap();
         assert_ne!(renewed, first);
-        assert_eq!(apns.token(at(NOW + TOKEN_REUSE + 60)).unwrap(), renewed);
+        assert_eq!(
+            apns.token(at(NOW.saturating_add(TOKEN_REUSE).saturating_add(secs(60))))
+                .unwrap(),
+            renewed
+        );
         // A clock set back doesn't reuse a token from its future.
         assert_ne!(apns.token(at(NOW)).unwrap(), renewed);
         // Refused by APNs: signed anew, even within the 50 minutes.
         let current = apns.token(at(NOW)).unwrap();
-        assert_eq!(apns.token(at(NOW + 1)).unwrap(), current);
+        assert_eq!(
+            apns.token(at(NOW.saturating_add(secs(1)))).unwrap(),
+            current
+        );
         apns.forget(&current);
-        assert_ne!(apns.token(at(NOW + 1)).unwrap(), current);
+        assert_ne!(
+            apns.token(at(NOW.saturating_add(secs(1)))).unwrap(),
+            current
+        );
     }
 
     /// A clock a second (or up to a minute) behind the one that just
@@ -649,11 +681,20 @@ mod tests {
     #[test]
     fn a_clock_a_moment_behind_the_renewal_reuses_its_token() {
         let apns = Apns::new(&apns_config(), Duration::from_secs(5)).unwrap();
-        let at = |now: i64| move || now;
+        let at = |now: UnixTime| move || now;
         let renewed = apns.token(at(NOW)).unwrap();
-        assert_eq!(apns.token(at(NOW - 1)).unwrap(), renewed);
-        assert_eq!(apns.token(at(NOW - CLOCK_SKEW)).unwrap(), renewed);
-        assert_ne!(apns.token(at(NOW - 3600)).unwrap(), renewed);
+        assert_eq!(
+            apns.token(at(NOW.saturating_sub(secs(1)))).unwrap(),
+            renewed
+        );
+        assert_eq!(
+            apns.token(at(NOW.saturating_sub(CLOCK_SKEW))).unwrap(),
+            renewed
+        );
+        assert_ne!(
+            apns.token(at(NOW.saturating_sub(secs(3600)))).unwrap(),
+            renewed
+        );
     }
 
     #[test]

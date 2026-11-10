@@ -1,6 +1,7 @@
 //! The chain tier: reorg detection, and the durable reorg job that
 //! reconciles the payments a reorg touched.
 
+use clock::UnixTime;
 use std::collections::HashSet;
 
 use tokio::time::Instant;
@@ -74,7 +75,7 @@ pub(crate) struct Chain<'a> {
     daemon: &'a dyn MoneroDaemonClient,
     network: monero::Network,
     reorg_check_depth: u64,
-    now: i64,
+    now: UnixTime,
     /// The id of the node's tip block, if it came with the tip's height.
     tip_hash: Option<String>,
     /// Whether [`Self::detect`] asked the node for a block's hash.
@@ -87,7 +88,7 @@ impl<'a> Chain<'a> {
         daemon: &'a dyn MoneroDaemonClient,
         network: monero::Network,
         reorg_check_depth: u64,
-        now: i64,
+        now: UnixTime,
     ) -> Self {
         Self {
             db,

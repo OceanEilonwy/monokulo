@@ -294,6 +294,17 @@ fn refused_action(action: &AuthAction<'_>) -> String {
     .to_string()
 }
 
+/// The time on the machine's own monotonic clock. A query's time limit is
+/// real CPU time spent on a blocking thread, so `tokio::time::Instant`
+/// (frozen when a test pauses tokio's clock) would be the wrong clock.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a query's limit is real time on a blocking thread, which a paused tokio clock must not stop"
+)]
+fn real_now() -> Instant {
+    Instant::now()
+}
+
 /// Runs `sql`, one statement that only reads, on `conn` (see the module
 /// doc for what it refuses and hides).
 pub fn run(
@@ -306,7 +317,7 @@ pub fn run(
     if sql.is_empty() {
         return Err(QueryError::Empty);
     }
-    let started = Instant::now();
+    let started = real_now();
     let seen = Arc::new(Mutex::new(Seen::default()));
     let _unhook = Unhook(conn);
     {
@@ -348,7 +359,7 @@ pub fn run(
         .map_err(failed)?;
     }
     let deadline = started + limits.timeout;
-    conn.progress_handler(1_000, Some(move || Instant::now() >= deadline))
+    conn.progress_handler(1_000, Some(move || real_now() >= deadline))
         .map_err(failed)?;
 
     let first_word = sql.split_whitespace().next().unwrap_or("").to_uppercase();

@@ -4,15 +4,16 @@
 //! test moves), given up on, and sent again.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicI64, AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::{HeaderMap, StatusCode};
+use clock::UnixTime;
 use parking_lot::Mutex;
 use tower::ServiceExt as _;
 
-use super::delivery::{run_delivery_tick, Clock, WebhookClient};
+use super::delivery::{run_delivery_tick, WebhookClient};
 use super::*;
 use crate::db::{Db, DeliveryState, LoggedEvent, OrderId};
 use crate::http::test_support::{
@@ -21,22 +22,9 @@ use crate::http::test_support::{
 use crate::http::{build_router, AppState, TEST_ENCRYPTION_KEY};
 use crate::settings::WebhookConfig;
 
-/// A clock the test sets.
-struct ManualClock(AtomicI64);
-
-impl ManualClock {
-    fn at(now: i64) -> Self {
-        ManualClock(AtomicI64::new(now))
-    }
-    fn set(&self, now: i64) {
-        self.0.store(now, Ordering::SeqCst);
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> i64 {
-        self.0.load(Ordering::SeqCst)
-    }
+/// A clock the test moves with its hand: started at `at` Unix seconds.
+fn manual(at: i64) -> (clock::Clock, clock::ManualTime) {
+    clock::Clock::manual(UnixTime::from_secs(at))
 }
 
 /// What a local endpoint was sent.
@@ -117,7 +105,7 @@ fn add_store(db: &Database, id: &str, name: &str) -> ConnectionId {
         &format!("pk_{id}"),
         "",
         &credentials::auth::RawToken::presented(&format!("sk_{id}")).hash(),
-        0,
+        clock::UnixTime::from_secs(0),
         "EUR",
         &wallet,
     )
@@ -141,7 +129,7 @@ fn event(seq: i64, store: &str, order: &str, event_type: &str) -> LoggedEvent {
     }
 }
 
-fn queue(db: &Database, event: &LoggedEvent, now: i64) -> usize {
+fn queue(db: &Database, event: &LoggedEvent, now: clock::UnixTime) -> usize {
     db.lock()
         .queue_order_event(
             event,
@@ -155,9 +143,16 @@ fn queue(db: &Database, event: &LoggedEvent, now: i64) -> usize {
 
 /// A webhook of `store` sending to `url`, and its signing secret.
 async fn add_webhook(db: &Database, store: &ConnectionId, url: &str) -> (WebhookRow, String) {
-    let created = create(db, &TEST_ENCRYPTION_KEY, store, url, &BTreeMap::new())
-        .await
-        .unwrap();
+    let created = create(
+        db,
+        &TEST_ENCRYPTION_KEY,
+        store,
+        url,
+        &BTreeMap::new(),
+        UnixTime::from_secs(1_000),
+    )
+    .await
+    .unwrap();
     (created.webhook, created.signing_secret)
 }
 
@@ -165,7 +160,7 @@ async fn tick(
     db: &Database,
     client: &WebhookClient,
     config: &WebhookConfig,
-    clock: &ManualClock,
+    clock: &clock::Clock,
 ) -> usize {
     run_delivery_tick(db, client, &TEST_ENCRYPTION_KEY, config, clock)
         .await
@@ -195,6 +190,7 @@ async fn a_delivery_is_signed_with_the_webhooks_secret_and_names_its_event() {
         &store,
         &url,
         &BTreeMap::from([("X-Api-Key".to_string(), "k1".to_string())]),
+        UnixTime::from_secs(1_000),
     )
     .await
     .unwrap();
@@ -207,10 +203,12 @@ async fn a_delivery_is_signed_with_the_webhooks_secret_and_names_its_event() {
         "kept encrypted"
     );
     let paid = event(1, "s1", "o1", "order.paid");
-    assert_eq!(queue(&db, &paid, 1000), 1);
+    assert_eq!(queue(&db, &paid, clock::UnixTime::from_secs(1000)), 1);
 
-    let now = crate::now_unix();
-    let picked = tick(&db, &client(), &config(true, 8), &ManualClock::at(now)).await;
+    // No state here, so a moment of its own: well after the delivery's queueing.
+    let (clock, hand) = manual(1_790_000_000);
+    let now = hand.now().as_secs();
+    let picked = tick(&db, &client(), &config(true, 8), &clock).await;
     assert_eq!(picked, 1);
     let (headers, body) = received.requests.lock()[0].clone();
     let signature = headers["x-monokulo-signature"].to_str().unwrap();
@@ -218,7 +216,7 @@ async fn a_delivery_is_signed_with_the_webhooks_secret_and_names_its_event() {
         &created.signing_secret,
         body.as_bytes(),
         signature,
-        now
+        clock::UnixTime::from_secs(now)
     ));
     assert!(
         signature.starts_with(&format!("t={now},v1=")),
@@ -275,7 +273,16 @@ async fn a_webhook_is_refused_a_reserved_header_or_a_url_that_isnt_http() {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        match create(&db, &TEST_ENCRYPTION_KEY, &store, url, &headers).await {
+        match create(
+            &db,
+            &TEST_ENCRYPTION_KEY,
+            &store,
+            url,
+            &headers,
+            UnixTime::from_secs(1_000),
+        )
+        .await
+        {
             Err(CreateError::Invalid(message)) => {
                 assert!(message.contains(problem), "{url}: {message}");
             }
@@ -298,10 +305,14 @@ async fn a_failing_delivery_follows_the_schedule_then_gives_up() {
     let received = Received::default();
     let url = endpoint(Arc::new(AtomicU16::new(503)), received.clone()).await;
     let (webhook, _) = add_webhook(&db, &store, &url).await;
-    queue(&db, &event(1, "s1", "o1", "order.paid"), 0);
+    queue(
+        &db,
+        &event(1, "s1", "o1", "order.paid"),
+        clock::UnixTime::from_secs(0),
+    );
 
     let start = 1_000_000;
-    let clock = ManualClock::at(start);
+    let (clock, hand) = manual(start);
     let (client, config) = (client(), config(true, 8));
     let mut waits = Vec::new();
     for attempt in 1..=8u32 {
@@ -321,16 +332,16 @@ async fn a_failing_delivery_follows_the_schedule_then_gives_up() {
         assert_eq!(delivery.attempts.last().unwrap().n, attempt);
         match delivery.next_attempt_at {
             Some(next) => {
-                waits.push((next - clock.now()) / 60);
+                waits.push(hand.now().until(UnixTime::from_secs(next)).as_secs() / 60);
                 // Not a second early.
-                clock.set(next - 1);
+                hand.set(UnixTime::from_secs(next - 1));
                 assert_eq!(tick(&db, &client, &config, &clock).await, 0);
-                clock.set(next);
+                hand.set(UnixTime::from_secs(next));
             }
             None => {
                 assert_eq!(attempt, 8, "gave up early");
                 assert_eq!(delivery.state(), DeliveryState::GaveUp);
-                assert_eq!(delivery.gave_up_at, Some(clock.now()));
+                assert_eq!(delivery.gave_up_at, Some(hand.now().as_secs()));
             }
         }
     }
@@ -340,11 +351,11 @@ async fn a_failing_delivery_follows_the_schedule_then_gives_up() {
         "minutes between attempts"
     );
     assert_eq!(
-        clock.now() - start,
-        127 * 60,
+        hand.now().since(UnixTime::from_secs(start)),
+        Duration::from_secs(127 * 60),
         "the last attempt is 2 h 7 min after the first"
     );
-    clock.set(clock.now() + 365 * 86_400);
+    hand.advance(Duration::from_secs(365 * 86_400));
     assert_eq!(
         tick(&db, &client, &config, &clock).await,
         0,
@@ -365,9 +376,13 @@ async fn send_again_and_retry_failed_start_the_schedule_over() {
     let url = endpoint(Arc::clone(&status), received.clone()).await;
     let (webhook, _) = add_webhook(&db, &store, &url).await;
     for (seq, order) in [(1, "o1"), (2, "o2"), (3, "o3")] {
-        queue(&db, &event(seq, "s1", order, "order.paid"), 0);
+        queue(
+            &db,
+            &event(seq, "s1", order, "order.paid"),
+            clock::UnixTime::from_secs(0),
+        );
     }
-    let clock = ManualClock::at(1_000_000);
+    let (clock, hand) = manual(1_000_000);
     // One attempt each: given up at once.
     let (client, config) = (client(), config(true, 1));
     assert_eq!(tick(&db, &client, &config, &clock).await, 3);
@@ -382,13 +397,23 @@ async fn send_again_and_retry_failed_start_the_schedule_over() {
     let one = deliveries[0].id;
     assert!(db
         .lock()
-        .send_delivery_again(&store, &webhook.id, one, clock.now())
+        .send_delivery_again(
+            &store,
+            &webhook.id,
+            one,
+            clock::UnixTime::from_secs(hand.now().as_secs())
+        )
         .unwrap());
     // Another store's id is refused.
     let other = add_store(&db, "s2", "Other");
     assert!(!db
         .lock()
-        .send_delivery_again(&other, &webhook.id, one, clock.now())
+        .send_delivery_again(
+            &other,
+            &webhook.id,
+            one,
+            clock::UnixTime::from_secs(hand.now().as_secs())
+        )
         .unwrap());
     assert_eq!(tick(&db, &client, &config, &clock).await, 1);
     let again = db
@@ -403,7 +428,11 @@ async fn send_again_and_retry_failed_start_the_schedule_over() {
     // Retry failed: the other two.
     assert_eq!(
         db.lock()
-            .retry_failed_deliveries(&store, &webhook.id, clock.now())
+            .retry_failed_deliveries(
+                &store,
+                &webhook.id,
+                clock::UnixTime::from_secs(hand.now().as_secs())
+            )
             .unwrap(),
         2
     );
@@ -425,18 +454,33 @@ async fn deliveries_go_one_per_order_oldest_first_and_fairly_across_stores() {
     let (busy_hook, _) = add_webhook(&db, &busy, "https://busy.example/hook").await;
     let (quiet_hook, _) = add_webhook(&db, &quiet, "https://quiet.example/hook").await;
     // Two events for one order, then a backlog of other orders.
-    queue(&db, &event(1, "busy", "o1", "order.unconfirmed"), 10);
-    queue(&db, &event(2, "busy", "o1", "order.paid"), 10);
+    queue(
+        &db,
+        &event(1, "busy", "o1", "order.unconfirmed"),
+        clock::UnixTime::from_secs(10),
+    );
+    queue(
+        &db,
+        &event(2, "busy", "o1", "order.paid"),
+        clock::UnixTime::from_secs(10),
+    );
     for seq in 3..=12 {
         queue(
             &db,
             &event(seq, "busy", &format!("o{seq}"), "order.paid"),
-            10,
+            clock::UnixTime::from_secs(10),
         );
     }
-    queue(&db, &event(13, "quiet", "q1", "order.paid"), 10);
+    queue(
+        &db,
+        &event(13, "quiet", "q1", "order.paid"),
+        clock::UnixTime::from_secs(10),
+    );
 
-    let due = db.lock().due_deliveries(10, 4, 50).unwrap();
+    let due = db
+        .lock()
+        .due_deliveries(clock::UnixTime::from_secs(10), 4, 50)
+        .unwrap();
     let busy_due: Vec<_> = due
         .iter()
         .filter(|d| d.webhook_id == busy_hook.id)
@@ -468,7 +512,10 @@ async fn deliveries_go_one_per_order_oldest_first_and_fairly_across_stores() {
             },
         )
         .unwrap();
-    let due = db.lock().due_deliveries(20, 50, 50).unwrap();
+    let due = db
+        .lock()
+        .due_deliveries(clock::UnixTime::from_secs(20), 50, 50)
+        .unwrap();
     assert!(!due
         .iter()
         .any(|d| d.event_id == "evt_1" || d.event_id == "evt_2"));
@@ -489,9 +536,13 @@ async fn a_delivery_to_a_private_address_is_refused_unless_allowed() {
     let by_name = url.replace("127.0.0.1", "localhost");
     let (by_ip, _) = add_webhook(&db, &store, &url).await;
     let (named, _) = add_webhook(&db, &store, &by_name).await;
-    queue(&db, &event(1, "s1", "o1", "order.paid"), 0);
+    queue(
+        &db,
+        &event(1, "s1", "o1", "order.paid"),
+        clock::UnixTime::from_secs(0),
+    );
 
-    let clock = ManualClock::at(1000);
+    let (clock, hand) = manual(1000);
     let client = client();
     assert_eq!(tick(&db, &client, &config(false, 8), &clock).await, 2);
     for webhook in [&by_ip, &named] {
@@ -507,7 +558,7 @@ async fn a_delivery_to_a_private_address_is_refused_unless_allowed() {
     assert!(received.requests.lock().is_empty());
 
     // Allowed (testing against your own network): sent.
-    clock.set(1060);
+    hand.set(UnixTime::from_secs(1060));
     assert_eq!(tick(&db, &client, &config(true, 8), &clock).await, 2);
     assert_eq!(received.requests.lock().len(), 2);
 }
@@ -531,8 +582,12 @@ async fn a_redirect_is_not_followed() {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let (webhook, _) = add_webhook(&db, &store, &format!("http://{addr}/hook")).await;
-    queue(&db, &event(1, "s1", "o1", "order.paid"), 0);
-    tick(&db, &client(), &config(true, 8), &ManualClock::at(1000)).await;
+    queue(
+        &db,
+        &event(1, "s1", "o1", "order.paid"),
+        clock::UnixTime::from_secs(0),
+    );
+    tick(&db, &client(), &config(true, 8), &manual(1000).0).await;
     let delivery = only_delivery(&db, &webhook);
     assert_eq!(delivery.last_status_code, Some(307));
     assert_eq!(delivery.state(), DeliveryState::Retrying);
@@ -597,7 +652,10 @@ async fn shop_with(options: &str) -> Shop {
     .await;
     let state = AppState {
         exchange_rate: Arc::new(
-            crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(coingecko().await),
+            crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
+                coingecko().await,
+                state.clock.clone(),
+            ),
         ),
         ..state
     };
@@ -650,6 +708,7 @@ impl Shop {
             self.state.engine.client.clone(),
             Arc::clone(&self.state.webhooks),
         );
+        let clock = self.state.clock.clone();
         let addresses =
             crate::webhooks::Addresses::new(self.state.settings.clone(), self.state.tor.clone());
         tokio::spawn(async move {
@@ -660,7 +719,7 @@ impl Shop {
                 &crate::push::Push::for_tests(),
                 &Default::default(),
                 &addresses,
-                &delivery::SystemClock,
+                &clock,
                 || {},
             )
             .await;
@@ -931,16 +990,41 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
 async fn events_without_webhooks_move_the_position_and_old_events_are_ignored() {
     let db = test_db();
     let store = add_store(&db, "s1", "Bakery");
-    assert_eq!(queue(&db, &event(1, "nobody", "o1", "order.paid"), 0), 0);
-    assert_eq!(queue(&db, &event(2, "s1", "o2", "order.paid"), 0), 0);
+    assert_eq!(
+        queue(
+            &db,
+            &event(1, "nobody", "o1", "order.paid"),
+            clock::UnixTime::from_secs(0)
+        ),
+        0
+    );
+    assert_eq!(
+        queue(
+            &db,
+            &event(2, "s1", "o2", "order.paid"),
+            clock::UnixTime::from_secs(0)
+        ),
+        0
+    );
     assert_eq!(db.lock().order_event_position().unwrap().seq, 2);
     let (webhook, _) = add_webhook(&db, &store, "https://bakery.example/hook").await;
     assert_eq!(
-        queue(&db, &event(2, "s1", "o2", "order.paid"), 0),
+        queue(
+            &db,
+            &event(2, "s1", "o2", "order.paid"),
+            clock::UnixTime::from_secs(0)
+        ),
         0,
         "read already"
     );
-    assert_eq!(queue(&db, &event(3, "s1", "o3", "order.paid"), 0), 1);
+    assert_eq!(
+        queue(
+            &db,
+            &event(3, "s1", "o3", "order.paid"),
+            clock::UnixTime::from_secs(0)
+        ),
+        1
+    );
     assert_eq!(
         db.lock().deliveries_page(&webhook.id, 0, 10).unwrap().len(),
         1
@@ -961,7 +1045,11 @@ async fn the_subscriber_skips_events_the_engine_no_longer_has() {
     shop.engine.mark_order_paid(&old).unwrap();
     // Monokulo had read up to here, then was away for longer than the
     // engine keeps events.
-    shop.state.db.lock().skip_order_events_to(0, 0).unwrap();
+    shop.state
+        .db
+        .lock()
+        .skip_order_events_to(0, clock::UnixTime::from_secs(0))
+        .unwrap();
     let pruned = shop
         .engine
         .store()
@@ -983,7 +1071,7 @@ async fn the_subscriber_skips_events_the_engine_no_longer_has() {
                     engine_protocol::order_status::OrderStatus::Unconfirmed,
                 ),
                 &[],
-                crate::now_unix(),
+                shop.state.clock.now(),
             )
             .unwrap();
         store
@@ -1020,7 +1108,7 @@ async fn an_engine_event_reaches_the_endpoint_once() {
     let reading = shop.subscribe();
     shop.deliveries(&webhook, 1).await;
     reading.abort();
-    let clock = ManualClock::at(crate::now_unix());
+    let (clock, hand) = manual(shop.state.clock.now().as_secs());
     let sent = AtomicUsize::new(0);
     for _ in 0..3 {
         sent.fetch_add(
@@ -1034,7 +1122,7 @@ async fn an_engine_event_reaches_the_endpoint_once() {
         &secret,
         body.as_bytes(),
         headers["x-monokulo-signature"].to_str().unwrap(),
-        clock.now()
+        clock::UnixTime::from_secs(hand.now().as_secs())
     ));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&body).unwrap()["order_id"],
@@ -1064,7 +1152,11 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
     ];
     for (seq, (order, delivered, at)) in cases.iter().enumerate() {
         let seq = i64::try_from(seq).unwrap() + 1;
-        queue(&db, &event(seq, "s1", order, "order.paid"), at - 60);
+        queue(
+            &db,
+            &event(seq, "s1", order, "order.paid"),
+            clock::UnixTime::from_secs(at - 60),
+        );
         let id = db.lock().deliveries_page(&webhook.id, 0, 1).unwrap()[0].id;
         db.lock()
             .record_delivery_attempt(
@@ -1089,12 +1181,16 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
     queue(
         &db,
         &event(9, "s1", "waiting", "order.paid"),
-        now - 400 * day,
+        clock::UnixTime::from_secs(now - 400 * day),
     );
 
-    let pruned = delivery::prune_deliveries(&db, &WebhookConfig::default(), now)
-        .await
-        .unwrap();
+    let pruned = delivery::prune_deliveries(
+        &db,
+        &WebhookConfig::default(),
+        clock::UnixTime::from_secs(now),
+    )
+    .await
+    .unwrap();
     assert_eq!(pruned, (1, 1));
     let mut left: Vec<String> = db
         .lock()
@@ -1116,12 +1212,14 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
 
     // Shorter periods, from the settings: both kinds go sooner.
     let short = WebhookConfig {
-        keep_delivered_secs: day,
-        keep_given_up_secs: 2 * day,
+        keep_delivered: Duration::from_secs(day.unsigned_abs()),
+        keep_given_up: Duration::from_secs(2 * day.unsigned_abs()),
         ..WebhookConfig::default()
     };
     assert_eq!(
-        delivery::prune_deliveries(&db, &short, now).await.unwrap(),
+        delivery::prune_deliveries(&db, &short, clock::UnixTime::from_secs(now))
+            .await
+            .unwrap(),
         (1, 2)
     );
     assert_eq!(
@@ -1142,12 +1240,12 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
     let token = credentials::auth::RawToken::presented("ct_sub").hash();
     {
         let db = shop.state.db.lock();
-        db.create_app_connect_token(&token, &shop.store, "Till", crate::now_unix())
+        db.create_app_connect_token(&token, &shop.store, "Till", shop.state.clock.now())
             .unwrap();
         db.redeem_app_connect_token(
             &token,
-            crate::now_unix(),
-            600,
+            shop.state.clock.now(),
+            Duration::from_secs(600),
             &crate::db::NewApp {
                 slug: "monokular",
                 name: "Monokular",
@@ -1173,6 +1271,7 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
         Arc::clone(&shop.state.webhooks),
         Arc::clone(&apps),
     );
+    let clock = shop.state.clock.clone();
     let addresses =
         crate::webhooks::Addresses::new(shop.state.settings.clone(), shop.state.tor.clone());
     let reader = tokio::spawn(async move {
@@ -1183,7 +1282,7 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
             &crate::push::Push::for_tests(),
             &listening,
             &addresses,
-            &delivery::SystemClock,
+            &clock,
             || {},
         )
         .await;

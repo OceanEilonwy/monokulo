@@ -36,14 +36,9 @@ async fn registering_mints_a_handle_under_the_public_uri_and_again_keeps_it() {
         .strip_prefix("https://relay.example.org/v1/push/ph_")
         .unwrap_or_else(|| panic!("{endpoint}"));
     assert_eq!(handle.len(), 32);
-    let now = service_runtime::time::now_unix();
     let expires_at = body["expires_at"].as_i64().unwrap();
     // No push has reached it yet: `handles.unused_ttl_days`, to the hour.
-    let unused = now + 7 * 86_400;
-    assert!(
-        (unused - 5..=unused + 3_600).contains(&expires_at),
-        "{expires_at}"
-    );
+    assert_eq!(expires_at, NOW_SECS + 7 * 86_400);
 
     let again = relay
         .call(registration("apns", &apns_token(), &sender))
@@ -344,7 +339,7 @@ async fn an_expired_handle_is_unknown() {
     let relay = relay().await;
     let sender = Arc::new(VapidKey::generate());
     let endpoint = relay.register("apns", &apns_token(), &sender).await;
-    relay.expire(&endpoint, service_runtime::time::now_unix());
+    relay.expire(&endpoint, NOW_SECS);
     let keys = ReceiverKeys::generate();
     let answered = relay
         .push(
@@ -373,14 +368,14 @@ async fn forged_expired_and_misaddressed_vapid_tokens_are_unauthorized() {
     let endpoint = relay.register("fcm", FCM_TOKEN, &sender).await;
     let keys = ReceiverKeys::generate();
     let push = || PushBuilder::new(&sender, encrypted(&keys, b"{}"));
-    let now = service_runtime::time::now_unix();
-    let twelve_hours = 12 * 60 * 60;
+    let twelve_hours = std::time::Duration::from_secs(12 * 60 * 60);
+    let ten_seconds = std::time::Duration::from_secs(10);
 
     let mut refused = Vec::new();
     // Expired ten seconds ago.
     refused.push(
         PushBuilder {
-            signed_at: Some(now - twelve_hours - 10),
+            signed_at: Some(NOW.saturating_sub(twelve_hours + ten_seconds)),
             ..push()
         }
         .request(&endpoint),
@@ -388,7 +383,7 @@ async fn forged_expired_and_misaddressed_vapid_tokens_are_unauthorized() {
     // Valid for longer than the 24 hours a push service takes.
     refused.push(
         PushBuilder {
-            signed_at: Some(now + twelve_hours + 10),
+            signed_at: Some(NOW.saturating_add(twelve_hours + ten_seconds)),
             ..push()
         }
         .request(&endpoint),

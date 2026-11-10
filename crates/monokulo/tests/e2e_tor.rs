@@ -33,7 +33,9 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use abuse::proxy_protocol::{OnionListener, OnionPeer};
 use abuse::ClientIdentity;
@@ -368,7 +370,7 @@ async fn start_monokulo(
         "tor@example.com",
         "x",
         false,
-        0,
+        clock::UnixTime::from_secs(0),
     )
     .unwrap();
     // The store takes payments into its tenant's wallet, as setup makes it.
@@ -403,7 +405,7 @@ async fn start_monokulo(
             tenant.secret_token.expose(),
         ),
         &tenant.secret_token.hash(),
-        0,
+        clock::UnixTime::from_secs(0),
         "XMR",
         &wallet,
     )

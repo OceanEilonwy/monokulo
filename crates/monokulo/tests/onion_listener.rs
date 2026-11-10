@@ -17,12 +17,16 @@ use tokio::net::TcpStream;
 /// A soft limit of `soft_per_min` (past it the API root answers
 /// `429` with a challenge) and a much higher hard limit.
 fn state(soft_per_min: u32) -> AppState {
+    let base = AppState::for_tests_with_db(Db::open_in_memory().unwrap().into_shared());
     AppState {
-        abuse: Arc::new(AbuseProtection::new(AbuseConfig {
-            soft_per_min,
-            ..Default::default()
-        })),
-        ..AppState::for_tests_with_db(Db::open_in_memory().unwrap().into_shared())
+        abuse: Arc::new(
+            AbuseProtection::new(AbuseConfig {
+                soft_per_min,
+                ..Default::default()
+            })
+            .with_clock(base.clock.clone()),
+        ),
+        ..base
     }
 }
 

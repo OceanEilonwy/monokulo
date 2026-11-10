@@ -49,7 +49,10 @@ async fn test_exchange_rate_provider(
 ) -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
     let base_url = spawn_mock_coingecko().await;
     std::sync::Arc::new(
-        crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(base_url),
+        crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
+            base_url,
+            clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
+        ),
     )
 }
 
@@ -125,6 +128,7 @@ async fn a_retried_order_creation_with_one_key_makes_one_order() {
         crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(
             coingecko,
             coinmarketcap,
+            state.clock.clone(),
         ),
     );
     let router = build_router(state.clone());
@@ -900,7 +904,7 @@ async fn malformed_stored_threshold_cannot_fall_back_to_zero_conf() {
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &row.id,
             &[],
-            Some(("corrupt", "not-an-amount", 20, crate::now_unix())),
+            Some(("corrupt", "not-an-amount", 20, state.clock.now())),
         )
         .unwrap();
     let response = router
@@ -1209,6 +1213,7 @@ async fn a_change_to_the_stores_provider_settings_prices_the_very_next_order() {
         crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(
             coingecko,
             coinmarketcap,
+            state.clock.clone(),
         ),
     );
     let router = build_router(state.clone());
@@ -1309,6 +1314,7 @@ async fn an_unavailable_or_rateless_provider_falls_through_to_the_next_preferred
         crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(
             coingecko,
             coinmarketcap,
+            state.clock.clone(),
         ),
     );
     let router = build_router(state.clone());
@@ -1350,6 +1356,7 @@ async fn an_unavailable_or_rateless_provider_falls_through_to_the_next_preferred
         crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(
             format!("http://{}", service_runtime::unreachable::address()),
             spawn_mock_coinmarketcap(Some(4.0)).await,
+            state.clock.clone(),
         ),
     );
     let router = build_router(state.clone());
@@ -1397,9 +1404,13 @@ async fn haveno_can_be_ordered_first_and_falls_through_when_its_book_is_one_side
     let coingecko = spawn_mock_coingecko().await; // $1.00 per XMR
     let coinmarketcap = spawn_mock_coinmarketcap(Some(2.0)).await;
     let haveno = spawn_mock_haveno(Some(4.0)).await; // midpoint $4.00 per XMR
-    state.exchange_rate = std::sync::Arc::new(
-        crate::exchange_rate_config::ExchangeRateProviders::all(coingecko, coinmarketcap, haveno),
-    );
+    state.exchange_rate =
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::all(
+            coingecko,
+            coinmarketcap,
+            haveno,
+            state.clock.clone(),
+        ));
     let router = build_router(state.clone());
     let session_token = signed_up_and_logged_in_session_token(
         &router,
@@ -1442,6 +1453,7 @@ async fn haveno_can_be_ordered_first_and_falls_through_when_its_book_is_one_side
             spawn_mock_coingecko().await,
             spawn_mock_coinmarketcap(Some(2.0)).await,
             spawn_mock_haveno(None).await,
+            state.clock.clone(),
         ));
     let router = build_router(state.clone());
     assert_eq!(
@@ -1462,6 +1474,7 @@ async fn a_change_to_the_stores_haveno_limits_prices_the_very_next_order() {
             spawn_mock_coingecko().await, // $1.00 per XMR
             "http://127.0.0.1:1",
             haveno,
+            state.clock.clone(),
         ));
     let router = build_router(state.clone());
     let session_token = signed_up_and_logged_in_session_token(
@@ -1577,6 +1590,7 @@ async fn two_merchants_with_different_haveno_limits_are_priced_by_their_own_limi
             spawn_mock_coingecko().await, // $1.00 per XMR
             "http://127.0.0.1:1",
             haveno,
+            state.clock.clone(),
         ));
     let router = build_router(state.clone());
 
@@ -1967,6 +1981,7 @@ async fn a_rate_limited_provider_or_an_unreachable_engine_is_a_503_on_every_rout
     state.exchange_rate = std::sync::Arc::new(
         crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
             spawn_rate_limited_coingecko(42).await,
+            state.clock.clone(),
         ),
     );
     let router = build_router(state.clone());

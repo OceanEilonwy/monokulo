@@ -6,6 +6,8 @@ edition = "2021"
 description = "XMR amounts and fiat exchange rates for monokulo: piconero arithmetic, the Coingecko, CoinMarketCap and Haveno rate providers and their HTTP cache"
 
 [dependencies]
+# What time it is, for a `Retry-After` date (`exchange_rate::checked`).
+clock = { path = "../clock" }
 # `http_client`'s trace middleware.
 async-trait = "0.1.92"
 http = "1.5.0"

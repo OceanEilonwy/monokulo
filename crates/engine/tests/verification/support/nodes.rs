@@ -8,6 +8,41 @@ use std::time::Duration;
 
 pub(crate) use crate::exploration_rpc::Rpc;
 
+/// The moment every test state's clock is pinned to (2023-11-14), so what a
+/// test stores through a handler, what a round is run at and what it checks
+/// agree.
+pub(crate) const TEST_NOW: clock::UnixTime = clock::UnixTime::from_secs(1_700_000_000);
+
+/// A scanner state that tells time by a clock pinned to [`TEST_NOW`], so a
+/// test that doesn't pass a moment (`work::fast_pass`, `work::run_round`) is
+/// not at the mercy of the real clock either.
+pub(crate) fn scan_state() -> crate::work::ScanState {
+    crate::work::ScanState::new(clock())
+}
+
+/// The clock every test state tells time by: pinned to [`TEST_NOW`].
+pub(crate) fn clock() -> clock::Clock {
+    clock::Clock::Fixed(TEST_NOW)
+}
+
+/// A moment as the Unix seconds a block's timestamp is kept in.
+#[cfg(test)]
+pub(crate) fn unix_secs(at: clock::UnixTime) -> u64 {
+    u64::try_from(at.as_secs()).unwrap_or(0)
+}
+
+/// `secs` seconds before [`TEST_NOW`], for the time a row was made at.
+#[cfg(test)]
+pub(crate) fn before(secs: u64) -> clock::UnixTime {
+    TEST_NOW.saturating_sub(Duration::from_secs(secs))
+}
+
+/// `secs` seconds after [`TEST_NOW`], for the time a row expires at.
+#[cfg(test)]
+pub(crate) fn after(secs: u64) -> clock::UnixTime {
+    TEST_NOW.saturating_add(Duration::from_secs(secs))
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CallCounts {
     pub(crate) attempted: usize,

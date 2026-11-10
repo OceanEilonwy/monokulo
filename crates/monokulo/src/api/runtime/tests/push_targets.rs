@@ -719,7 +719,7 @@ async fn a_target_for_an_app_that_is_gone_is_not_registered() {
             endpoint: &endpoint,
             events: &SaleKind::ALL,
         },
-        1,
+        clock::UnixTime::from_secs(1),
     );
     assert_eq!(registered.unwrap(), crate::db::Registration::AppGone);
     assert_eq!(rows(&fixture), 0);

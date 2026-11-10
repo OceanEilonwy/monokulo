@@ -9,6 +9,7 @@
 //! Each order is recomputed at most once per round, so an obligation that
 //! has to wait (a settlement during a reorg) can't spin the tier.
 
+use clock::UnixTime;
 use std::collections::HashSet;
 
 use tokio::time::Instant;
@@ -382,7 +383,7 @@ fn pick(
     network: monero::Network,
     after: &str,
     recomputed: &HashSet<crate::store::OrderId>,
-    now: i64,
+    now: UnixTime,
     tip: u64,
 ) -> Result<(Vec<crate::store::OrderId>, String), ScannerError> {
     let mut ids: Vec<crate::store::OrderId> = Vec::new();

@@ -53,7 +53,6 @@ use crate::db::{
 };
 use crate::outbound::{request_error_text, Outbound};
 use crate::settings::PushConfig;
-use crate::webhooks::delivery::{Clock, SystemClock};
 use outbound::{check_host, Reach};
 
 /// Most pushes picked per batch, and most sent at once (one target's one
@@ -203,7 +202,7 @@ pub async fn run_delivery_tick(
     client: &PushClient,
     config: &PushConfig,
     reach: Reach,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
 ) -> Result<usize, DbError> {
     use futures_util::stream::{self, StreamExt as _};
 
@@ -306,7 +305,7 @@ pub async fn send_now(
     push: &DuePush,
     config: &PushConfig,
     reach: Reach,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
 ) -> Result<Option<TargetDropped>, DbError> {
     client.budget.set_limit(config.per_store_per_minute);
     let done =
@@ -350,7 +349,7 @@ async fn record(
     push: &DuePush,
     done: Done,
     config: &PushConfig,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
 ) -> Result<Option<TargetDropped>, DbError> {
     let (id, target) = (push.id, push.target.clone());
     let written = match done {
@@ -425,7 +424,7 @@ async fn deliver(
     push: &DuePush,
     config: &PushConfig,
     reach: Reach,
-    clock: &dyn Clock,
+    clock: &clock::Clock,
 ) -> Done {
     if push.attempt_count >= config.max_attempts {
         return Done::GaveUp(NO_ATTEMPTS_LEFT.to_owned());
@@ -448,19 +447,19 @@ async fn deliver(
         .budget
         .check_with_retry(push.target.store_id.clone(), at)
     {
-        let until = at.saturating_add(i64::try_from(wait).unwrap_or(i64::MAX));
-        if until >= push.expires_at {
+        let until = at.saturating_add(Duration::from_secs(wait));
+        if until >= clock::UnixTime::from_secs(push.expires_at) {
             tracing::info!("a push's store spent its pushes until it expired; given up");
             return Done::GaveUp(OVER_BUDGET.to_owned());
         }
-        return Done::Deferred(until);
+        return Done::Deferred(until.as_secs());
     }
     let options = Options {
         urgency: push.urgency,
         ttl,
         topic: Some(push.topic.clone()),
     };
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let sender = client.sender(reach);
     let sent = match check_host(push.target.endpoint.as_url(), reach) {
         Err(refused) => Err(Failure::counted(refused.to_string())),
@@ -503,7 +502,12 @@ async fn deliver(
             }
             .filter(|_| made < config.max_attempts)
             // Timed from when the attempt was made, never past the TTL.
-            .map(|wait| clock.now().saturating_add(wait))
+            .map(|wait| {
+                clock
+                    .now()
+                    .saturating_add(Duration::from_secs(u64::try_from(wait).unwrap_or(0)))
+                    .as_secs()
+            })
             .filter(|next| *next < push.expires_at);
             if failure.retry == Retry::Never {
                 tracing::error!(
@@ -543,8 +547,8 @@ async fn deliver(
 }
 
 /// What is left of a push's TTL at `now`; `None` once it has run out.
-fn remaining(expires_at: i64, now: i64) -> Option<Ttl> {
-    let left = expires_at.saturating_sub(now);
+fn remaining(expires_at: i64, now: clock::UnixTime) -> Option<Ttl> {
+    let left = now.until(clock::UnixTime::from_secs(expires_at)).as_secs();
     (left > 0).then(|| Ttl::seconds(u32::try_from(left).unwrap_or(u32::MAX)))
 }
 
@@ -656,9 +660,9 @@ impl Failure {
 pub async fn prune_deliveries(
     db: &Database,
     config: &PushConfig,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Result<u64, DbError> {
-    let before = now.saturating_sub(config.keep_secs);
+    let before = now.saturating_sub(config.keep).as_secs();
     let pruned = db.write(move |db| db.prune_push_deliveries(before)).await?;
     if pruned > 0 {
         tracing::info!(push.pruned = pruned, "old pushes deleted");
@@ -677,6 +681,7 @@ pub async fn run_delivery_loop(
     db: Database,
     settings: Arc<crate::settings::MonokuloSettings>,
     push: Arc<super::Push>,
+    clock: clock::Clock,
 ) {
     let client = loop {
         match push.client().await {
@@ -695,11 +700,11 @@ pub async fn run_delivery_loop(
         client.set_contact(contact(&settings));
         if pruned_at.is_none_or(|at| at.elapsed() >= PRUNE_EVERY) {
             pruned_at = Some(tokio::time::Instant::now());
-            if let Err(e) = prune_deliveries(&db, &config, crate::now_unix()).await {
+            if let Err(e) = prune_deliveries(&db, &config, clock.now()).await {
                 tracing::warn!(error = %e, "old pushes could not be deleted");
             }
         }
-        let picked = match run_delivery_tick(&db, client, &config, reach, &SystemClock).await {
+        let picked = match run_delivery_tick(&db, client, &config, reach, &clock).await {
             Ok(picked) => picked,
             Err(e) => {
                 tracing::warn!(error = %e, "a push delivery batch failed");
@@ -729,11 +734,20 @@ mod tests {
 
     #[test]
     fn what_is_left_of_a_ttl() {
-        assert_eq!(remaining(100, 40), Some(Ttl::seconds(60)));
-        assert_eq!(remaining(100, 99), Some(Ttl::seconds(1)));
-        assert_eq!(remaining(100, 100), None);
-        assert_eq!(remaining(100, 1_000), None);
-        assert_eq!(remaining(i64::MAX, 0), Some(Ttl::seconds(u32::MAX)));
+        assert_eq!(
+            remaining(100, clock::UnixTime::from_secs(40)),
+            Some(Ttl::seconds(60))
+        );
+        assert_eq!(
+            remaining(100, clock::UnixTime::from_secs(99)),
+            Some(Ttl::seconds(1))
+        );
+        assert_eq!(remaining(100, clock::UnixTime::from_secs(100)), None);
+        assert_eq!(remaining(100, clock::UnixTime::from_secs(1_000)), None);
+        assert_eq!(
+            remaining(i64::MAX, clock::UnixTime::from_secs(0)),
+            Some(Ttl::seconds(u32::MAX))
+        );
     }
 
     /// What each answer means for the push and its target.

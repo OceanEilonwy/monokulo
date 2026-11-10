@@ -50,7 +50,14 @@ fn start(height: u64) -> (Fake, u16) {
 #[tokio::test]
 async fn the_stand_in_node_answers_what_an_idle_engine_asks() {
     let (_fake, port) = start(50);
-    let client = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap();
+    let client = RpcDaemonClient::new(
+        "127.0.0.1",
+        port,
+        false,
+        false,
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
+    )
+    .unwrap();
 
     // The tip, with its id.
     let tip = client.get_tip().await.unwrap();

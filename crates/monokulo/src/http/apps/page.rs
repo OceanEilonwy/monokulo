@@ -13,6 +13,8 @@
 //! and recording, its target's run of failures included. One that fails
 //! is tried again by the worker like any push.
 
+use std::time::Duration;
+
 use axum::extract::{Form, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -68,7 +70,12 @@ async fn read(
     tested: Option<i64>,
 ) -> Result<Option<(AppPageView, Option<crate::db::PushDeliveryRow>)>, DbError> {
     let (store_id, app_id) = (store.id.clone(), app_id.clone());
-    let since = clock.now().saturating_sub(app_page::RECENT_DAYS * 86_400);
+    let since = clock
+        .now()
+        .saturating_sub(std::time::Duration::from_secs(
+            app_page::RECENT_DAYS.unsigned_abs() * 86_400,
+        ))
+        .as_secs();
     let read = state
         .db
         .read(move |db| {
@@ -120,7 +127,7 @@ async fn read(
         limits: Limits {
             failure_limit: config.target_failure_limit,
             max_attempts: config.max_attempts,
-            keep_days: config.keep_secs / 86_400,
+            keep_days: i64::try_from(config.keep.as_secs() / 86_400).unwrap_or(i64::MAX),
         },
         test_form: None,
         toast: None,
@@ -243,7 +250,7 @@ pub struct TestPushForm {
 /// How long the worker leaves a test push to the request that queued it,
 /// beyond the attempt's own timeout, before it may send it itself: only
 /// if that attempt never got recorded.
-const LEFT_TO_THE_REQUEST_SECS: i64 = 5;
+const LEFT_TO_THE_REQUEST_SECS: u64 = 5;
 
 /// `POST /stores/{id}/settings/apps/{app_id}/test-push`: sends one of the
 /// store's app's push targets a test push of the sale event chosen, now,
@@ -324,10 +331,8 @@ pub async fn test_push(
     let config = state.settings.push.load();
     let reach =
         outbound::Reach::allowing_private(state.settings.webhooks.load().allow_private_urls);
-    let at = crate::now_unix();
-    let left = i64::try_from(config.delivery_timeout.as_secs())
-        .unwrap_or(i64::MAX)
-        .saturating_add(1 + LEFT_TO_THE_REQUEST_SECS);
+    let at = state.clock.now();
+    let left = config.delivery_timeout + Duration::from_secs(1 + LEFT_TO_THE_REQUEST_SECS);
     let (store_id, app, target, ttl) = (
         row.id.clone(),
         app_id.clone(),
@@ -380,7 +385,7 @@ pub async fn test_push(
                 &push,
                 &config,
                 reach,
-                &crate::webhooks::delivery::SystemClock,
+                &state.clock,
             )
             .await;
             tracing::info!(

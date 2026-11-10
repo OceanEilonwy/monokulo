@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use clock::Clock;
+
 use live_settings::{
     choice_value, settings, AnySetting, BindAddr, CommaList, FieldError, Json, Live, Registry,
     Section, Snapshot,
@@ -1096,11 +1098,18 @@ impl Daemons {
 pub fn build_daemon_client(
     node: &MoneroNodeSetting,
     strict_tls: bool,
+    clock: &Clock,
 ) -> Result<FallbackDaemonClient, String> {
     let build = |node: &MoneroNodeSetting| -> Result<FallbackNode, String> {
         let accept_self_signed = node.accept_self_signed_certs && !strict_tls;
-        let client = RpcDaemonClient::new(&node.host, node.port, node.ssl, accept_self_signed)
-            .map_err(|e| format!("can't set up a client for {}:{}: {e}", node.host, node.port))?;
+        let client = RpcDaemonClient::new(
+            &node.host,
+            node.port,
+            node.ssl,
+            accept_self_signed,
+            clock.clone(),
+        )
+        .map_err(|e| format!("can't set up a client for {}:{}: {e}", node.host, node.port))?;
         Ok(FallbackNode {
             label: format!("{}:{}", node.host, node.port),
             client: Arc::new(client),
@@ -1120,6 +1129,8 @@ pub fn build_daemon_client(
 /// network when `monero_node.strict_tls` changes; removed ones go.
 pub struct NodesReloadable {
     pub daemons: Daemons,
+    /// What time the new clients' link measurements are stamped with.
+    pub clock: Clock,
 }
 
 #[live_settings::async_trait]
@@ -1145,7 +1156,7 @@ impl live_settings::Reloadable for NodesReloadable {
             let client = match current.get(&network) {
                 Some(existing) if unchanged => Arc::clone(existing),
                 _ => Arc::new(
-                    build_daemon_client(node, new.strict_tls)
+                    build_daemon_client(node, new.strict_tls, &self.clock)
                         .map_err(|e| FieldError::new(setting, e))?,
                 ),
             };
@@ -1197,6 +1208,10 @@ impl EngineSettings {
     /// runtime pieces that depend on them, and returns the live sections plus
     /// the registry the settings API saves through.
     /// `embedded`: the engine runs inside monokulo (see the field).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every piece the settings drive, and the clock the new node clients tell time by"
+    )]
     pub async fn load(
         store: SharedStore,
         daemons: Daemons,
@@ -1205,10 +1220,11 @@ impl EngineSettings {
         env: live_settings::Env,
         options: live_settings::OptionsFile,
         embedded: bool,
+        clock: Clock,
     ) -> Result<Arc<Self>, String> {
         Self::load_full(
             store,
-            Some(NodesReloadable { daemons }),
+            Some(NodesReloadable { daemons, clock }),
             Some(custody),
             rate_limits,
             env,
@@ -1488,6 +1504,7 @@ mod tests {
             Ok(test_slot_config()),
             Arc::new(TestGuest::new([1; 32], TestIdentity::default())),
             Arc::new(crate::key_custody::StoreWraps(store)),
+            Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
         ))
     }
 
@@ -1517,6 +1534,7 @@ mod tests {
             Ok(test_slot_config()),
             Arc::new(TestGuest::new([1; 32], TestIdentity::default())),
             Arc::new(crate::key_custody::StoreWraps(Arc::clone(&store))),
+            Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
         ));
         let reloadable =
             CustodyReloadable::new(Arc::new(CustodyRouter::plain()), Some(Arc::clone(&slot)));
@@ -1599,6 +1617,7 @@ mod tests {
             defaults_of::<SnpBootConfig>().snp_config(),
             Arc::new(snp_attest::guest::SevGuest::new("/nonexistent/sev-guest")),
             Arc::new(crate::key_custody::StoreWraps(store)),
+            Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
         ));
         let router = Arc::new(CustodyRouter::plain());
         let reloadable = CustodyReloadable::new(Arc::clone(&router), Some(slot));

@@ -3,6 +3,7 @@
 //! one moment. The scan loop records one every
 //! [`crate::activity::SNAPSHOT_EVERY`].
 
+use clock::UnixTime;
 use engine_protocol::activity::{Database, Node, Pool, ReorgJob, ReorgPhase, Snapshot, StoreGroup};
 
 use super::ScanState;
@@ -17,7 +18,7 @@ pub async fn snapshot(
     network: monero::Network,
     nodes: Vec<Node>,
     scan_chunk_memory_budget_mb: u32,
-    now: i64,
+    now: UnixTime,
 ) -> Result<Snapshot, ScannerError> {
     let tip = match state
         .mempool

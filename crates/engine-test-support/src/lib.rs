@@ -29,6 +29,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use clock::{Clock, UnixTime};
 use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router, AppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, WalletHandles};
@@ -255,6 +256,9 @@ pub struct TestEngineHandle {
     /// With [`TestEngineConfig::with_snp_backend`]: the key the stand-in
     /// security processor signs its reports with.
     snp_vcek: Option<p384::ecdsa::VerifyingKey>,
+    /// What time the engine tells ([`TestEngineConfig::with_clock`]); the
+    /// helpers that stamp a payment or a tick read it too.
+    clock: Clock,
 }
 
 /// The ID key digest and security version the snp test backend's stand-in
@@ -284,7 +288,7 @@ impl TestEngineHandle {
             bundle,
             &snp_test_trust(),
             &transport::Anchor::Vcek(vcek),
-            service_runtime::time::now_unix(),
+            self.clock.now(),
         )
         .expect("the test engine's bundle checks out");
         let mut keys = hex::decode(view_key_hex).unwrap();
@@ -320,6 +324,7 @@ impl engine::key_custody::snp::EvidenceSource for TestEvidence {
 #[cfg(feature = "snp")]
 async fn snp_custody(
     store: &engine::store::SharedStore,
+    clock: Clock,
 ) -> (
     Arc<dyn KeyCustody>,
     Arc<engine::key_custody::SnpSlot>,
@@ -336,6 +341,7 @@ async fn snp_custody(
             }),
             Arc::new(guest),
             Arc::new(engine::key_custody::StoreWraps(store.clone())),
+            clock,
         )
         .with_anchor(engine::key_custody::transport::Anchor::Vcek(vcek)),
     );
@@ -389,7 +395,7 @@ impl TestEngineHandle {
     /// scan loop does after each round, so the engine's `/status` reports
     /// its scanner healthy (until it goes stale) without a real chain.
     pub fn record_scan_round_ok(&self, network: Network) {
-        let now = service_runtime::time::now_unix();
+        let now = self.clock.now().as_secs();
         engine::scanner_status::record_tick(
             &self.scanner_status,
             network,
@@ -432,6 +438,7 @@ impl TestEngineHandle {
             .map(|(id, live)| (id.clone(), live.handle))
             .collect();
         run_scan_tick(
+            self.clock.clone(),
             &self.store,
             self.key_custody.as_ref(),
             daemon,
@@ -503,7 +510,7 @@ impl TestEngineHandle {
     pub fn confirm_order_payments(&self, order_id: &str) -> Result<(), engine::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
-        let now = service_runtime::time::now_unix();
+        let now = self.clock.now();
         for payment in store
             .get_all_payments(&engine::store::OrderId::new(order_id.to_string()))?
             .into_iter()
@@ -547,7 +554,7 @@ impl TestEngineHandle {
     ) -> Result<(), engine::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
-        let now = service_runtime::time::now_unix();
+        let now = self.clock.now();
         let existing = store
             .get_all_payments(&engine::store::OrderId::new(order_id.to_string()))
             .map(|p| p.len())
@@ -558,7 +565,7 @@ impl TestEngineHandle {
             0,
             piconero,
             "[]",
-            now,
+            now.as_secs(),
             confirmations.map(|_| PAYMENT_HEIGHT),
             None,
         )?;
@@ -584,7 +591,7 @@ impl TestEngineHandle {
         let store = self.store.lock();
         store.mark_double_spend_detected(
             &engine::store::OrderId::new(order_id.to_string()),
-            engine::now_unix(),
+            self.clock.now(),
         )?;
         Ok(())
     }
@@ -608,7 +615,7 @@ impl TestEngineHandle {
             &store,
             &engine::store::OrderId::new(order_id.to_string()),
             1000,
-            order.expires_at + 1,
+            UnixTime::from_secs(order.expires_at).saturating_add(Duration::from_secs(1)),
         )
         .map_err(|e| match e {
             engine::scanner::ScannerError::Store(e) => e,
@@ -665,9 +672,21 @@ pub struct TestEngineConfig {
     /// The engine's options file, from [`TestEngineConfig::with_options`];
     /// an empty one in memory without it.
     options: Option<live_settings::OptionsFile>,
+    /// What time the engine tells: the system's unless
+    /// [`TestEngineConfig::with_clock`] says otherwise.
+    clock: Clock,
 }
 
 impl TestEngineConfig {
+    /// Has the engine, its background loops and this harness's helpers tell
+    /// time by `clock`, so a test pins what time it is or moves it by hand.
+    /// Without it the system's, which a caller on real time (monokulo, a
+    /// real node) needs.
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
     /// Limits each store to `per_minute` requests, like a production engine
     /// (whose default is 120), instead of this harness's effectively
     /// unlimited default.
@@ -840,7 +859,7 @@ impl TestEngineConfig {
         ) = (Arc::new(PlainKeyCustody::default()), None, None);
         #[cfg(feature = "snp")]
         let custody = if self.snp_backend {
-            let (custody, slot, vcek) = snp_custody(&store).await;
+            let (custody, slot, vcek) = snp_custody(&store, self.clock.clone()).await;
             (custody, Some(slot), Some(vcek))
         } else {
             custody
@@ -896,6 +915,7 @@ impl TestEngineConfig {
             self.live_nodes
                 .then(|| engine::engine_settings::NodesReloadable {
                     daemons: daemons.clone(),
+                    clock: self.clock.clone(),
                 }),
             None,
             settings_rate_limits,
@@ -933,6 +953,7 @@ impl TestEngineConfig {
                 scanner_status: scanner_status.clone(),
             },
             activity_stream: engine::activity::StreamTuning::DEFAULT,
+            clock: self.clock.clone(),
         };
         let tenant_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -970,6 +991,7 @@ impl TestEngineConfig {
             let scan_store = store.clone();
             let scan_key_custody = key_custody.clone();
             let scan_wallet_handles = wallet_handles.clone();
+            let scan_clock = self.clock.clone();
             background_tasks.push(tokio::spawn(async move {
                 let daemon = TestDaemonClient::default();
                 loop {
@@ -994,6 +1016,7 @@ impl TestEngineConfig {
                         // effect (a status transition, an order event), not its
                         // per-tick `Result`.
                         let _ = run_scan_tick(
+                            scan_clock.clone(),
                             &scan_store,
                             scan_key_custody.as_ref(),
                             &daemon,
@@ -1022,6 +1045,7 @@ impl TestEngineConfig {
             lookup_mempool,
             scanner_status,
             snp_vcek,
+            clock: self.clock,
         }
     }
 }
@@ -1529,9 +1553,13 @@ mod tests {
                 }
             }
 
+            // Both engines on one clock, so the handoff's freshness checks
+            // see the same moment on each side.
+            let clock = Clock::Fixed(UnixTime::from_secs(1_800_000_000));
             let old = TestEngineConfig::new()
                 .with_networks(&[Network::Mainnet])
                 .with_snp_backend()
+                .with_clock(clock.clone())
                 .spawn()
                 .await;
             let base_url = format!("http://{}", old.addr);
@@ -1573,6 +1601,7 @@ mod tests {
                     trust: snp_test_trust(),
                 },
                 Arc::new(OtherImagesWrap),
+                clock,
             )
             .unwrap();
             new.refresh_evidence(&TestEvidence).await.unwrap();
@@ -1588,6 +1617,7 @@ mod tests {
                     token: "not-the-engine-token".into(),
                 },
                 &old_anchor,
+                old.clock.now(),
             )
             .await;
             assert!(wrong_token.is_err());
@@ -1599,6 +1629,7 @@ mod tests {
                     token: TEST_ENGINE_TOKEN.into(),
                 },
                 &old_anchor,
+                old.clock.now(),
             )
             .await
             .unwrap();

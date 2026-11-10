@@ -15,6 +15,7 @@
 //! it (fixi), Recent pushes asks again every few seconds while its newest
 //! push is still to be sent, for a minute at most.
 
+use clock::UnixTime;
 use maud::{html, Markup, PreEscaped};
 
 use super::connected_apps::{AppRow, BELL};
@@ -31,7 +32,7 @@ pub const RECENT_PUSHES: u32 = 50;
 pub const RECENT_DAYS: i64 = 7;
 /// How long, in seconds, Recent pushes asks again for a push still to be
 /// sent: a minute after it was queued.
-const POLL_FOR: i64 = 60;
+const POLL_FOR: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The push relay this Monokulo's apps are told of (the apps guide):
 /// its pushes' host, named as such.
@@ -203,7 +204,7 @@ impl Trouble {
 /// long ago within the last day ("2 min ago"), the time otherwise
 /// ("25 Oct, 14:02").
 pub fn when(clock: &Clock, at: i64) -> String {
-    if clock.now().saturating_sub(at) < 86_400 {
+    if clock.now().since(UnixTime::from_secs(at)) < std::time::Duration::from_secs(86_400) {
         clock.relative(at)
     } else {
         clock.text(at)
@@ -247,7 +248,7 @@ fn plural(n: u64, one: &str, many: &str) -> String {
 /// day and time before (`24 Oct, 09:12`).
 fn short_time(clock: &Clock, at: i64) -> Markup {
     let full = clock.text(at);
-    let today = clock.text(clock.now());
+    let today = clock.text(clock.now().as_secs());
     let day = |text: &str| text.split_once(", ").map(|(day, _)| day.to_owned());
     let shown = match (day(&full), day(&today)) {
         (Some(a), Some(b)) if a == b => full
@@ -627,7 +628,11 @@ fn result_words(view: &AppPageView, push: &PushDeliveryRow) -> String {
 fn polls(view: &AppPageView) -> bool {
     view.recent.first().is_some_and(|newest| {
         matches!(newest.state(), PushState::Queued | PushState::Retrying)
-            && view.clock.now().saturating_sub(newest.created_at) < POLL_FOR
+            && view
+                .clock
+                .now()
+                .since(UnixTime::from_secs(newest.created_at))
+                < POLL_FOR
     })
 }
 

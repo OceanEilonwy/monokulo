@@ -13,17 +13,17 @@
 //!   evidence, and restored if it no longer supports the accusation. One page per round, from a persisted position.
 
 use crate::scanner::{
-    recheck_voided_payment, voided_key_image_statuses, ScannerError,
-    DOUBLE_SPEND_RECHECK_WINDOW_SECS,
+    recheck_voided_payment, voided_key_image_statuses, ScannerError, DOUBLE_SPEND_RECHECK_WINDOW,
 };
 use crate::store::position::{ScanRange, VoidRecheck, VoidRecheckPassStarted};
 
 use super::{Progress, Round};
+use clock::UnixTime;
 
 const RANGE_PAGE: usize = 32;
 const VOID_PAGE: usize = 16;
 /// How often a full pass over recent voids starts.
-const VOID_RECHECK_INTERVAL_SECS: i64 = 5 * 60;
+const VOID_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5);
 
 /// How often the write-ahead log is checkpointed.
 const CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_mins(10);
@@ -95,7 +95,10 @@ async fn prune(round: &Round<'_>) -> Result<(), ScannerError> {
     let depth = round.inputs.reorg_check_depth;
     let events_before = round
         .now
-        .saturating_sub(round.inputs.order_event_retention_secs);
+        .saturating_sub(crate::duration_secs(
+            round.inputs.order_event_retention_secs,
+        ))
+        .as_secs();
     let (pruned, events) = round
         .db(move |s, network| -> Result<_, ScannerError> {
             let blocks = match s.max_scanned_height(network)? {
@@ -169,13 +172,13 @@ async fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
 }
 
 /// One page of the recent-void recheck. A pass starts at most every
-/// `VOID_RECHECK_INTERVAL_SECS` and walks voided payments in id order; a
+/// `VOID_RECHECK_INTERVAL` and walks voided payments in id order; a
 /// failed or inconclusive recheck leaves the payment voided for the next
 /// pass.
 async fn recheck_voids(round: &Round<'_>, until: tokio::time::Instant) -> Result<(), ScannerError> {
     let Some(tip) = round.tip else { return Ok(()) };
     let now = round.now;
-    let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
+    let cutoff = now.saturating_sub(DOUBLE_SPEND_RECHECK_WINDOW).as_secs();
     let page = round
         .db(move |s, network| {
             s.in_transaction(|s| -> Result<_, crate::store::StoreError> {
@@ -194,10 +197,10 @@ async fn recheck_voids(round: &Round<'_>, until: tokio::time::Instant) -> Result
                 let started: i64 = s
                     .scheduler_position::<VoidRecheckPassStarted>(network)?
                     .unwrap_or(i64::MIN);
-                if now.saturating_sub(started) < VOID_RECHECK_INTERVAL_SECS {
+                if now.since(UnixTime::from_secs(started)) < VOID_RECHECK_INTERVAL {
                     return Ok(Vec::new());
                 }
-                s.set_scheduler_position::<VoidRecheckPassStarted>(network, &now)?;
+                s.set_scheduler_position::<VoidRecheckPassStarted>(network, &now.as_secs())?;
                 s.void_recheck_page(network, cutoff, 0, VOID_PAGE)
             })
         })

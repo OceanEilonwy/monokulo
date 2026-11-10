@@ -214,8 +214,11 @@ pub async fn orders_list(
     };
     if fx.0 {
         return axum::response::Html(
-            views::orders::list_results(&view_model, &views::time::Clock::for_user(&user))
-                .into_string(),
+            views::orders::list_results(
+                &view_model,
+                &views::time::Clock::for_user(&user, state.clock.now()),
+            )
+            .into_string(),
         )
         .into_response();
     }
@@ -519,7 +522,7 @@ pub async fn order_detail_events(
         .client
         .subscribe_order(&keys, &row.id, &order_id);
     // Times in the viewer's zone, as the page itself shows them.
-    let clock = views::time::Clock::for_user(&user);
+    let clock = views::time::Clock::for_user(&user, state.clock.now());
     let snapshots = crate::live::snapshot_stream(
         subscription,
         std::time::Duration::from_secs(30),
@@ -660,7 +663,7 @@ async fn render_store_detail_page(
         None => None,
     };
     let embed_warnings =
-        super::embed_domains::store_page_warnings(state, &row.id, crate::now_unix()).await;
+        super::embed_domains::store_page_warnings(state, &row.id, chrome.clock.now()).await;
     let row = row.into_row();
     let view_model = views::store_detail::StoreDetailViewModel {
         store: Some(views::store_detail::StoreDetailData {
@@ -972,13 +975,13 @@ pub(super) async fn render_store_settings_page_with(
             confirmations_required: t.confirmations_required,
         })
         .collect::<Vec<_>>();
-    let now = crate::now_unix();
+    let now = chrome.clock.now();
     let embed_can_restrict = embed_domain_rows
         .iter()
         .any(|domain| domain.state(now).counts());
     let custom_page =
         super::checkout_pages::page_card(state, &row.id, &embed_domain_rows, now).await;
-    let embed_domains = super::embed_domains::domain_views(embed_domain_rows, now);
+    let embed_domains = super::embed_domains::domain_views(embed_domain_rows, chrome.clock.now());
 
     let webhooks = super::webhooks::card(
         state,
@@ -1528,9 +1531,10 @@ pub async fn change_store_wallet(
         }
     };
     let (connection_id, wallet_id) = (row.id.clone(), chosen.id.clone());
+    let now = state.clock.now();
     if let Err(e) = state
         .db
-        .write(move |db| db.change_store_wallet(&connection_id, &wallet_id, crate::now_unix()))
+        .write(move |db| db.change_store_wallet(&connection_id, &wallet_id, now))
         .await
     {
         // The engine changed it: the next page load shows the engine's
@@ -2174,7 +2178,10 @@ mod tests {
     async fn haveno_state() -> (AppState, engine_test_support::TestEngineHandle) {
         let (mut state, engine) = test_state_with_real_engine().await;
         state.exchange_rate = std::sync::Arc::new(
-            crate::exchange_rate_config::ExchangeRateProviders::haveno_only("http://127.0.0.1:1"),
+            crate::exchange_rate_config::ExchangeRateProviders::haveno_only(
+                "http://127.0.0.1:1",
+                state.clock.clone(),
+            ),
         );
         (state, engine)
     }
@@ -2445,6 +2452,7 @@ mod tests {
         state.exchange_rate = std::sync::Arc::new(
             crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
                 "http://127.0.0.1:1",
+                state.clock.clone(),
             ),
         );
         let router = build_router(state.clone());
@@ -3635,7 +3643,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some(("old", "50", 20, crate::now_unix())),
+                Some(("old", "50", 20, state.clock.now())),
             )
             .unwrap();
         let row = state
@@ -3727,7 +3735,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some(("keep", "50", 20, crate::now_unix())),
+                Some(("keep", "50", 20, state.clock.now())),
             )
             .unwrap();
         let response = router
@@ -3845,7 +3853,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some((existing_id, "50", 20, crate::now_unix())),
+                Some((existing_id, "50", 20, state.clock.now())),
             )
             .unwrap();
         let delete_field = format!("delete_{existing_id}");
@@ -3942,7 +3950,7 @@ mod tests {
         {
             // A base currency doesn't need a rate provider, proved here for the
             // *change* path rather than creation -
-            // `test_state_with_real_engine`'s own `ExchangeRateProviders::xmr_only()`
+            // `test_state_with_real_engine`'s own `ExchangeRateProviders::xmr_only(state.clock.clone())`
             // has no provider enabled at all.
             let (state, _engine) = test_state_with_real_engine().await;
             let router = build_router(state.clone());
@@ -4889,7 +4897,7 @@ mod tests {
                 version: "0.3.0",
                 webhook_id: None,
                 webhook_url: None,
-                at: 1_000,
+                at: clock::UnixTime::from_secs(1_000),
             })
             .unwrap();
         let keyed = |reference: &str, client: &str| {
@@ -5320,7 +5328,8 @@ mod tests {
             display_name: "shop.example.com".to_string(),
             order: Some(order),
         };
-        let chrome = crate::views::PageChrome::from_user(None, "");
+        // A page built from a model: no time on it is compared with a clock.
+        let chrome = crate::views::PageChrome::from_user(None, "", clock::Clock::System.now());
         let html = crate::views::orders::detail_page(&chrome, &data).into_string();
         assert!(
             html.contains("100 - 250"),

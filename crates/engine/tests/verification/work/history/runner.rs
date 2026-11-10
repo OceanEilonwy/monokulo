@@ -159,7 +159,7 @@ pub(crate) struct Harness {
     pub(crate) order: OrderId,
     pub(crate) state: ScanState,
     pub(crate) model: Model,
-    pub(crate) now: i64,
+    pub(crate) now: clock::UnixTime,
     pub(crate) node_online: bool,
     pub(crate) custody_online: bool,
     /// Whether this process registered the first store's keys: a restart
@@ -198,7 +198,7 @@ impl Harness {
                 spent_elsewhere: false,
                 generation: 0,
             },
-            now: 1_700_000_000,
+            now: crate::node_test_support::TEST_NOW,
             node_online: true,
             custody_online: true,
             registered: true,
@@ -216,7 +216,7 @@ impl Harness {
     }
 
     pub(crate) fn state() -> ScanState {
-        ScanState::default()
+        crate::node_test_support::scan_state()
             .with_tuning(ScanTuning {
                 txs_per_scan: 1,
                 blocks_per_unit: 1,
@@ -308,7 +308,7 @@ impl Harness {
 
     pub(crate) async fn tick_with_fault(&mut self, fault: Option<usize>) -> RoundReport {
         tokio::time::advance(RETRY_TIME).await;
-        self.now += RETRY_TIME.as_secs() as i64;
+        self.now = self.now.saturating_add(RETRY_TIME);
         let before = self.snapshot();
         let fault_trace = fault.map(|at| self.store().lock().fail_nth_access(Some(at)));
         let tenants = self.registered_tenants();

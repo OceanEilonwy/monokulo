@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use abuse::TrustedProxies;
+use clock::Clock;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -79,6 +80,8 @@ pub(crate) struct Shared {
     fcm: Option<Fcm>,
     /// How the last push handed to APNs or FCM went: the status says.
     last_delivery: service_runtime::status::Last<Delivered>,
+    /// What time it is, read once per request.
+    clock: Clock,
 }
 
 /// A relay's settings, checked as a start checks them, with the clients it
@@ -165,7 +168,11 @@ impl Relay {
     /// expired handles on this runtime, until `stop`: a relay that is
     /// started again (monokulo's admin page saving its settings) leaves no
     /// sweep of the old one behind.
-    pub async fn start(config: &RelayConfig, stop: CancellationToken) -> Result<Relay, StartError> {
+    pub async fn start(
+        config: &RelayConfig,
+        stop: CancellationToken,
+        clock: Clock,
+    ) -> Result<Relay, StartError> {
         let Checked {
             public_uri,
             handle_key,
@@ -191,6 +198,7 @@ impl Relay {
             "push relay ready"
         );
         let sweeping = store.clone();
+        let sweep_clock = clock.clone();
         // The sweep's supervisor stops once the sender goes, which it does
         // with the stop.
         let (stopping, stopped) = tokio::sync::watch::channel(false);
@@ -200,7 +208,7 @@ impl Relay {
         });
         let sweep =
             service_runtime::supervise::supervise_until("push relay sweep", stopped, move || {
-                sweep(sweeping.clone())
+                sweep(sweeping.clone(), sweep_clock.clone())
             });
         Ok(Relay {
             sweep: Arc::new(Mutex::new(Some(sweep))),
@@ -213,6 +221,7 @@ impl Relay {
                 apns,
                 fcm,
                 last_delivery: Default::default(),
+                clock,
             }),
         })
     }
@@ -223,10 +232,10 @@ impl Relay {
         routes::router(Arc::clone(&self.shared))
     }
 
-    /// Handles stored that haven't expired by `now`: what the admin page
-    /// shows of a relay inside monokulo.
-    pub async fn handles_stored(&self, now: i64) -> Result<u64, StoreError> {
-        self.shared.store.count(now).await
+    /// Handles stored that haven't expired now: what the admin page shows
+    /// of a relay inside monokulo.
+    pub async fn handles_stored(&self) -> Result<u64, StoreError> {
+        self.shared.store.count(self.shared.clock.now()).await
     }
 
     /// Waits for the sweep to end, once the stop it was started with has
@@ -258,11 +267,11 @@ impl Relay {
 }
 
 /// Deletes expired handles, every [`SWEEP_EVERY`].
-async fn sweep(store: HandleStore) {
+async fn sweep(store: HandleStore, clock: Clock) {
     let mut every = tokio::time::interval(SWEEP_EVERY);
     loop {
         every.tick().await;
-        match store.sweep(service_runtime::time::now_unix()).await {
+        match store.sweep(clock.now()).await {
             Ok(0) => {}
             Ok(swept) => tracing::info!(swept, "expired handles deleted"),
             Err(error) => tracing::warn!(error = %error, "expired handles couldn't be deleted"),
@@ -274,6 +283,7 @@ async fn sweep(store: HandleStore) {
 mod tests {
     use super::*;
     use crate::settings::{AppField, AppRow, Apps, Host};
+    use clock::UnixTime;
 
     /// A relay's settings with its database in a directory of the test's
     /// own.
@@ -312,9 +322,13 @@ mod tests {
     async fn the_sweep_stops_with_the_relay() {
         let restarts = sweep_restarts();
         let stop = CancellationToken::new();
-        let relay = Relay::start(&config("sweep").await, stop.clone())
-            .await
-            .unwrap();
+        let relay = Relay::start(
+            &config("sweep").await,
+            stop.clone(),
+            Clock::Fixed(UnixTime::from_secs(1_800_000_000)),
+        )
+        .await
+        .unwrap();
         stop.cancel();
         tokio::time::timeout(Duration::from_secs(2), relay.stopped())
             .await
@@ -328,11 +342,12 @@ mod tests {
     /// The handles stored are counted until each expires.
     #[tokio::test]
     async fn the_handles_stored_are_counted_until_they_expire() {
-        let relay = Relay::start(&config("count").await, CancellationToken::new())
+        let now = UnixTime::from_secs(1_800_000_000);
+        let (clock, hand) = Clock::manual(now);
+        let relay = Relay::start(&config("count").await, CancellationToken::new(), clock)
             .await
             .unwrap();
-        let now = service_runtime::time::now_unix();
-        assert_eq!(relay.handles_stored(now).await.unwrap(), 0);
+        assert_eq!(relay.handles_stored().await.unwrap(), 0);
         let sender = push::VapidKey::generate();
         for token in ["00ab", "00cd"] {
             relay
@@ -350,9 +365,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert_eq!(relay.handles_stored(now).await.unwrap(), 2);
+        assert_eq!(relay.handles_stored().await.unwrap(), 2);
         // Unused handles last a week (`handles.unused_ttl_days`).
-        assert_eq!(relay.handles_stored(now + 8 * 86_400).await.unwrap(), 0);
+        hand.advance(Duration::from_secs(8 * 86_400));
+        assert_eq!(relay.handles_stored().await.unwrap(), 0);
     }
 
     fn row(name: &str, apns_topic: &str, fcm_project_id: &str) -> AppRow {

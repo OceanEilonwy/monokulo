@@ -18,6 +18,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use clock::Clock;
+
 #[cfg(feature = "snp")]
 use crate::engine_settings::SnpBootConfig;
 use crate::engine_settings::{Daemons, EngineSettings, ALL, SERVER_TOKEN, STANDALONE_ONLY};
@@ -165,6 +167,9 @@ impl Engine {
         // The snp backend's settings apply at a restart: read once, here. It
         // starts when it is first enabled (`SnpSlot`). Only in a build with
         // the `snp` feature.
+        // The running engine tells time by the system's clock; its handlers
+        // and loops each read it once per operation.
+        let clock = Clock::System;
         #[cfg(feature = "snp")]
         let snp_boot = {
             let file = config
@@ -179,6 +184,7 @@ impl Engine {
             // Fixed, not a setting: the host writes the settings.
             Arc::new(snp_attest::guest::SevGuest::new("/dev/sev-guest")),
             Arc::new(StoreWraps(Arc::clone(&store))),
+            clock.clone(),
         )));
         #[cfg(not(feature = "snp"))]
         let snp: Option<Arc<crate::key_custody::SnpSlot>> = None;
@@ -196,6 +202,7 @@ impl Engine {
             env.clone(),
             config.options,
             embedded,
+            clock.clone(),
         )
         .await
         .map_err(StartError::Settings)?;
@@ -245,6 +252,7 @@ impl Engine {
                 scanner_status: Arc::clone(&scanner_status),
             },
             activity_stream: crate::activity::StreamTuning::DEFAULT,
+            clock: clock.clone(),
         };
 
         let (stop, stopped) = tokio::sync::watch::channel(false);
@@ -255,6 +263,7 @@ impl Engine {
         #[cfg(feature = "snp")]
         if let Some(snp) = snp {
             let handoff_url = snp_boot.handoff_url.map(|url| url.url().to_string());
+            let upkeep_clock = clock.clone();
             loops.push(service_runtime::supervise::supervise_until(
                 "snp key custody upkeep",
                 stopped.clone(),
@@ -265,6 +274,7 @@ impl Engine {
                             url,
                             token: raw_token.clone(),
                         }),
+                        upkeep_clock.clone(),
                     )
                 },
             ));
@@ -289,6 +299,7 @@ impl Engine {
                     Arc::clone(&scanner_status),
                     Arc::clone(&loops_settings),
                     manager_networks.clone(),
+                    clock.clone(),
                 )
             },
         ));

@@ -1,6 +1,9 @@
 //! Webhook delivery signing: how a delivery is authenticated. Which
 //! addresses a delivery may go to is the `outbound` crate's.
 
+use std::time::Duration;
+
+use clock::UnixTime;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
@@ -10,7 +13,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// either way, for it to be accepted: five minutes. A captured delivery
 /// can be replayed only within this window (and a receiver deduplicating
 /// on `event_id` refuses it even then).
-pub const SIGNATURE_TOLERANCE_SECS: i64 = 5 * 60;
+pub const SIGNATURE_TOLERANCE: Duration = Duration::from_secs(5 * 60);
 
 /// The `X-Monokulo-Signature` header value for a delivery of `payload`
 /// sent at `timestamp` (unix seconds): `t=<timestamp>,v1=<hex>`, where
@@ -36,8 +39,8 @@ fn mac(secret: &str, timestamp: i64, payload: &[u8]) -> HmacSha256 {
 }
 
 /// Verifies a presented `X-Monokulo-Signature` header for `payload`, as
-/// received at `now` (unix seconds): its timestamp must be within
-/// [`SIGNATURE_TOLERANCE_SECS`] of `now`, and its `v1` tag must be the HMAC
+/// received at `now`: its timestamp must be within
+/// [`SIGNATURE_TOLERANCE`] of `now`, and its `v1` tag must be the HMAC
 /// of `"<timestamp>.<payload>"`.
 ///
 /// The tag comparison is constant-time, which is the entire reason this goes
@@ -54,11 +57,12 @@ fn mac(secret: &str, timestamp: i64, payload: &[u8]) -> HmacSha256 {
 /// isn't exactly `t=<digits>,v1=<64 hex>` is rejected before any
 /// comparison: its shape is attacker-supplied public data and reveals
 /// nothing.
-pub fn verify_signature(secret: &str, payload: &[u8], header: &str, now: i64) -> bool {
+pub fn verify_signature(secret: &str, payload: &[u8], header: &str, now: UnixTime) -> bool {
     let Some((timestamp, tag)) = parse_header(header) else {
         return false;
     };
-    if now.abs_diff(timestamp) > SIGNATURE_TOLERANCE_SECS.unsigned_abs() {
+    let signed_at = UnixTime::from_secs(timestamp);
+    if now.since(signed_at).max(signed_at.since(now)) > SIGNATURE_TOLERANCE {
         return false;
     }
     let Ok(presented) = hex::decode(tag) else {
@@ -84,6 +88,7 @@ mod tests {
     use super::*;
 
     const T: i64 = 1_700_000_000;
+    const NOW: UnixTime = UnixTime::from_secs(T);
 
     #[test]
     fn signature_is_sensitive_to_the_secret_the_payload_and_the_time() {
@@ -102,10 +107,10 @@ mod tests {
         let secret = "whsec_abc";
         let payload = b"original";
         let signature = sign_payload(secret, T, payload);
-        assert!(!verify_signature(secret, b"tampered", &signature, T));
+        assert!(!verify_signature(secret, b"tampered", &signature, NOW));
         // The tag of time T presented as another time.
         let moved = signature.replace("t=1700000000", "t=1700000001");
-        assert!(!verify_signature(secret, payload, &moved, T));
+        assert!(!verify_signature(secret, payload, &moved, NOW));
     }
 
     /// A delivery is accepted within the tolerance of the receiver's clock,
@@ -119,25 +124,25 @@ mod tests {
             secret,
             payload,
             &signature,
-            T + SIGNATURE_TOLERANCE_SECS
+            NOW.saturating_add(SIGNATURE_TOLERANCE)
         ));
         assert!(verify_signature(
             secret,
             payload,
             &signature,
-            T - SIGNATURE_TOLERANCE_SECS
+            NOW.saturating_sub(SIGNATURE_TOLERANCE)
         ));
         assert!(!verify_signature(
             secret,
             payload,
             &signature,
-            T + SIGNATURE_TOLERANCE_SECS + 1
+            NOW.saturating_add(SIGNATURE_TOLERANCE + Duration::from_secs(1))
         ));
         assert!(!verify_signature(
             secret,
             payload,
             &signature,
-            T - SIGNATURE_TOLERANCE_SECS - 1
+            NOW.saturating_sub(SIGNATURE_TOLERANCE + Duration::from_secs(1))
         ));
     }
 
@@ -154,7 +159,7 @@ mod tests {
         let secret = "whsec_abc";
         let payload = b"{\"event\":\"order.paid\"}";
         let good = sign_payload(secret, T, payload);
-        assert!(verify_signature(secret, payload, &good, T));
+        assert!(verify_signature(secret, payload, &good, NOW));
         let tag = good.split_once(",v1=").unwrap().1.to_string();
         let with_tag = |tag: &str| format!("t={T},v1={tag}");
 
@@ -163,14 +168,19 @@ mod tests {
         let mut almost = tag.clone();
         let last = almost.pop().unwrap();
         almost.push(if last == '0' { '1' } else { '0' });
-        assert!(!verify_signature(secret, payload, &with_tag(&almost), T));
+        assert!(!verify_signature(secret, payload, &with_tag(&almost), NOW));
 
         // ...and one differing only in the *first* byte, the input it would reject
         // fastest. Both must be equally, unconditionally refused.
         let mut first_off = tag.clone();
         let head = first_off.remove(0);
         first_off.insert(0, if head == '0' { '1' } else { '0' });
-        assert!(!verify_signature(secret, payload, &with_tag(&first_off), T));
+        assert!(!verify_signature(
+            secret,
+            payload,
+            &with_tag(&first_off),
+            NOW
+        ));
 
         for bad in [
             String::new(),
@@ -183,14 +193,14 @@ mod tests {
             with_tag(&format!("{tag}00")),   // trailing junk
             with_tag("not hex at all"),
         ] {
-            assert!(!verify_signature(secret, payload, &bad, T), "{bad:?}");
+            assert!(!verify_signature(secret, payload, &bad, NOW), "{bad:?}");
         }
         // Valid hex in upper case decodes to the same tag.
         assert!(verify_signature(
             secret,
             payload,
             &with_tag(&tag.to_uppercase()),
-            T
+            NOW
         ));
     }
 
@@ -226,7 +236,7 @@ mod tests {
             KNOWN_VECTOR_SECRET,
             KNOWN_VECTOR_PAYLOAD,
             KNOWN_VECTOR_SIGNATURE_HEADER,
-            KNOWN_VECTOR_TIMESTAMP
+            UnixTime::from_secs(KNOWN_VECTOR_TIMESTAMP)
         ));
         // Python: hmac.new(secret, b"1700000000." + payload, hashlib.sha256).hexdigest()
         let secret = "whsec_test_vector_secret";
@@ -236,6 +246,6 @@ mod tests {
             signature,
             "t=1700000000,v1=ee45d544d20342265419fe84e4ad7553640a8b069efac546af2c3d9dabc271fc"
         );
-        assert!(verify_signature(secret, payload, &signature, T));
+        assert!(verify_signature(secret, payload, &signature, NOW));
     }
 }

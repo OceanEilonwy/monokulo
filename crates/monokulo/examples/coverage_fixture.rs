@@ -99,16 +99,21 @@ async fn seed_apps(
     if query.contains_key("empty") {
         return Ok(Json(serde_json::json!({})));
     }
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now();
     let connect =
         |slug: &str, name: &str, device: &str, platform: &str, version: &str, ago: i64| {
             let raw = credentials::auth::generate_app_connect_token();
-            db.create_app_connect_token(&raw.hash(), &store, device, now - ago)?;
+            db.create_app_connect_token(
+                &raw.hash(),
+                &store,
+                device,
+                now.saturating_sub(std::time::Duration::from_secs(ago.unsigned_abs())),
+            )?;
             let app = db
                 .redeem_app_connect_token(
                     &raw.hash(),
-                    now - ago,
-                    600,
+                    now.saturating_sub(std::time::Duration::from_secs(ago.unsigned_abs())),
+                    std::time::Duration::from_secs(600),
                     &NewApp {
                         slug,
                         name,
@@ -160,7 +165,8 @@ async fn seed_apps(
                     endpoint: &::push::Endpoint::parse(endpoint).expect("an endpoint"),
                     events: &SaleKind::ALL,
                 },
-                now - 16 * 86_400 + 60,
+                (now.saturating_sub(std::time::Duration::from_secs(16 * 86_400)))
+                    .saturating_add(std::time::Duration::from_secs(60)),
             )?;
             match registered {
                 Registration::Registered(target) => Ok::<_, monokulo::db::DbError>(*target),
@@ -213,9 +219,9 @@ async fn seed_apps(
                 app_id: &target.app_id,
                 target_id: &target.id,
                 event,
-                at: now - ago,
+                at: now.saturating_sub(std::time::Duration::from_secs(ago.unsigned_abs())),
                 ttl: ::push::Ttl::seconds(1800),
-                due_at: now - ago,
+                due_at: now.saturating_sub(std::time::Duration::from_secs(ago.unsigned_abs())),
             })?
             .expect("the app's target");
         if let Some((status, delivered, retry_at)) = outcome {
@@ -226,7 +232,7 @@ async fn seed_apps(
                 id,
                 &target,
                 &PushAttempt {
-                    at: now - ago,
+                    at: now.saturating_sub(std::time::Duration::from_secs(ago.unsigned_abs())),
                     status,
                     duration_ms: 240,
                     result: if delivered {
@@ -252,7 +258,11 @@ async fn seed_apps(
             &kitchen_alerts,
             SaleKind::Paid,
             14 * 60 + (11 - n) * 300,
-            Some((Some(502), false, Some(now + 300))),
+            Some((
+                Some(502),
+                false,
+                Some((now.saturating_add(std::time::Duration::from_secs(300))).as_secs()),
+            )),
         )
         .map_err(failed)?;
     }
@@ -268,13 +278,13 @@ async fn seed_apps(
         address: "8".repeat(95),
         xmr_amount_piconero: pricing::xmr_amount::Piconero(141_900_000_000),
         merchant_order_id: Some("#1042".into()),
-        expires_at: now + 900,
-        created_at: now - 300,
+        expires_at: (now.saturating_add(std::time::Duration::from_secs(900))).as_secs(),
+        created_at: (now.saturating_sub(std::time::Duration::from_secs(300))).as_secs(),
     };
     db.record_app_order(&order).map_err(failed)?;
     db.queue_waiting_push(
         &order,
-        now - 300,
+        now.saturating_sub(std::time::Duration::from_secs(300)),
         &monokulo::push::Queueing::now(&monokulo::settings::MonokuloSettings::defaults()),
     )
     .map_err(failed)?;
@@ -287,7 +297,7 @@ async fn seed_apps(
             row.id,
             &target,
             &PushAttempt {
-                at: now - 299,
+                at: now.saturating_sub(std::time::Duration::from_secs(299)),
                 status: Some(201),
                 duration_ms: 236,
                 result: PushResult::Delivered,
@@ -306,7 +316,11 @@ async fn seed_apps(
         &alerts,
         SaleKind::Expired,
         33 * 60,
-        Some((Some(429), false, Some(now + 80))),
+        Some((
+            Some(429),
+            false,
+            Some((now.saturating_add(std::time::Duration::from_secs(80))).as_secs()),
+        )),
     )
     .map_err(failed)?;
     push(
@@ -745,7 +759,11 @@ async fn challenge(State(control): State<Controls>) -> axum::response::Html<Stri
     };
     axum::response::Html(
         views::challenge::challenge_page(
-            &views::PageChrome::from_user(None, "/__coverage/challenge"),
+            &views::PageChrome::from_user(
+                None,
+                "/__coverage/challenge",
+                clock::Clock::System.now(),
+            ),
             &view,
         )
         .into_string(),
@@ -764,7 +782,7 @@ async fn verified_domain(State(control): State<Controls>) -> StatusCode {
     {
         return StatusCode::NO_CONTENT;
     }
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now();
     let made = db
         .create_store_domain(id, &store, "coverage-shop.example", "token", now, None)
         .is_ok_and(|made| made.is_ok());
@@ -798,14 +816,15 @@ async fn seed_custom_page(
         css: String::new(),
         written_css: text("written_css"),
         preview_token: uuid::Uuid::new_v4().to_string(),
-        created_at: monokulo::now_unix(),
+        created_at: clock::Clock::System.now().as_secs(),
     };
     let token = uuid::Uuid::new_v4().to_string();
-    match control
-        .db
-        .lock()
-        .publish_checkout_page(&draft, &token, &domains, monokulo::now_unix())
-    {
+    match control.db.lock().publish_checkout_page(
+        &draft,
+        &token,
+        &domains,
+        clock::Clock::System.now(),
+    ) {
         Ok(true) => StatusCode::NO_CONTENT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -856,7 +875,7 @@ async fn connect_plugin(
     State(control): State<Controls>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let store = engine_protocol::ids::ConnectionId::new("coverage-store");
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now();
     // Connected six days ago, as a plugin's connect finishes.
     let connected = monokulo::plugins::connect(
         &control.db,
@@ -868,7 +887,7 @@ async fn connect_plugin(
             site: monokulo::stores::Site::parse("shop.localhost").ok(),
             version: "0.4.0".into(),
             webhook_url: Some("https://shop.localhost/?wc-api=monokulo".into()),
-            at: now - 6 * 86_400,
+            at: now.saturating_sub(std::time::Duration::from_secs(6 * 86_400)),
         },
     )
     .await
@@ -879,7 +898,12 @@ async fn connect_plugin(
     control
         .db
         .lock()
-        .integration_seen(&store, "woocommerce", "0.4.0", now - 3600)
+        .integration_seen(
+            &store,
+            "woocommerce",
+            "0.4.0",
+            now.saturating_sub(std::time::Duration::from_secs(3600)),
+        )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({ "integration_id": id })))
 }
@@ -904,7 +928,7 @@ async fn seed_webhooks(
             .delete_webhook(&store, &webhook.id)
             .map_err(failed)?;
     }
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now();
     // `?receiver`: one webhook, to this fixture's own receiver, which
     // answers every delivery (`?receiver=500` with that status): "Send a
     // test webhook" has a real server to reach.
@@ -921,6 +945,7 @@ async fn seed_webhooks(
                 ),
             },
             &Default::default(),
+            clock::Clock::System.now(),
         )
         .await
         .map_err(failed)?;
@@ -935,6 +960,7 @@ async fn seed_webhooks(
             &store,
             "https://bakery.example/hooks/monokulo",
             &Default::default(),
+            clock::Clock::System.now(),
         )
         .await
         .map_err(failed)?;
@@ -947,12 +973,14 @@ async fn seed_webhooks(
             + 1;
         let db = control.db.lock();
         for seq in first..first + many {
-            let at = now - 60 * (first + many - seq);
+            let at = now.saturating_sub(std::time::Duration::from_secs(
+                (60 * (first + many - seq)).unsigned_abs(),
+            ));
             let event = LoggedEvent {
                 seq,
                 event_id: format!("evt_fixture{seq}"),
                 kind: "order.paid".into(),
-                created_at: at,
+                created_at: at.as_secs(),
                 tenant_public_key: control.public_key.clone(),
                 order_id: engine_protocol::ids::OrderId::new(format!("{seq:032x}")),
                 txid: None,
@@ -979,7 +1007,7 @@ async fn seed_webhooks(
                 &AttemptOutcome {
                     attempt: Attempt {
                         n: 1,
-                        at,
+                        at: at.as_secs(),
                         status: Some(200),
                         error: None,
                         ms: 184,
@@ -1095,6 +1123,7 @@ async fn seed_webhooks(
             &store,
             url,
             &Default::default(),
+            clock::Clock::System.now(),
         )
         .await
         .map_err(failed)?;
@@ -1110,12 +1139,15 @@ async fn seed_webhooks(
             .collect();
         for (event_type, order, attempts, delivered, status, ago) in events {
             seq += 1;
-            let at = now - ago;
+            let at = now.saturating_sub(std::time::Duration::from_secs(ago.unsigned_abs()));
             let event = LoggedEvent {
                 seq,
                 event_id: format!("evt_fixture{seq}"),
                 kind: (*event_type).into(),
-                created_at: at - 60 * i64::from(*attempts),
+                created_at: (at.saturating_sub(std::time::Duration::from_secs(
+                    (60 * i64::from(*attempts)).unsigned_abs(),
+                )))
+                .as_secs(),
                 tenant_public_key: public_key.clone(),
                 order_id: engine_protocol::ids::OrderId::new(*order),
                 txid: None,
@@ -1127,7 +1159,7 @@ async fn seed_webhooks(
             let db = control.db.lock();
             db.queue_order_event(
                 &event,
-                event.created_at,
+                clock::UnixTime::from_secs(event.created_at),
                 &monokulo::push::Queueing::now(&monokulo::settings::MonokuloSettings::defaults()),
                 |store, metadata| {
                     monokulo::webhooks::body::body_v2(&event, store, metadata, &Default::default())
@@ -1150,7 +1182,7 @@ async fn seed_webhooks(
                     &AttemptOutcome {
                         attempt: Attempt {
                             n,
-                            at: at - 60 * i64::from(*attempts - n),
+                            at: (at.saturating_sub(std::time::Duration::from_secs((60 * i64::from(*attempts - n)).unsigned_abs()))).as_secs(),
                             status: if *delivered && last { Some(200) } else { *status },
                             error: status.is_none().then(|| "could not connect: connection refused".to_string()),
                             ms: if status.is_some() { 184 + u64::from(n) * 600 } else { 3 },
@@ -1164,7 +1196,7 @@ async fn seed_webhooks(
                                 "HTTP/1.1 503 Service Unavailable\ncontent-type: text/html\n\n<html><body>Upstream is restarting</body></html>".to_string()
                             }
                         }),
-                        next_attempt_at: (!(*delivered && last) && !gives_up).then_some(now + 360),
+                        next_attempt_at: (!(*delivered && last) && !gives_up).then_some((now.saturating_add(std::time::Duration::from_secs(360))).as_secs()),
                     },
                 )
                 .map_err(failed)?;
@@ -1210,7 +1242,7 @@ async fn status_story(State(control): State<Controls>, Path(story): Path<String>
     let Ok(mut status) = control.client.get_status().await else {
         return StatusCode::BAD_GATEWAY;
     };
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now();
     let tip = 3_412_881;
     let behind = match story.as_str() {
         "following" | "held" => 3,
@@ -1246,7 +1278,8 @@ async fn status_story(State(control): State<Controls>, Path(story): Path<String>
     mainnet.scanner.ever_ticked = true;
     mainnet.scanner.last_tick_ok = true;
     mainnet.scanner.is_stale = false;
-    mainnet.scanner.last_tick_finished_at = Some(now - 2);
+    mainnet.scanner.last_tick_finished_at =
+        Some((now.saturating_sub(std::time::Duration::from_secs(2))).as_secs());
     mainnet.scanner.tick_count = 41_203;
     mainnet.scanner.tenants_scanned = 3;
     mainnet.scanner.last_error = None;
@@ -1283,7 +1316,7 @@ async fn status_story(State(control): State<Controls>, Path(story): Path<String>
             hash: "ab".repeat(32),
             agreed: 2,
             nodes: 3,
-            anchored_at: now - 2 * 86_400,
+            anchored_at: (now.saturating_sub(std::time::Duration::from_secs(2 * 86_400))).as_secs(),
         }),
         proven_height: Some(tip - behind),
         proven_hash: Some("cd".repeat(32)),
@@ -1313,7 +1346,7 @@ async fn status_story(State(control): State<Controls>, Path(story): Path<String>
             mean_key_build_ms: 250.0,
             keys_held: 2,
         }),
-        checked_at: Some(now - 3),
+        checked_at: Some((now.saturating_sub(std::time::Duration::from_secs(3))).as_secs()),
     });
     monokulo::http::status_page::hold_status_for_tests(&control.site_engine, status);
     StatusCode::NO_CONTENT
@@ -1390,8 +1423,12 @@ async fn seed_wallets(
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
-    db.retire_wallet(&merchant, &WalletId::new("w_old"), 2)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    db.retire_wallet(
+        &merchant,
+        &WalletId::new("w_old"),
+        clock::UnixTime::from_secs(2),
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
         "savings_keys": {
             "view_key_hex": savings_keys.view_key_hex.to_string(),
@@ -1416,7 +1453,7 @@ fn record_order(
         amount: "0.001",
         piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(1_000_000_000_000),
         provider: "fixed",
-        created_at: monokulo::now_unix(),
+        created_at: clock::Clock::System.now().as_secs(),
         base_currency: "XMR",
         base_currency_piconero_per_unit: None,
         confirmations_required_applied: 1,
@@ -1476,14 +1513,14 @@ async fn main() {
         "coverage@example.test",
         "unused",
         false,
-        0,
+        clock::UnixTime::from_secs(0),
     )
     .expect("create fixture user");
     db.create_session(
         &credentials::auth::RawToken::presented(SESSION).hash(),
         &engine_protocol::ids::UserId::new("coverage-merchant"),
         // Now, not 0: a session expires (`Db::SESSION_LIFETIME_SECONDS`).
-        monokulo::now_unix(),
+        clock::Clock::System.now(),
     )
     .expect("create fixture session");
     db.create_user(
@@ -1491,19 +1528,19 @@ async fn main() {
         "admin@example.test",
         "unused",
         true,
-        0,
+        clock::UnixTime::from_secs(0),
     )
     .expect("create fixture admin");
     db.create_session(
         &credentials::auth::RawToken::presented(ADMIN_SESSION).hash(),
         &engine_protocol::ids::UserId::new("coverage-admin"),
-        monokulo::now_unix(),
+        clock::Clock::System.now(),
     )
     .expect("create fixture admin session");
     record_baseline(&engine);
     // CPU and memory, as monokulo samples them in production: the engine
     // page's "Machine and links" strip draws them.
-    service_runtime::resources::start_sampling();
+    service_runtime::resources::start_sampling(clock::Clock::System);
     // The store takes payments into the merchant's mainnet wallet, the
     // tenant's own, as setup makes a store.
     let view = engine_client
@@ -1540,7 +1577,7 @@ async fn main() {
             tenant.secret_token.expose(),
         ),
         &tenant.secret_token.hash(),
-        0,
+        clock::UnixTime::from_secs(0),
         "XMR",
         &monokulo::db::WalletId::new("w_cake"),
     )
@@ -1551,7 +1588,7 @@ async fn main() {
         Some("Fixture order"),
         // Recorded as the order is made, as the POS does: the time left to
         // pay runs from here.
-        monokulo::now_unix(),
+        clock::Clock::System.now().as_secs(),
     )
     .expect("create fixture POS order");
     record_order(&db, &order.order_id, Some("pos")).expect("record fixture POS order");
@@ -1563,16 +1600,24 @@ async fn main() {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let state = AppState {
         encryption_key: ENCRYPTION_KEY,
-        exchange_rate: Arc::new(ExchangeRateProviders::coingecko_only(url.clone())),
+        exchange_rate: Arc::new(ExchangeRateProviders::coingecko_only(
+            url.clone(),
+            clock::Clock::System,
+        )),
         // Every browser test comes from one address, far faster than a real
         // visitor: generous per-address limits, so no test is sent to the
         // challenge page by accident (the challenge has its own route).
-        abuse: Arc::new(abuse::AbuseProtection::new(abuse::AbuseConfig {
-            soft_per_min: 10_000,
-            hard_per_min: 20_000,
-            signed_in_per_min: 10_000,
-            ..Default::default()
-        })),
+        abuse: Arc::new(
+            abuse::AbuseProtection::new(abuse::AbuseConfig {
+                soft_per_min: 10_000,
+                hard_per_min: 20_000,
+                signed_in_per_min: 10_000,
+                ..Default::default()
+            })
+            .with_clock(clock::Clock::System),
+        ),
+        // A live server: the browser sees the real time.
+        clock: clock::Clock::System,
         proofs: domain_proof::Proofs {
             dns: Arc::new(domain_proof::UnavailableDns(
                 "DNS is unavailable in browser tests".into(),

@@ -122,7 +122,10 @@ fn the_address_is_used_while_tor_publishes_it() {
 #[tokio::test]
 async fn tor_inside_monokulo_gives_its_own_address_once_it_has_one() {
     let state = AppState {
-        tor: Tor::running_at(ONION),
+        tor: Tor::running_at(
+            ONION,
+            clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
+        ),
         ..state_with(TorConfig {
             mode: TorMode::Inside,
             ..TorConfig::defaults()
@@ -198,12 +201,16 @@ fn without_a_known_address_a_link_uses_the_host_the_visitor_asked_for() {
 
 #[test]
 fn https_is_believed_only_from_a_trusted_proxy_and_never_on_tor() {
+    let base = state_with(external_tor());
     let state = AppState {
-        abuse: std::sync::Arc::new(abuse::AbuseProtection::new(abuse::AbuseConfig {
-            trusted_proxies: TrustedProxies::parse("10.0.0.1").unwrap(),
-            ..Default::default()
-        })),
-        ..state_with(external_tor())
+        abuse: std::sync::Arc::new(
+            abuse::AbuseProtection::new(abuse::AbuseConfig {
+                trusted_proxies: TrustedProxies::parse("10.0.0.1").unwrap(),
+                ..Default::default()
+            })
+            .with_clock(base.clock.clone()),
+        ),
+        ..base
     };
     let mut headers = HeaderMap::new();
     headers.insert("x-forwarded-proto", "https".parse().unwrap());

@@ -82,7 +82,7 @@ impl Db {
         key: &str,
         fingerprint: &str,
         price: &OrderPrice,
-        at: i64,
+        at: clock::UnixTime,
     ) -> Result<Reserved> {
         self.conn.execute(
             "INSERT INTO order_requests
@@ -100,7 +100,7 @@ impl Db {
                 price.base_currency,
                 price.base_currency_piconero_per_unit,
                 Unsigned(price.confirmations_required),
-                at,
+                at.as_secs(),
             ],
         )?;
         Ok(self

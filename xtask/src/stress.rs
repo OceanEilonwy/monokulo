@@ -4,7 +4,6 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::support::{escape_html, root, write_json};
@@ -589,10 +588,7 @@ pub fn run(profile: Profile, driver: Option<&str>) -> io::Result<bool> {
         .ok_or_else(|| io::Error::other("scenario has no tenant points"))?;
     let mut results = Vec::new();
     let mut faults: Vec<Value> = Vec::new();
-    let started_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let started_at = u64::try_from(clock::Clock::System.now().as_secs()).unwrap_or(0);
     // The conditions a point is held to, so the report names only those.
     let checked: &[&str] = if profile.strict() {
         &["lag", "tick-budget", "status-replies", "timer-delay"]

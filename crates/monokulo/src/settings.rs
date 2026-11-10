@@ -778,15 +778,15 @@ pub struct WebhookConfig {
     pub allow_private_urls: bool,
     pub delivery_timeout: std::time::Duration,
     pub max_attempts: u32,
-    /// How long a delivered delivery is kept, in seconds.
-    pub keep_delivered_secs: i64,
-    /// How long a given-up delivery is kept, in seconds.
-    pub keep_given_up_secs: i64,
+    /// How long a delivered delivery is kept.
+    pub keep_delivered: std::time::Duration,
+    /// How long a given-up delivery is kept.
+    pub keep_given_up: std::time::Duration,
 }
 
-/// Days as seconds, for the keep settings.
-fn days(days: u64) -> i64 {
-    i64::try_from(days.saturating_mul(86_400)).unwrap_or(i64::MAX)
+/// Days as a span, for the keep settings.
+fn days(days: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(days.saturating_mul(86_400))
 }
 
 impl Default for WebhookConfig {
@@ -797,8 +797,8 @@ impl Default for WebhookConfig {
                 WEBHOOKS_DELIVERY_TIMEOUT_MS.default_value(),
             ),
             max_attempts: WEBHOOKS_MAX_ATTEMPTS.default_value(),
-            keep_delivered_secs: days(WEBHOOKS_KEEP_DELIVERED_DAYS.default_value()),
-            keep_given_up_secs: days(WEBHOOKS_KEEP_GIVEN_UP_DAYS.default_value()),
+            keep_delivered: days(WEBHOOKS_KEEP_DELIVERED_DAYS.default_value()),
+            keep_given_up: days(WEBHOOKS_KEEP_GIVEN_UP_DAYS.default_value()),
         }
     }
 }
@@ -821,8 +821,8 @@ impl Section for WebhookConfig {
                 snapshot.get(&WEBHOOKS_DELIVERY_TIMEOUT_MS),
             ),
             max_attempts: snapshot.get(&WEBHOOKS_MAX_ATTEMPTS),
-            keep_delivered_secs: days(snapshot.get(&WEBHOOKS_KEEP_DELIVERED_DAYS)),
-            keep_given_up_secs: days(snapshot.get(&WEBHOOKS_KEEP_GIVEN_UP_DAYS)),
+            keep_delivered: days(snapshot.get(&WEBHOOKS_KEEP_DELIVERED_DAYS)),
+            keep_given_up: days(snapshot.get(&WEBHOOKS_KEEP_GIVEN_UP_DAYS)),
         })
     }
 }
@@ -837,8 +837,8 @@ pub struct PushConfig {
     pub max_attempts: u32,
     /// How long a push about a sale's end lasts, and the most any lasts.
     pub default_ttl: ::push::Ttl,
-    /// How long a push sent, given up on or superseded is kept, in seconds.
-    pub keep_secs: i64,
+    /// How long a push sent, given up on or superseded is kept.
+    pub keep: std::time::Duration,
     /// Failed attempts in a row that delete a target.
     pub target_failure_limit: u32,
     /// Pushes one store's targets are sent a minute, retries included.
@@ -853,7 +853,7 @@ impl Default for PushConfig {
             ),
             max_attempts: PUSH_MAX_ATTEMPTS.default_value(),
             default_ttl: ::push::Ttl::seconds(PUSH_DEFAULT_TTL_SECS.default_value()),
-            keep_secs: days(PUSH_KEEP_DAYS.default_value()),
+            keep: days(PUSH_KEEP_DAYS.default_value()),
             target_failure_limit: PUSH_TARGET_FAILURE_LIMIT.default_value(),
             per_store_per_minute: PUSH_PER_STORE_PER_MINUTE.default_value(),
         }
@@ -879,7 +879,7 @@ impl Section for PushConfig {
             ),
             max_attempts: snapshot.get(&PUSH_MAX_ATTEMPTS),
             default_ttl: ::push::Ttl::seconds(snapshot.get(&PUSH_DEFAULT_TTL_SECS)),
-            keep_secs: days(snapshot.get(&PUSH_KEEP_DAYS)),
+            keep: days(snapshot.get(&PUSH_KEEP_DAYS)),
             target_failure_limit: snapshot.get(&PUSH_TARGET_FAILURE_LIMIT),
             per_store_per_minute: snapshot.get(&PUSH_PER_STORE_PER_MINUTE),
         })
@@ -2248,7 +2248,9 @@ mod tests {
                         Database::inline(Db::open_in_memory().unwrap().into_shared()),
                         crate::http::TEST_ENCRYPTION_KEY,
                     ),
-                    Arc::new(ExchangeRateProviders::xmr_only()),
+                    Arc::new(ExchangeRateProviders::xmr_only(clock::Clock::Fixed(
+                        clock::UnixTime::EPOCH,
+                    ))),
                     Default::default(),
                     None,
                     test_secrets(),
@@ -2262,8 +2264,11 @@ mod tests {
             .unwrap();
         let webhooks = settings.webhooks.load();
         assert_eq!(
-            (webhooks.keep_delivered_secs, webhooks.keep_given_up_secs),
-            (7 * 86_400, 45 * 86_400)
+            (webhooks.keep_delivered, webhooks.keep_given_up),
+            (
+                std::time::Duration::from_secs(7 * 86_400),
+                std::time::Duration::from_secs(45 * 86_400)
+            )
         );
         for bad in [
             "[webhooks]\nkeep_delivered_days = 0\n",
@@ -2289,7 +2294,9 @@ mod tests {
                         Database::inline(Db::open_in_memory().unwrap().into_shared()),
                         crate::http::TEST_ENCRYPTION_KEY,
                     ),
-                    Arc::new(ExchangeRateProviders::xmr_only()),
+                    Arc::new(ExchangeRateProviders::xmr_only(clock::Clock::Fixed(
+                        clock::UnixTime::EPOCH,
+                    ))),
                     Default::default(),
                     None,
                     test_secrets(),
@@ -2309,7 +2316,7 @@ mod tests {
                 delivery_timeout: Duration::from_millis(2500),
                 max_attempts: 3,
                 default_ttl: ::push::Ttl::seconds(600),
-                keep_secs: 2 * 86_400,
+                keep: std::time::Duration::from_secs(2 * 86_400),
                 target_failure_limit: 50,
                 per_store_per_minute: 30,
             }
@@ -2347,7 +2354,9 @@ mod tests {
         Arc<AbuseProtection>,
     ) {
         let db = Database::inline(Db::open_in_memory().unwrap().into_shared());
-        let rates = Arc::new(ExchangeRateProviders::xmr_only());
+        let rates = Arc::new(ExchangeRateProviders::xmr_only(clock::Clock::Fixed(
+            clock::UnixTime::EPOCH,
+        )));
         let abuse: Arc<AbuseProtection> = Default::default();
         let settings = MonokuloSettings::load(
             DbSettings::new(db, crate::http::TEST_ENCRYPTION_KEY),

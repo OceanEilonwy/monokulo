@@ -27,6 +27,7 @@
 use crate::kds;
 use crate::pinned_ark;
 use crate::report::{AttestationReport, Product, TcbVersion, SIGNING_KEY_VCEK};
+use clock::UnixTime;
 use p384::ecdsa::signature::Verifier;
 use p384::ecdsa::{Signature as P384Signature, VerifyingKey as P384VerifyingKey};
 use x509_parser::certificate::X509Certificate;
@@ -153,14 +154,14 @@ fn signed_by(cert: &X509Certificate<'_>, issuer: &X509Certificate<'_>) -> bool {
     )
 }
 
-/// `now_unix` (seconds since the epoch) as a certificate time.
-fn asn1_time(now_unix: i64) -> Result<ASN1Time, VerifyError> {
-    ASN1Time::from_timestamp(now_unix).map_err(|e| VerifyError::CertParse(e.to_string()))
+/// `now` as a certificate time.
+fn asn1_time(now: UnixTime) -> Result<ASN1Time, VerifyError> {
+    ASN1Time::from_timestamp(now.as_secs()).map_err(|e| VerifyError::CertParse(e.to_string()))
 }
 
 /// Full verification, offline: `report` was signed by a genuine AMD chip,
 /// whose key (`evidence.vcek_der`) AMD issued through `evidence.ask_der`
-/// under the pinned root for `product`, at `now_unix`, with nothing on
+/// under the pinned root for `product`, at `now`, with nothing on
 /// AMD's revocation list, from a guest the hypervisor can't debug.
 ///
 /// Does **not** check any minimum patch level or the guest's identity
@@ -170,9 +171,9 @@ pub fn verify_evidence(
     product: Product,
     report: &AttestationReport,
     evidence: &Evidence,
-    now_unix: i64,
+    now: UnixTime,
 ) -> Result<VerifiedReport, VerifyError> {
-    let now = asn1_time(now_unix)?;
+    let now = asn1_time(now)?;
     let ark_der = pinned_ark_der(product)?;
     let ark = parse_der_cert(&ark_der)?;
     let ask = parse_der_cert(&evidence.ask_der)?;
@@ -262,15 +263,7 @@ pub async fn fetch_evidence(
     })
 }
 
-/// Seconds since the Unix epoch, now.
-#[cfg(feature = "kds")]
-pub fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
-
-/// [`fetch_evidence`], then [`verify_evidence`] at the current time. Does
+/// [`fetch_evidence`], then [`verify_evidence`] at `now`. Does
 /// **not** check any minimum patch-level threshold - that's a separate,
 /// deliberately explicit step in the CLI (see `main.rs`), since "what SPL
 /// corresponds to AMD-SB-3019" is operator-supplied configuration, not
@@ -281,9 +274,10 @@ pub async fn verify(
     client: &reqwest::Client,
     product: Product,
     report: &AttestationReport,
+    now: UnixTime,
 ) -> Result<VerifiedReport, VerifyError> {
     let evidence = fetch_evidence(client, product, report).await?;
-    verify_evidence(product, report, &evidence, unix_now())
+    verify_evidence(product, report, &evidence, now)
 }
 
 /// Refuses `certs` if the revocation list `crl_der`, which must be signed
@@ -489,7 +483,8 @@ mod tests {
 
     /// 2026-10-02, inside every test certificate's validity period and
     /// every fixture revocation list's.
-    const NOW: i64 = 1_790_899_200;
+    const NOW_SECS: i64 = 1_790_899_200;
+    const NOW: UnixTime = UnixTime::from_secs(NOW_SECS);
 
     fn at(unix: i64) -> ASN1Time {
         ASN1Time::from_timestamp(unix).unwrap()
@@ -582,7 +577,7 @@ mod tests {
             let ask = chain[0].parse_x509().unwrap();
             let pinned = parse_pem_chain(pinned_ark::pinned_ark_pem(product)).unwrap();
             let ark = pinned[0].parse_x509().unwrap();
-            check_not_revoked(crl, &ark, &[("ASK", &ask)], at(NOW))
+            check_not_revoked(crl, &ark, &[("ASK", &ask)], at(NOW_SECS))
                 .unwrap_or_else(|e| panic!("{product:?}: {e}"));
         }
 
@@ -592,7 +587,7 @@ mod tests {
                 include_bytes!("../tests/fixtures/milan_crl.der"),
                 &genoa[0].parse_x509().unwrap(),
                 &[],
-                at(NOW),
+                at(NOW_SECS),
             ),
             Err(VerifyError::CrlNotSignedByArk)
         ));
@@ -608,9 +603,14 @@ mod tests {
             parse_der_cert(include_bytes!("../tests/fixtures/test_crl/revoked.der")).unwrap();
         let good = parse_der_cert(include_bytes!("../tests/fixtures/test_crl/good.der")).unwrap();
 
-        assert!(check_not_revoked(crl, &ca, &[("VCEK", &good)], at(NOW)).is_ok());
+        assert!(check_not_revoked(crl, &ca, &[("VCEK", &good)], at(NOW_SECS)).is_ok());
         assert!(matches!(
-            check_not_revoked(crl, &ca, &[("ASK", &good), ("VCEK", &revoked)], at(NOW)),
+            check_not_revoked(
+                crl,
+                &ca,
+                &[("ASK", &good), ("VCEK", &revoked)],
+                at(NOW_SECS)
+            ),
             Err(VerifyError::Revoked { which: "VCEK" })
         ));
         // Signed by someone else: refused before its contents count.
@@ -620,7 +620,7 @@ mod tests {
                 crl,
                 &milan[0].parse_x509().unwrap(),
                 &[("VCEK", &good)],
-                at(NOW)
+                at(NOW_SECS)
             ),
             Err(VerifyError::CrlNotSignedByArk)
         ));
@@ -731,7 +731,7 @@ mod tests {
                 Product::Genoa,
                 &report,
                 &genoa_evidence(not_amds),
-                4_102_444_800
+                UnixTime::from_secs(4_102_444_800)
             ),
             Err(VerifyError::CertExpired { .. })
         ));

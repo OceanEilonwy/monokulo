@@ -5,6 +5,8 @@ repository.workspace = true
 edition = "2021"
 
 [dependencies]
+# The moment a block's timestamp is checked against.
+clock = { path = "../clock" }
 hex = "0.4.3"
 monero = "0.22.0"
 # RandomX, to check the proof of work of the blocks payments are counted in:
@@ -14,8 +16,9 @@ randomx-rs = "1.6.0"
 # `HasherSnapshot` is part of the engine's `/status`.
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.20"
-# `Hasher::hash` waits on Tokio's blocking pool rather than a worker.
-tokio = { version = "1.53.1", features = ["rt"] }
+# `Hasher::hash` waits on Tokio's blocking pool rather than a worker; its
+# timings use Tokio's `Instant`, which paused test time controls.
+tokio = { version = "1.53.1", features = ["rt", "time"] }
 tracing = "0.1.44"
 
 [features]

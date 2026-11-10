@@ -131,7 +131,7 @@ fn record(domain: &DomainView) -> Markup {
 }
 
 /// "Checked moments ago": a check asked for before the last one is
-/// [`domain_proof::MIN_CHECK_GAP_SECS`] old.
+/// [`domain_proof::MIN_CHECK_GAP`] old.
 fn wait_note(wait: Option<i64>) -> Markup {
     html! {
         @if let Some(wait) = wait {
@@ -331,7 +331,7 @@ fn banner(store: &StoreRef, restricted: bool, can_restrict: bool, oob: bool) -> 
 /// is, what the store's setting means right now, and the questions a shop
 /// owner asks, the first one open.
 pub fn guide(restricted: bool, can_restrict: bool) -> Markup {
-    let grace_days = domain_proof::GRACE_SECS / (24 * 60 * 60);
+    let grace_days = domain_proof::GRACE.as_secs() / (24 * 60 * 60);
     let questions = [
         (
             "How do I add my website?",

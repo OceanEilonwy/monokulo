@@ -32,6 +32,11 @@ use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::Router;
 use engine_daemon::rpc::RpcDaemonClient;
+
+/// The clock the client's link measurements are stamped with: pinned.
+fn pinned_clock() -> clock::Clock {
+    clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000))
+}
 use engine_daemon::{ChainHeader, KeyImageStatus, MoneroDaemonClient as _, ScanTx, TxLocation};
 use monero::consensus::serialize;
 use monero::cryptonote::hash::Hashable as _;
@@ -127,7 +132,7 @@ async fn replay() -> (RpcDaemonClient, String, tokio::task::JoinHandle<()>) {
 /// The client under test, with pool timings no test run can outlast: what
 /// is asked, and when, is decided by the test, never by the clock.
 fn client_of(host: &str, port: u16) -> RpcDaemonClient {
-    RpcDaemonClient::new(host, port, false, false)
+    RpcDaemonClient::new(host, port, false, false, pinned_clock())
         .unwrap()
         .with_pool_timing(
             std::time::Duration::from_secs(3600),
@@ -345,7 +350,7 @@ async fn scanner_node_client_reports_a_node_that_does_not_answer_as_it_expects()
     let router =
         Router::new().fallback(async || (StatusCode::BAD_GATEWAY, "<html>502 Bad Gateway</html>"));
     let (port, _server) = serve(router).await;
-    let client = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap();
+    let client = RpcDaemonClient::new("127.0.0.1", port, false, false, pinned_clock()).unwrap();
     let error = client.get_height().await.unwrap_err().to_string();
     assert!(error.contains("invalid JSON response"), "{error}");
     let error = client.get_block_hash(1).await.unwrap_err().to_string();

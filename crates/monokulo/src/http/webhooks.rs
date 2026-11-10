@@ -33,7 +33,12 @@ pub(super) async fn card(
 ) -> WebhooksCard {
     let (store_id, since) = (
         store.id.clone(),
-        clock.now() - views::webhooks::RECENT_DAYS * 86_400,
+        clock
+            .now()
+            .saturating_sub(std::time::Duration::from_secs(
+                views::webhooks::RECENT_DAYS.unsigned_abs() * 86_400,
+            ))
+            .as_secs(),
     );
     let read = state
         .db
@@ -165,7 +170,15 @@ pub async fn add(
         Ok(headers) => headers,
         Err(message) => return refused(message).await,
     };
-    match crate::webhooks::create(&state.db, &state.encryption_key, &id, &form.url, &headers).await
+    match crate::webhooks::create(
+        &state.db,
+        &state.encryption_key,
+        &id,
+        &form.url,
+        &headers,
+        state.clock.now(),
+    )
+    .await
     {
         Ok(created) => {
             let row = match load_owned_connection(&state.db, &user, &id).await {
@@ -291,7 +304,7 @@ pub async fn all(
     };
     let max_attempts = state.settings.webhooks.load().max_attempts;
     if fixi {
-        let clock = views::time::Clock::for_user(&user);
+        let clock = views::time::Clock::for_user(&user, state.clock.now());
         return views::webhooks::deliveries_results(
             &views::webhooks::Paths::new(id.as_str()),
             &clock,
@@ -357,7 +370,7 @@ pub async fn send_again(
     if let Err(status) = owned(&state, &user, &id, &webhook, 0).await {
         return status.into_response();
     }
-    let (store_id, target, now) = (id.clone(), webhook.clone(), crate::now_unix());
+    let (store_id, target, now) = (id.clone(), webhook.clone(), state.clock.now());
     match state
         .db
         .write(move |db| db.send_delivery_again(&store_id, &target, delivery, now))
@@ -386,7 +399,7 @@ pub async fn retry_failed(
     if let Err(status) = owned(&state, &user, &id, &webhook, 0).await {
         return status.into_response();
     }
-    let (store_id, target, now) = (id.clone(), webhook.clone(), crate::now_unix());
+    let (store_id, target, now) = (id.clone(), webhook.clone(), state.clock.now());
     match state
         .db
         .write(move |db| db.retry_failed_deliveries(&store_id, &target, now))
@@ -461,7 +474,7 @@ pub async fn test(
             }
         }
     };
-    let clock = views::time::Clock::for_user(&user);
+    let clock = views::time::Clock::for_user(&user, state.clock.now());
     let card = card(&state, &row, &clock, None, Some(note)).await;
     match card.webhooks.iter().find(|e| e.webhook.id == webhook) {
         Some(entry) => views::webhooks::webhook_block(&card, entry).into_response(),

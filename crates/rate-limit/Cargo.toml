@@ -6,6 +6,8 @@ edition = "2021"
 description = "A fixed-window per-key rate limiter, the one the engine and monokulo both use"
 
 [dependencies]
+# What time it is: callers pass the moment (`UnixTime`) in.
+clock = { path = "../clock" }
 parking_lot = "0.12.5"
 
 [lints]

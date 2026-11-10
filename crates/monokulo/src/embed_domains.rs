@@ -12,7 +12,7 @@
 //!
 //! Verified domains are re-checked daily. A domain whose record goes missing
 //! is *failing*: it keeps counting as verified for
-//! [`domain_proof::GRACE_SECS`], then *lapses* until a check finds the record
+//! [`domain_proof::GRACE`], then *lapses* until a check finds the record
 //! again. A check with no answer (an outage) says nothing about the record, so
 //! it never starts that clock. The store page warns about a failing or lapsed
 //! domain from its first check to find it missing, and that warning can't be
@@ -32,9 +32,7 @@
 
 use std::time::Duration;
 
-use domain_proof::{
-    is_onion, CheckOutcome, Proofs, FAILING_RECHECK_EVERY_SECS, RECHECK_EVERY_SECS, VERIFY,
-};
+use domain_proof::{is_onion, CheckOutcome, Proofs, FAILING_RECHECK_EVERY, RECHECK_EVERY, VERIFY};
 
 use crate::db::{Database, Db, StoreDomainRow};
 
@@ -71,7 +69,7 @@ pub struct EmbedPolicy {
 
 impl EmbedPolicy {
     /// The domains that currently count as verified.
-    pub fn counting_domains(&self, now: i64) -> impl Iterator<Item = &str> {
+    pub fn counting_domains(&self, now: clock::UnixTime) -> impl Iterator<Item = &str> {
         self.domains
             .iter()
             .filter(move |row| row.state(now).counts())
@@ -82,7 +80,7 @@ impl EmbedPolicy {
     /// this store's checkout: always when unrestricted, otherwise only an
     /// `https://` page (`http://` for an onion shop) on a counting domain
     /// or one of its subdomains.
-    pub fn allows_origin(&self, origin: &str, now: i64) -> bool {
+    pub fn allows_origin(&self, origin: &str, now: clock::UnixTime) -> bool {
         if !self.restricted {
             return true;
         }
@@ -102,7 +100,7 @@ impl EmbedPolicy {
     /// The `Content-Security-Policy` a restricted store's pages are sent
     /// with: only monokulo itself and the counting domains (with their
     /// subdomains) may frame them. `None` when unrestricted.
-    pub fn frame_ancestors(&self, now: i64) -> Option<String> {
+    pub fn frame_ancestors(&self, now: clock::UnixTime) -> Option<String> {
         if !self.restricted {
             return None;
         }
@@ -158,7 +156,7 @@ pub fn domain_of_site(site: &str) -> Option<String> {
 pub fn verified_site(
     site: Option<&crate::stores::Site>,
     domains: &[StoreDomainRow],
-    now: i64,
+    now: clock::UnixTime,
 ) -> Option<crate::stores::Site> {
     let site = site?;
     let host = domain_of_site(site.as_str())?;
@@ -181,7 +179,7 @@ pub fn would_leave_restricted_store_without_domain(
     db: &Db,
     connection_id: &crate::db::ConnectionId,
     domain_id: &str,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Result<bool, crate::db::DbError> {
     if !db.embed_restricted(connection_id)? {
         return Ok(false);
@@ -203,14 +201,14 @@ pub fn suggest_site_domain(
     db: &Db,
     connection_id: &crate::db::ConnectionId,
     site: Option<&crate::stores::Site>,
-    now: i64,
+    now: clock::UnixTime,
 ) {
     if let Some(domain) = site.and_then(|site| domain_of_site(site.as_str())) {
         suggest(db, connection_id, &domain, now);
     }
 }
 
-fn suggest(db: &Db, connection_id: &crate::db::ConnectionId, domain: &str, now: i64) {
+fn suggest(db: &Db, connection_id: &crate::db::ConnectionId, domain: &str, now: clock::UnixTime) {
     let result = db.list_store_domains(connection_id).and_then(|rows| {
         let place = rows
             .iter()
@@ -244,10 +242,10 @@ fn suggest(db: &Db, connection_id: &crate::db::ConnectionId, domain: &str, now: 
 /// (`store_connections.domains_imported`); every store made since has its
 /// site's domain added when it is made. Local to monokulo: the engine holds
 /// no embedding policy, so nothing is read from it. Returns whether it ran.
-pub fn import_existing_domains(db: &Db) -> Result<bool, crate::db::DbError> {
+pub fn import_existing_domains(db: &Db, now: clock::UnixTime) -> Result<bool, crate::db::DbError> {
     db.run_backfill_step(crate::db::STORE_DOMAINS_STEP, |db| {
         for store in db.list_store_connections_awaiting_domain_import()? {
-            suggest_site_domain(db, &store.id, store.site.as_ref(), crate::now_unix());
+            suggest_site_domain(db, &store.id, store.site.as_ref(), now);
             db.mark_store_domains_imported(&store.id)?;
         }
         Ok(())
@@ -259,7 +257,7 @@ pub async fn check_and_record(
     db: &Database,
     proofs: &Proofs,
     row: &StoreDomainRow,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Result<CheckOutcome, crate::db::DbError> {
     let outcome = domain_proof::check(proofs, &VERIFY, &row.domain, &row.token).await;
     let error = outcome.error_message(&VERIFY, &row.domain, &row.token);
@@ -279,14 +277,10 @@ pub async fn check_and_record(
 }
 
 /// Re-checks every verified domain that is due, one at a time.
-pub async fn recheck_due(db: &Database, proofs: &Proofs, now: i64) {
+pub async fn recheck_due(db: &Database, proofs: &Proofs, now: clock::UnixTime) {
     let due = match db
         .read(move |db| {
-            db.list_store_domains_due_for_recheck(
-                now,
-                RECHECK_EVERY_SECS,
-                FAILING_RECHECK_EVERY_SECS,
-            )
+            db.list_store_domains_due_for_recheck(now, RECHECK_EVERY, FAILING_RECHECK_EVERY)
         })
         .await
     {
@@ -303,8 +297,13 @@ pub async fn recheck_due(db: &Database, proofs: &Proofs, now: i64) {
     }
 }
 
-/// Runs [`recheck_due`] every few minutes for the life of the process.
-pub fn spawn_rechecks(db: Database, proofs: Proofs) -> tokio::task::JoinHandle<()> {
+/// Runs [`recheck_due`] every few minutes for the life of the process, at
+/// the time `clock` gives each pass.
+pub fn spawn_rechecks(
+    db: Database,
+    proofs: Proofs,
+    clock: clock::Clock,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(5 * 60));
         loop {
@@ -312,9 +311,9 @@ pub fn spawn_rechecks(db: Database, proofs: Proofs) -> tokio::task::JoinHandle<(
             // Each pass on a task of its own: a panic in one is logged and
             // the next pass still runs, rather than ending the re-checks
             // for the life of the process.
-            let (db, proofs) = (db.clone(), proofs.clone());
+            let (db, proofs, now) = (db.clone(), proofs.clone(), clock.now());
             let pass = tokio::spawn(async move {
-                recheck_due(&db, &proofs, crate::now_unix()).await;
+                recheck_due(&db, &proofs, now).await;
             });
             if let Err(e) = pass.await {
                 tracing::error!(error = %e, "a domain re-check pass failed");
@@ -326,6 +325,11 @@ pub fn spawn_rechecks(db: Database, proofs: Proofs) -> tokio::task::JoinHandle<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A span as the whole seconds a stored column holds.
+    fn secs(span: std::time::Duration) -> i64 {
+        i64::try_from(span.as_secs()).unwrap()
+    }
 
     #[test]
     fn a_domain_covers_itself_and_its_subdomains_only() {
@@ -356,33 +360,39 @@ mod tests {
                 domain(
                     "lapsed.example",
                     Some(1),
-                    Some(now - domain_proof::GRACE_SECS),
+                    Some(now - secs(domain_proof::GRACE)),
                 ),
             ],
         };
         assert!(
-            policy.allows_origin("https://anything.example", now),
+            policy.allows_origin("https://anything.example", clock::UnixTime::from_secs(now)),
             "unrestricted allows any site"
         );
-        assert_eq!(policy.frame_ancestors(now), None);
+        assert_eq!(
+            policy.frame_ancestors(clock::UnixTime::from_secs(now)),
+            None
+        );
 
         policy.restricted = true;
-        assert!(policy.allows_origin("https://shop.example", now));
-        assert!(policy.allows_origin("https://www.shop.example:8443", now));
+        assert!(policy.allows_origin("https://shop.example", clock::UnixTime::from_secs(now)));
+        assert!(policy.allows_origin(
+            "https://www.shop.example:8443",
+            clock::UnixTime::from_secs(now)
+        ));
         assert!(
-            policy.allows_origin("https://failing.example", now),
+            policy.allows_origin("https://failing.example", clock::UnixTime::from_secs(now)),
             "still inside its grace period"
         );
         assert!(
-            !policy.allows_origin("http://shop.example", now),
+            !policy.allows_origin("http://shop.example", clock::UnixTime::from_secs(now)),
             "only https pages count"
         );
-        assert!(!policy.allows_origin("https://evilshop.example", now));
-        assert!(!policy.allows_origin("https://pending.example", now));
-        assert!(!policy.allows_origin("https://lapsed.example", now));
-        assert!(!policy.allows_origin("null", now));
+        assert!(!policy.allows_origin("https://evilshop.example", clock::UnixTime::from_secs(now)));
+        assert!(!policy.allows_origin("https://pending.example", clock::UnixTime::from_secs(now)));
+        assert!(!policy.allows_origin("https://lapsed.example", clock::UnixTime::from_secs(now)));
+        assert!(!policy.allows_origin("null", clock::UnixTime::from_secs(now)));
         assert_eq!(
-            policy.frame_ancestors(now).unwrap(),
+            policy.frame_ancestors(clock::UnixTime::from_secs(now)).unwrap(),
             "frame-ancestors 'self' https://shop.example https://*.shop.example https://failing.example https://*.failing.example"
         );
     }
@@ -396,7 +406,8 @@ mod tests {
         let verified = [row(Some(1), None)];
         let site = |s: &str| crate::stores::Site::parse(s).ok();
         let named = |s: &str, domains: &[StoreDomainRow]| {
-            verified_site(site(s).as_ref(), domains, now).map(|site| site.to_string())
+            verified_site(site(s).as_ref(), domains, clock::UnixTime::from_secs(now))
+                .map(|site| site.to_string())
         };
         assert_eq!(
             named("shop.example", &verified).as_deref(),
@@ -407,10 +418,13 @@ mod tests {
             Some("www.shop.example:8443")
         );
         assert_eq!(named("evilshop.example", &verified), None);
-        assert_eq!(verified_site(None, &verified, now), None);
+        assert_eq!(
+            verified_site(None, &verified, clock::UnixTime::from_secs(now)),
+            None
+        );
         let pending = [row(None, None)];
         assert_eq!(named("shop.example", &pending), None);
-        let lapsed = [row(Some(1), Some(now - domain_proof::GRACE_SECS))];
+        let lapsed = [row(Some(1), Some(now - secs(domain_proof::GRACE)))];
         assert_eq!(named("shop.example", &lapsed), None);
     }
 
@@ -443,15 +457,20 @@ mod tests {
                 row(Some(1), None),
             ],
         };
-        assert!(policy.allows_origin(&format!("http://{ONION}"), 10));
-        assert!(policy.allows_origin(&format!("http://shop.{ONION}"), 10));
-        assert!(!policy.allows_origin(&format!("https://{ONION}"), 10));
-        assert!(policy.allows_origin("https://shop.example", 10));
+        assert!(policy.allows_origin(&format!("http://{ONION}"), clock::UnixTime::from_secs(10)));
+        assert!(policy.allows_origin(
+            &format!("http://shop.{ONION}"),
+            clock::UnixTime::from_secs(10)
+        ));
+        assert!(!policy.allows_origin(&format!("https://{ONION}"), clock::UnixTime::from_secs(10)));
+        assert!(policy.allows_origin("https://shop.example", clock::UnixTime::from_secs(10)));
         assert!(
-            !policy.allows_origin("http://shop.example", 10),
+            !policy.allows_origin("http://shop.example", clock::UnixTime::from_secs(10)),
             "the web needs https"
         );
-        let ancestors = policy.frame_ancestors(10).unwrap();
+        let ancestors = policy
+            .frame_ancestors(clock::UnixTime::from_secs(10))
+            .unwrap();
         assert!(
             ancestors.contains(&format!(" http://{ONION} http://*.{ONION}")),
             "{ancestors}"
@@ -474,14 +493,29 @@ mod tests {
         let site = |s: &str| crate::stores::Site::parse(s).ok();
         let rows = || db.list_store_domains(&store).unwrap();
 
-        suggest_site_domain(&db, &store, site("www.a.example").as_ref(), 1);
+        suggest_site_domain(
+            &db,
+            &store,
+            site("www.a.example").as_ref(),
+            clock::UnixTime::from_secs(1),
+        );
         assert_eq!(rows().len(), 1);
         assert_eq!(rows()[0].domain, "www.a.example");
 
-        suggest_site_domain(&db, &store, site("shop.www.a.example").as_ref(), 2);
+        suggest_site_domain(
+            &db,
+            &store,
+            site("shop.www.a.example").as_ref(),
+            clock::UnixTime::from_secs(2),
+        );
         assert_eq!(rows().len(), 1, "already covered");
 
-        suggest_site_domain(&db, &store, site("a.example").as_ref(), 3);
+        suggest_site_domain(
+            &db,
+            &store,
+            site("a.example").as_ref(),
+            clock::UnixTime::from_secs(3),
+        );
         let all = rows();
         let new = all.iter().find(|row| row.domain == "a.example").unwrap();
         let old = all
