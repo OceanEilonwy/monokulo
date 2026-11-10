@@ -80,7 +80,7 @@ pub fn host_id() -> String {
 }
 
 /// How often a process samples itself, and how long it keeps samples.
-pub const SAMPLE_EVERY_SECS: i64 = 10;
+pub const SAMPLE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 const KEEP_SAMPLES: usize = 360;
 
 /// One sample of a process: its share of the whole machine's CPU over the
@@ -150,7 +150,7 @@ impl ResourceReport {
     }
 }
 
-/// Samples its own process every [`SAMPLE_EVERY_SECS`], keeping an hour.
+/// Samples its own process every [`SAMPLE_EVERY`], keeping an hour.
 pub struct Sampler {
     state: parking_lot::Mutex<SamplerState>,
 }
@@ -161,7 +161,7 @@ struct SamplerState {
     samples: std::collections::VecDeque<ResourceSample>,
     /// The name prefix of a hosted service's threads, and the CPU time
     /// they had used at the last sample, with when that was.
-    hosted: Option<(&'static str, Option<(u64, std::time::Instant)>)>,
+    hosted: Option<(&'static str, Option<(u64, tokio::time::Instant)>)>,
 }
 
 impl Default for Sampler {
@@ -186,13 +186,9 @@ impl Sampler {
         self.state.lock().hosted = Some((prefix, None));
     }
 
-    /// Takes a sample now. The first one's CPU share is 0: CPU use is
+    /// Takes a sample at `now`. The first one's CPU share is 0: CPU use is
     /// measured between two samples.
-    pub fn sample(&self) {
-        self.sample_at(crate::time::now_unix());
-    }
-
-    fn sample_at(&self, now_unix: i64) {
+    pub fn sample(&self, now: clock::UnixTime) {
         let mut state = self.state.lock();
         let Some(pid) = state.pid else { return };
         state.system.refresh_processes_specifics(
@@ -213,7 +209,14 @@ impl Sampler {
             .as_mut()
             .and_then(|(prefix, last)| hosted_share(prefix, last, cores));
         let sample = ResourceSample {
-            unix: now_unix - now_unix.rem_euclid(SAMPLE_EVERY_SECS),
+            // The start of the slot `now` is in, worked out on a duration
+            // since the epoch so no raw second count is subtracted.
+            unix: clock::UnixTime::EPOCH
+                .saturating_add(std::time::Duration::from_secs(
+                    now.since(clock::UnixTime::EPOCH).as_secs() / SAMPLE_EVERY.as_secs()
+                        * SAMPLE_EVERY.as_secs(),
+                ))
+                .as_secs(),
             cpu_percent,
             memory_bytes,
             hosted_cpu_percent,
@@ -255,11 +258,11 @@ impl SamplerState {
 /// `None` at the first sample, and where `/proc` isn't there to read.
 fn hosted_share(
     prefix: &str,
-    last: &mut Option<(u64, std::time::Instant)>,
+    last: &mut Option<(u64, tokio::time::Instant)>,
     cores: f32,
 ) -> Option<f32> {
     let ticks = threads_cpu_ticks(prefix)?;
-    let now = std::time::Instant::now();
+    let now = tokio::time::Instant::now();
     let previous = last.replace((ticks, now));
     let (before, then) = previous?;
     let seconds = now.duration_since(then).as_secs_f32();
@@ -307,17 +310,18 @@ pub fn sampler() -> &'static Sampler {
     SAMPLER.get_or_init(Sampler::default)
 }
 
-/// Starts sampling this process every [`SAMPLE_EVERY_SECS`] on the current
+/// Starts sampling this process every [`SAMPLE_EVERY`] on the current
 /// Tokio runtime, for as long as it runs.
 pub fn start_sampling() -> tokio::task::JoinHandle<()> {
     tokio::spawn(async {
-        let mut every =
-            tokio::time::interval(std::time::Duration::from_secs(SAMPLE_EVERY_SECS as u64));
+        let mut every = tokio::time::interval(SAMPLE_EVERY);
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             every.tick().await;
             // `sysinfo` reads /proc: off the runtime's worker threads.
-            let _ = tokio::task::spawn_blocking(|| sampler().sample()).await;
+            // One sampler per process, so one clock: the system's.
+            let now = clock::Clock::System.now();
+            let _ = tokio::task::spawn_blocking(move || sampler().sample(now)).await;
         }
     })
 }
@@ -325,6 +329,10 @@ pub fn start_sampling() -> tokio::task::JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(secs: i64) -> clock::UnixTime {
+        clock::UnixTime::from_secs(secs)
+    }
 
     #[test]
     fn the_limit_is_the_smaller_of_the_machine_and_its_container() {
@@ -337,8 +345,8 @@ mod tests {
     #[test]
     fn a_process_samples_itself_into_10_second_slots_and_keeps_an_hour() {
         let sampler = Sampler::default();
-        sampler.sample_at(1_000_003);
-        sampler.sample_at(1_000_007);
+        sampler.sample(at(1_000_003));
+        sampler.sample(at(1_000_007));
         let report = sampler.report();
         assert_eq!(report.samples.len(), 1, "one per slot");
         assert_eq!(report.samples[0].unix, 1_000_000);
@@ -347,7 +355,7 @@ mod tests {
         assert_eq!(report.host_id, host_id());
 
         for slot in 1..=400 {
-            sampler.sample_at(1_000_000 + slot * 10);
+            sampler.sample(at(1_000_000 + slot * 10));
         }
         let samples = sampler.report().samples;
         assert_eq!(samples.len(), KEEP_SAMPLES);
@@ -363,7 +371,7 @@ mod tests {
     fn a_hosted_services_threads_are_measured_apart() {
         let sampler = Sampler::default();
         sampler.host_threads("hosted-test");
-        sampler.sample_at(2_000_000);
+        sampler.sample(at(2_000_000));
         let before = threads_cpu_ticks("hosted-test").unwrap();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let busy = {
@@ -380,19 +388,19 @@ mod tests {
                 .unwrap()
         };
         // Wait for one clock tick of the hosted thread's CPU, all a share needs.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             let now = threads_cpu_ticks("hosted-test").unwrap();
             if now > before {
                 break;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                tokio::time::Instant::now() < deadline,
                 "the busy thread used no CPU in 10 s: {before} ticks then {now}"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        sampler.sample_at(2_000_010);
+        sampler.sample(at(2_000_010));
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         busy.join().unwrap();
 

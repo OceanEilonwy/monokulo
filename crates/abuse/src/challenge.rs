@@ -28,21 +28,23 @@
 //! The key is random per process, so a restart simply invalidates
 //! outstanding challenges (clients get a new one).
 
+use clock::UnixTime;
 use hmac::{Hmac, KeyInit, Mac};
 use rand::Rng;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 
-use super::limiter::{Pass, PassGrant, PASS_SECS};
+use super::limiter::{Pass, PassGrant, PASS_FOR};
 use super::ClientIdentity;
 
 type HmacSha256 = Hmac<Sha256>;
 
 /// How long a proof-of-work challenge may be solved and redeemed in.
-pub const CHALLENGE_TTL_SECS: i64 = 5 * 60;
+pub const CHALLENGE_TTL: Duration = Duration::from_secs(5 * 60);
 /// How long a no-JavaScript visitor waits.
-pub const WAIT_SECS: i64 = 10;
+pub const WAIT: Duration = Duration::from_secs(10);
 /// How long after `not_before` a wait token still redeems.
-pub const WAIT_TTL_SECS: i64 = 5 * 60;
+pub const WAIT_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RedeemError {
@@ -110,8 +112,13 @@ impl Challenges {
     }
 
     /// A proof-of-work challenge for `client`.
-    pub fn issue(&self, client: &ClientIdentity, difficulty: u32, now: i64) -> IssuedChallenge {
-        let expires = now + CHALLENGE_TTL_SECS;
+    pub fn issue(
+        &self,
+        client: &ClientIdentity,
+        difficulty: u32,
+        now: UnixTime,
+    ) -> IssuedChallenge {
+        let expires = now.saturating_add(CHALLENGE_TTL);
         let challenge = self.sign(&format!(
             "pow|{difficulty}|{expires}|{client}|{}",
             Self::random()
@@ -119,16 +126,16 @@ impl Challenges {
         IssuedChallenge {
             challenge,
             difficulty,
-            expires_in: CHALLENGE_TTL_SECS,
+            expires_in: i64::try_from(CHALLENGE_TTL.as_secs()).unwrap_or(i64::MAX),
         }
     }
 
-    /// A wait token for `client`, redeemable from `now + WAIT_SECS`.
-    pub fn issue_wait(&self, client: &ClientIdentity, now: i64) -> String {
-        let not_before = now + WAIT_SECS;
+    /// A wait token for `client`, redeemable from `now + WAIT`.
+    pub fn issue_wait(&self, client: &ClientIdentity, now: UnixTime) -> String {
+        let not_before = now.saturating_add(WAIT);
         self.sign(&format!(
             "wait|{not_before}|{}|{client}|{}",
-            not_before + WAIT_TTL_SECS,
+            not_before.saturating_add(WAIT_TTL),
             Self::random()
         ))
     }
@@ -156,7 +163,7 @@ impl Challenges {
         &self,
         proof: &str,
         client: &ClientIdentity,
-        now: i64,
+        now: UnixTime,
     ) -> Result<PassGrant, RedeemError> {
         let (challenge, nonce) = proof
             .trim()
@@ -170,7 +177,7 @@ impl Challenges {
             return Err(RedeemError::Malformed);
         }
         let difficulty: u32 = fields[1].parse().map_err(|_| RedeemError::Malformed)?;
-        let expires: i64 = fields[2].parse().map_err(|_| RedeemError::Malformed)?;
+        let expires = parse_time(&fields[2])?;
         if now > expires {
             return Err(RedeemError::Expired);
         }
@@ -183,7 +190,9 @@ impl Challenges {
         }
         Ok(PassGrant {
             pass: Pass::Work,
-            until: expires - CHALLENGE_TTL_SECS + PASS_SECS,
+            until: expires
+                .saturating_sub(CHALLENGE_TTL)
+                .saturating_add(PASS_FOR),
         })
     }
 
@@ -193,14 +202,14 @@ impl Challenges {
         &self,
         token: &str,
         client: &ClientIdentity,
-        now: i64,
+        now: UnixTime,
     ) -> Result<PassGrant, RedeemError> {
         let fields = self.open(token.trim())?;
         if fields[0] != "wait" {
             return Err(RedeemError::Malformed);
         }
-        let not_before: i64 = fields[1].parse().map_err(|_| RedeemError::Malformed)?;
-        let expires: i64 = fields[2].parse().map_err(|_| RedeemError::Malformed)?;
+        let not_before = parse_time(&fields[1])?;
+        let expires = parse_time(&fields[2])?;
         if now < not_before {
             return Err(RedeemError::TooEarly);
         }
@@ -212,9 +221,17 @@ impl Challenges {
         }
         Ok(PassGrant {
             pass: Pass::Wait,
-            until: not_before + PASS_SECS,
+            until: not_before.saturating_add(PASS_FOR),
         })
     }
+}
+
+/// A moment a token carries, as the seconds it was signed with.
+fn parse_time(field: &str) -> Result<UnixTime, RedeemError> {
+    field
+        .parse()
+        .map(UnixTime::from_secs)
+        .map_err(|_| RedeemError::Malformed)
 }
 
 pub fn leading_zero_bits(hash: &[u8]) -> u32 {
@@ -247,6 +264,18 @@ pub fn solve(challenge: &str, difficulty: u32) -> String {
 mod tests {
     use super::*;
 
+    fn at(secs: i64) -> UnixTime {
+        UnixTime::from_secs(secs)
+    }
+
+    fn later(now: UnixTime, by: Duration) -> UnixTime {
+        now.saturating_add(by)
+    }
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
     fn client(n: u32) -> ClientIdentity {
         ClientIdentity::Circuit(n)
     }
@@ -257,24 +286,30 @@ mod tests {
     #[test]
     fn a_solved_challenge_earns_one_fixed_pass_for_its_own_client_only() {
         let challenges = Challenges::with_key([1; 32]);
-        let issued = challenges.issue(&client(1), 8, 1000);
+        let issued = challenges.issue(&client(1), 8, at(1000));
         let proof = format!("{}.{}", issued.challenge, solve(&issued.challenge, 8));
         assert_eq!(
-            challenges.redeem_proof(&proof, &client(2), 1001),
+            challenges.redeem_proof(&proof, &client(2), at(1001)),
             Err(RedeemError::WrongClient)
         );
         let pass = PassGrant {
             pass: Pass::Work,
-            until: 1000 + PASS_SECS,
+            until: later(at(1000), PASS_FOR),
         };
-        assert_eq!(challenges.redeem_proof(&proof, &client(1), 1001), Ok(pass));
-        assert_eq!(challenges.redeem_proof(&proof, &client(1), 1200), Ok(pass));
+        assert_eq!(
+            challenges.redeem_proof(&proof, &client(1), at(1001)),
+            Ok(pass)
+        );
+        assert_eq!(
+            challenges.redeem_proof(&proof, &client(1), at(1200)),
+            Ok(pass)
+        );
     }
 
     #[test]
     fn unsolved_expired_forged_and_malformed_proofs_are_refused() {
         let challenges = Challenges::with_key([1; 32]);
-        let issued = challenges.issue(&client(1), 12, 1000);
+        let issued = challenges.issue(&client(1), 12, at(1000));
         let nonce = solve(&issued.challenge, 12);
         // A nonce that doesn't meet the difficulty.
         let wrong = (0u64..)
@@ -286,25 +321,29 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            challenges.redeem_proof(&format!("{}.{wrong}", issued.challenge), &client(1), 1001),
+            challenges.redeem_proof(
+                &format!("{}.{wrong}", issued.challenge),
+                &client(1),
+                at(1001)
+            ),
             Err(RedeemError::NotSolved)
         );
         assert_eq!(
             challenges.redeem_proof(
                 &format!("{}.{nonce}", issued.challenge),
                 &client(1),
-                1000 + CHALLENGE_TTL_SECS + 1
+                later(at(1000), CHALLENGE_TTL + secs(1))
             ),
             Err(RedeemError::Expired)
         );
         // Signed with another process's key.
-        let other = Challenges::with_key([2; 32]).issue(&client(1), 1, 1000);
+        let other = Challenges::with_key([2; 32]).issue(&client(1), 1, at(1000));
         let other_nonce = solve(&other.challenge, 1);
         assert_eq!(
             challenges.redeem_proof(
                 &format!("{}.{other_nonce}", other.challenge),
                 &client(1),
-                1001
+                at(1001)
             ),
             Err(RedeemError::BadSignature)
         );
@@ -315,7 +354,11 @@ mod tests {
             .replacen("|12|", "|1|", 1);
         let forged = format!("{}.{mac}", hex::encode(tampered));
         assert_eq!(
-            challenges.redeem_proof(&format!("{forged}.{}", solve(&forged, 1)), &client(1), 1001),
+            challenges.redeem_proof(
+                &format!("{forged}.{}", solve(&forged, 1)),
+                &client(1),
+                at(1001)
+            ),
             Err(RedeemError::BadSignature)
         );
         for bad in [
@@ -325,7 +368,7 @@ mod tests {
             &format!("{}.abc", issued.challenge),
         ] {
             assert_eq!(
-                challenges.redeem_proof(bad, &client(1), 1001),
+                challenges.redeem_proof(bad, &client(1), at(1001)),
                 Err(RedeemError::Malformed),
                 "{bad:?}"
             );
@@ -335,40 +378,44 @@ mod tests {
     #[test]
     fn a_wait_token_only_redeems_after_its_wait_for_one_fixed_page_pass() {
         let challenges = Challenges::with_key([1; 32]);
-        let token = challenges.issue_wait(&client(1), 1000);
+        let token = challenges.issue_wait(&client(1), at(1000));
         assert_eq!(
-            challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS - 1),
+            challenges.redeem_wait(&token, &client(1), later(at(1000), WAIT - secs(1))),
             Err(RedeemError::TooEarly)
         );
         assert_eq!(
-            challenges.redeem_wait(&token, &client(2), 1000 + WAIT_SECS),
+            challenges.redeem_wait(&token, &client(2), later(at(1000), WAIT)),
             Err(RedeemError::WrongClient)
         );
         let pass = PassGrant {
             pass: Pass::Wait,
-            until: 1000 + WAIT_SECS + PASS_SECS,
+            until: later(later(at(1000), WAIT), PASS_FOR),
         };
         assert_eq!(
-            challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS),
+            challenges.redeem_wait(&token, &client(1), later(at(1000), WAIT)),
             Ok(pass)
         );
         assert_eq!(
-            challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS + 60),
+            challenges.redeem_wait(&token, &client(1), later(at(1000), WAIT + secs(60))),
             Ok(pass)
         );
-        let late = challenges.issue_wait(&client(1), 1000);
+        let late = challenges.issue_wait(&client(1), at(1000));
         assert_eq!(
-            challenges.redeem_wait(&late, &client(1), 1000 + WAIT_SECS + WAIT_TTL_SECS + 1),
+            challenges.redeem_wait(
+                &late,
+                &client(1),
+                later(at(1000), WAIT + WAIT_TTL + secs(1))
+            ),
             Err(RedeemError::Expired)
         );
         // A proof-of-work challenge is not a wait token, and vice versa.
-        let pow = challenges.issue(&client(1), 1, 1000);
+        let pow = challenges.issue(&client(1), 1, at(1000));
         assert_eq!(
-            challenges.redeem_wait(&pow.challenge, &client(1), 1100),
+            challenges.redeem_wait(&pow.challenge, &client(1), at(1100)),
             Err(RedeemError::Malformed)
         );
         assert_eq!(
-            challenges.redeem_proof(&format!("{late}.1"), &client(1), 1011),
+            challenges.redeem_proof(&format!("{late}.1"), &client(1), at(1011)),
             Err(RedeemError::Malformed)
         );
     }

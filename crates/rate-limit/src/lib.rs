@@ -9,15 +9,17 @@
 //! the actual goal. A smarter algorithm is a reasonable future improvement,
 //! not a v1 requirement.
 
+use clock::UnixTime;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::IpAddr;
+use std::time::Duration;
 
 /// Window length. Also the age past which an entry carries no information: a bucket
 /// whose window started more than this long ago resets to zero on its next lookup,
 /// so keeping it is indistinguishable from having never seen that address.
-const WINDOW_SECONDS: i64 = 60;
+const WINDOW: Duration = Duration::from_secs(60);
 
 /// How many entries may accumulate before a `check` sweeps expired ones out. Sized
 /// so a sweep is rare under any plausible legitimate load (an instance genuinely
@@ -50,19 +52,19 @@ pub struct RateLimiter<K = IpAddr> {
 }
 
 struct LimiterState<K> {
-    buckets: HashMap<K, (u32, i64)>, // (count, window_start_unix)
+    buckets: HashMap<K, (u32, UnixTime)>, // (count, window start)
     /// Earliest time a sweep may run again. Without this, a sustained flood that
     /// holds the map above `PRUNE_THRESHOLD` with entries too fresh to remove would
     /// make every single request pay an O(n) scan - converting a memory problem into
     /// a CPU one. One sweep per second bounds that cost regardless of request rate.
-    next_prune_at: i64,
+    next_prune_at: UnixTime,
 }
 
 impl<K> Default for LimiterState<K> {
     fn default() -> Self {
         LimiterState {
             buckets: HashMap::new(),
-            next_prune_at: 0,
+            next_prune_at: UnixTime::EPOCH,
         }
     }
 }
@@ -90,13 +92,13 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
 
     /// Returns `true` if this request is allowed, having consumed one unit of the
     /// caller's budget for the current window; `false` if the window is exhausted.
-    pub fn check(&self, key: K, now: i64) -> bool {
+    pub fn check(&self, key: K, now: UnixTime) -> bool {
         self.check_with_retry(key, now).is_ok()
     }
 
     /// As [`Self::check`], but a refusal says how many seconds are left in
     /// the caller's window: at least 1, so waiting that long always helps.
-    pub fn check_with_retry(&self, key: K, now: i64) -> Result<(), u64> {
+    pub fn check_with_retry(&self, key: K, now: UnixTime) -> Result<(), u64> {
         let mut state = self.state.lock();
         // Opportunistic rather than on a timer: this map is only ever touched from
         // inside this lock, so a sweep here needs no background task and no second
@@ -105,9 +107,9 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
         if state.buckets.len() >= PRUNE_THRESHOLD && now >= state.next_prune_at {
             state
                 .buckets
-                .retain(|_, (_, window_start)| now.saturating_sub(*window_start) < WINDOW_SECONDS);
+                .retain(|_, (_, window_start)| now.since(*window_start) < WINDOW);
             state.buckets.shrink_to_fit();
-            state.next_prune_at = now.saturating_add(1);
+            state.next_prune_at = now.saturating_add(Duration::from_secs(1));
         }
         // Checked unconditionally, *after* giving the sweep its chance: the sweep is
         // rate-limited to once a second, so between sweeps there is nothing else
@@ -119,7 +121,7 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
         }
         let entry = state.buckets.entry(key).or_insert((0, now));
         // A window that has passed, or a clock that went backwards.
-        if now.saturating_sub(entry.1) >= WINDOW_SECONDS || now < entry.1 {
+        if now.since(entry.1) >= WINDOW || now < entry.1 {
             *entry = (0, now);
         }
         if entry.0
@@ -127,8 +129,7 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
                 .limit_per_minute
                 .load(std::sync::atomic::Ordering::Relaxed)
         {
-            let left = WINDOW_SECONDS - now.saturating_sub(entry.1);
-            Err(u64::try_from(left.max(1)).unwrap_or(1))
+            Err(WINDOW.saturating_sub(now.since(entry.1)).as_secs().max(1))
         } else {
             entry.0 += 1;
             Ok(())
@@ -139,10 +140,10 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
     /// through was refused by something checked after it: one request
     /// held to two limits is counted by both only when both let it
     /// through. Nothing happens once the window has moved on.
-    pub fn refund(&self, key: &K, now: i64) {
+    pub fn refund(&self, key: &K, now: UnixTime) {
         let mut state = self.state.lock();
         if let Some((count, window_start)) = state.buckets.get_mut(key) {
-            if now >= *window_start && now.saturating_sub(*window_start) < WINDOW_SECONDS {
+            if now >= *window_start && now.since(*window_start) < WINDOW {
                 *count = count.saturating_sub(1);
             }
         }
@@ -158,15 +159,19 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
 mod tests {
     use super::*;
 
+    fn at(secs: i64) -> UnixTime {
+        UnixTime::from_secs(secs)
+    }
+
     #[test]
     fn allows_up_to_the_limit_then_rejects_within_the_same_window() {
         let limiter = RateLimiter::new(3);
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
-        assert!(limiter.check(ip, 1000));
-        assert!(limiter.check(ip, 1000));
-        assert!(limiter.check(ip, 1000));
+        assert!(limiter.check(ip, at(1000)));
+        assert!(limiter.check(ip, at(1000)));
+        assert!(limiter.check(ip, at(1000)));
         assert!(
-            !limiter.check(ip, 1000),
+            !limiter.check(ip, at(1000)),
             "fourth request in the same window must be rejected"
         );
     }
@@ -177,21 +182,27 @@ mod tests {
     fn a_refusal_says_how_long_is_left_in_the_window() {
         let limiter: RateLimiter<String> = RateLimiter::new(2);
         let (bakery, florist) = ("bakery".to_string(), "florist".to_string());
-        assert_eq!(limiter.check_with_retry(bakery.clone(), 1000), Ok(()));
-        assert_eq!(limiter.check_with_retry(bakery.clone(), 1015), Ok(()));
-        assert_eq!(limiter.check_with_retry(bakery.clone(), 1015), Err(45));
-        assert_eq!(limiter.check_with_retry(bakery.clone(), 1059), Err(1));
-        assert_eq!(limiter.check_with_retry(florist, 1059), Ok(()));
-        assert_eq!(limiter.check_with_retry(bakery, 1060), Ok(()));
+        assert_eq!(limiter.check_with_retry(bakery.clone(), at(1000)), Ok(()));
+        assert_eq!(limiter.check_with_retry(bakery.clone(), at(1015)), Ok(()));
+        assert_eq!(limiter.check_with_retry(bakery.clone(), at(1015)), Err(45));
+        assert_eq!(limiter.check_with_retry(bakery.clone(), at(1059)), Err(1));
+        assert_eq!(limiter.check_with_retry(florist, at(1059)), Ok(()));
+        assert_eq!(limiter.check_with_retry(bakery, at(1060)), Ok(()));
     }
 
     #[test]
     fn resets_after_the_window_elapses() {
         let limiter = RateLimiter::new(1);
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
-        assert!(limiter.check(ip, 1000));
-        assert!(!limiter.check(ip, 1030), "still within the same 60s window");
-        assert!(limiter.check(ip, 1061), "a new window must reset the count");
+        assert!(limiter.check(ip, at(1000)));
+        assert!(
+            !limiter.check(ip, at(1030)),
+            "still within the same 60s window"
+        );
+        assert!(
+            limiter.check(ip, at(1061)),
+            "a new window must reset the count"
+        );
     }
 
     /// Distinct IPv4 addresses, in a range wide enough to exceed any threshold here.
@@ -207,7 +218,7 @@ mod tests {
         // (the tests above) never would have caught it.
         let limiter = RateLimiter::new(5);
         for n in 0..PRUNE_THRESHOLD {
-            assert!(limiter.check(nth_address(n), 1000));
+            assert!(limiter.check(nth_address(n), at(1000)));
         }
         assert_eq!(
             limiter.tracked_addresses(),
@@ -216,7 +227,10 @@ mod tests {
         );
 
         // One more request, a window later: every existing entry is now stale.
-        assert!(limiter.check(nth_address(PRUNE_THRESHOLD), 1000 + WINDOW_SECONDS));
+        assert!(limiter.check(
+            nth_address(PRUNE_THRESHOLD),
+            at(1000).saturating_add(WINDOW)
+        ));
         assert_eq!(
             limiter.tracked_addresses(),
             1,
@@ -231,23 +245,23 @@ mod tests {
         // client extra budget nor deny it any.
         let limiter = RateLimiter::new(1);
         let victim = nth_address(7);
-        assert!(limiter.check(victim, 1000));
+        assert!(limiter.check(victim, at(1000)));
         assert!(
-            !limiter.check(victim, 1000),
+            !limiter.check(victim, at(1000)),
             "budget exhausted within the window"
         );
 
         for n in 100_000..(100_000 + PRUNE_THRESHOLD) {
-            limiter.check(nth_address(n), 1000);
+            limiter.check(nth_address(n), at(1000));
         }
         // A window later, the sweep discards `victim` along with everyone else.
-        assert!(limiter.check(nth_address(1), 1000 + WINDOW_SECONDS));
+        assert!(limiter.check(nth_address(1), at(1000).saturating_add(WINDOW)));
         assert!(
-            limiter.check(victim, 1000 + WINDOW_SECONDS),
+            limiter.check(victim, at(1000).saturating_add(WINDOW)),
             "a new window must grant a fresh budget"
         );
         assert!(
-            !limiter.check(victim, 1000 + WINDOW_SECONDS),
+            !limiter.check(victim, at(1000).saturating_add(WINDOW)),
             "...and only one unit of it"
         );
     }
@@ -261,7 +275,7 @@ mod tests {
         // only thing standing between this and unbounded growth.
         let limiter = RateLimiter::new(5);
         for n in 0..(MAX_TRACKED_ADDRESSES * 3) {
-            limiter.check(nth_address(n), 1000);
+            limiter.check(nth_address(n), at(1000));
             assert!(
                 limiter.tracked_addresses() <= MAX_TRACKED_ADDRESSES,
                 "tracked {} addresses after {n}, above the {MAX_TRACKED_ADDRESSES} ceiling",
@@ -270,12 +284,12 @@ mod tests {
         }
         // The limiter is still functional afterwards, not wedged.
         let ip = nth_address(999_999);
-        assert!(limiter.check(ip, 2000));
+        assert!(limiter.check(ip, at(2000)));
         for _ in 0..4 {
-            assert!(limiter.check(ip, 2000));
+            assert!(limiter.check(ip, at(2000)));
         }
         assert!(
-            !limiter.check(ip, 2000),
+            !limiter.check(ip, at(2000)),
             "the limit must still be enforced after a wholesale drop"
         );
     }
@@ -285,10 +299,10 @@ mod tests {
         let limiter = RateLimiter::new(1);
         let a: IpAddr = "1.2.3.4".parse().unwrap();
         let b: IpAddr = "5.6.7.8".parse().unwrap();
-        assert!(limiter.check(a, 1000));
-        assert!(!limiter.check(a, 1000));
+        assert!(limiter.check(a, at(1000)));
+        assert!(!limiter.check(a, at(1000)));
         assert!(
-            limiter.check(b, 1000),
+            limiter.check(b, at(1000)),
             "a different IP must not be affected by another IP's usage"
         );
     }
@@ -297,20 +311,20 @@ mod tests {
     fn a_refund_gives_back_one_unit_of_the_current_window_only() {
         let limiter: RateLimiter<String> = RateLimiter::new(2);
         let key = "sender".to_string();
-        assert!(limiter.check(key.clone(), 100));
-        assert!(limiter.check(key.clone(), 100));
-        assert!(!limiter.check(key.clone(), 100));
-        limiter.refund(&key, 110);
-        assert!(limiter.check(key.clone(), 110), "one unit given back");
-        assert!(!limiter.check(key.clone(), 110));
+        assert!(limiter.check(key.clone(), at(100)));
+        assert!(limiter.check(key.clone(), at(100)));
+        assert!(!limiter.check(key.clone(), at(100)));
+        limiter.refund(&key, at(110));
+        assert!(limiter.check(key.clone(), at(110)), "one unit given back");
+        assert!(!limiter.check(key.clone(), at(110)));
         // A refund for a window that has passed takes nothing from the next.
-        assert!(limiter.check(key.clone(), 160));
-        limiter.refund(&key, 230);
-        assert!(limiter.check(key.clone(), 230));
-        assert!(limiter.check(key.clone(), 230));
-        assert!(!limiter.check(key.clone(), 230));
+        assert!(limiter.check(key.clone(), at(160)));
+        limiter.refund(&key, at(230));
+        assert!(limiter.check(key.clone(), at(230)));
+        assert!(limiter.check(key.clone(), at(230)));
+        assert!(!limiter.check(key.clone(), at(230)));
         // Nor does one for a key never seen.
-        limiter.refund(&"other".to_string(), 230);
+        limiter.refund(&"other".to_string(), at(230));
         assert_eq!(limiter.tracked_addresses(), 1);
     }
 
@@ -318,16 +332,16 @@ mod tests {
     fn a_changed_limit_applies_to_the_next_request() {
         let limiter: RateLimiter<String> = RateLimiter::new(2);
         let key = "token".to_string();
-        assert!(limiter.check(key.clone(), 100));
-        assert!(limiter.check(key.clone(), 100));
-        assert!(!limiter.check(key.clone(), 100), "limit of 2 reached");
+        assert!(limiter.check(key.clone(), at(100)));
+        assert!(limiter.check(key.clone(), at(100)));
+        assert!(!limiter.check(key.clone(), at(100)), "limit of 2 reached");
         limiter.set_limit(5);
         assert!(
-            limiter.check(key.clone(), 100),
+            limiter.check(key.clone(), at(100)),
             "raised to 5 within the same window"
         );
-        assert!(limiter.check(key.clone(), 100));
-        assert!(limiter.check(key.clone(), 100));
-        assert!(!limiter.check(key, 100));
+        assert!(limiter.check(key.clone(), at(100)));
+        assert!(limiter.check(key.clone(), at(100)));
+        assert!(!limiter.check(key, at(100)));
     }
 }

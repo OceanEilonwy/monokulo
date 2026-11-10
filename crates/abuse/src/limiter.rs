@@ -9,7 +9,7 @@
 //! client could otherwise send twice the limit across a boundary) without
 //! storing a timestamp per request.
 //!
-//! A solved challenge gives the client a pass: for [`PASS_SECS`] it is
+//! A solved challenge gives the client a pass: for [`PASS_FOR`] it is
 //! treated as under the soft limit (the hard limit still applies). Passes are
 //! held here, in memory, keyed by the client - no cookie is set. A pass has
 //! a kind ([`Pass`]): a solved proof of work covers every request, the
@@ -21,17 +21,19 @@
 //! addresses can't grow the table without bound (forgetting a client only
 //! ever gives it a fresh budget, never a stricter one).
 
+use clock::UnixTime;
 use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
+use std::time::Duration;
 
 /// How long a solved challenge lets a client through without another one.
-pub const PASS_SECS: i64 = 10 * 60;
+pub const PASS_FOR: Duration = Duration::from_secs(10 * 60);
 
 /// The most clients tracked at once (see the module doc comment).
 pub const MAX_TRACKED_CLIENTS: usize = 100_000;
 
-const WINDOW_SECS: i64 = 60;
+const WINDOW: Duration = Duration::from_secs(60);
 
 /// What a client's next request may do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,33 +100,33 @@ impl Pass {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PassGrant {
     pub pass: Pass,
-    pub until: i64,
+    pub until: UnixTime,
 }
 
 struct Entry {
-    window_start: i64,
+    window_start: UnixTime,
     current: u32,
     previous: u32,
-    /// When each kind of pass the client holds ends (`0` for none).
-    work_pass_until: i64,
-    wait_pass_until: i64,
+    /// When each kind of pass the client holds ends (the epoch for none).
+    work_pass_until: UnixTime,
+    wait_pass_until: UnixTime,
     /// Position in the least-recently-seen order.
     seen: u64,
 }
 
 impl Entry {
-    fn new(seen: u64, now: i64) -> Self {
+    fn new(seen: u64, now: UnixTime) -> Self {
         Entry {
-            window_start: now - now.rem_euclid(WINDOW_SECS),
+            window_start: window_of(now),
             current: 0,
             previous: 0,
-            work_pass_until: 0,
-            wait_pass_until: 0,
+            work_pass_until: UnixTime::EPOCH,
+            wait_pass_until: UnixTime::EPOCH,
             seen,
         }
     }
 
-    fn pass_until(&mut self, pass: Pass) -> &mut i64 {
+    fn pass_until(&mut self, pass: Pass) -> &mut UnixTime {
         match pass {
             Pass::Work => &mut self.work_pass_until,
             Pass::Wait => &mut self.wait_pass_until,
@@ -132,17 +134,17 @@ impl Entry {
     }
 
     /// Whether a pass the client holds covers a request of `class`.
-    fn has_pass(&self, class: RouteClass, now: i64) -> bool {
+    fn has_pass(&self, class: RouteClass, now: UnixTime) -> bool {
         (Pass::Work.covers(class) && self.work_pass_until > now)
             || (Pass::Wait.covers(class) && self.wait_pass_until > now)
     }
 
-    fn roll(&mut self, now: i64) {
-        let window_start = now - now.rem_euclid(WINDOW_SECS);
+    fn roll(&mut self, now: UnixTime) {
+        let window_start = window_of(now);
         if window_start == self.window_start {
             return;
         }
-        self.previous = if window_start - self.window_start == WINDOW_SECS {
+        self.previous = if window_start.since(self.window_start) == WINDOW {
             self.current
         } else {
             0
@@ -153,8 +155,8 @@ impl Entry {
 
     /// Requests counted over the last rolling minute, not including the one
     /// being made.
-    fn estimate(&self, now: i64) -> f64 {
-        let into_window = (now - self.window_start) as f64 / WINDOW_SECS as f64;
+    fn estimate(&self, now: UnixTime) -> f64 {
+        let into_window = now.since(self.window_start).as_secs_f64() / WINDOW.as_secs_f64();
         self.previous as f64 * (1.0 - into_window) + self.current as f64
     }
 
@@ -163,9 +165,9 @@ impl Entry {
     /// estimate only falls with time: within this window as the previous
     /// window's count decays, and failing that from the next window on as
     /// this window's count does.
-    fn seconds_until_allowed(&self, hard: u32, now: i64) -> u64 {
-        let window = WINDOW_SECS as f64;
-        let into_window = (now - self.window_start) as f64;
+    fn seconds_until_allowed(&self, hard: u32, now: UnixTime) -> u64 {
+        let window = WINDOW.as_secs_f64();
+        let into_window = now.since(self.window_start).as_secs_f64();
         let (previous, current, hard) = (self.previous as f64, self.current as f64, hard as f64);
         let wait = if current + 1.0 <= hard {
             // previous * (1 - (into + d) / window) + current + 1 <= hard
@@ -183,10 +185,20 @@ impl Entry {
             } else {
                 (window * (1.0 - room / current)).ceil()
             };
-            (self.window_start + WINDOW_SECS - now) as f64 + decay
+            now.until(self.window_start.saturating_add(WINDOW))
+                .as_secs_f64()
+                + decay
         };
         wait.max(1.0) as u64
     }
+}
+
+/// The start of the minute `now` is in. Worked out on a [`Duration`] since
+/// the epoch, so the windows line up on whole minutes without arithmetic on
+/// a raw second count.
+fn window_of(now: UnixTime) -> UnixTime {
+    let whole = now.since(UnixTime::EPOCH).as_secs() / WINDOW.as_secs() * WINDOW.as_secs();
+    UnixTime::EPOCH.saturating_add(Duration::from_secs(whole))
 }
 
 struct State<K> {
@@ -221,7 +233,7 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
 
     /// The client's entry, made if it isn't tracked (forgetting the least
     /// recently seen client when full), and marked as just seen.
-    fn touch<'a>(&self, state: &'a mut State<K>, client: &K, now: i64) -> &'a mut Entry {
+    fn touch<'a>(&self, state: &'a mut State<K>, client: &K, now: UnixTime) -> &'a mut Entry {
         let seen = state.next_seen;
         state.next_seen += 1;
         if let Some(entry) = state.entries.get_mut(client) {
@@ -250,7 +262,7 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
         limits: Limits,
         force_soft: bool,
         class: RouteClass,
-        now: i64,
+        now: UnixTime,
     ) -> Tier {
         let mut state = self.state.lock();
         let entry = self.touch(&mut state, client, now);
@@ -276,7 +288,7 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
     /// challenge and its proof, which under attack is the usual case) is
     /// tracked again: a pass that went nowhere would challenge it again,
     /// proof after proof.
-    pub fn grant_pass(&self, client: &K, grant: PassGrant, now: i64) {
+    pub fn grant_pass(&self, client: &K, grant: PassGrant, now: UnixTime) {
         let mut state = self.state.lock();
         let until = self.touch(&mut state, client, now).pass_until(grant.pass);
         *until = (*until).max(grant.until);
@@ -296,6 +308,14 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
 mod tests {
     use super::*;
 
+    fn at(secs: i64) -> UnixTime {
+        UnixTime::from_secs(secs)
+    }
+
+    fn later(now: UnixTime, secs: u64) -> UnixTime {
+        now.saturating_add(Duration::from_secs(secs))
+    }
+
     const LIMITS: Limits = Limits {
         soft_per_min: 3,
         hard_per_min: 6,
@@ -303,7 +323,12 @@ mod tests {
 
     /// Whether `client` holds a pass that covers a request of `class`,
     /// without counting a request.
-    fn has_pass(limiter: &TieredLimiter<u32>, client: &u32, class: RouteClass, now: i64) -> bool {
+    fn has_pass(
+        limiter: &TieredLimiter<u32>,
+        client: &u32,
+        class: RouteClass,
+        now: UnixTime,
+    ) -> bool {
         limiter
             .state
             .lock()
@@ -315,7 +340,7 @@ mod tests {
     #[test]
     fn under_soft_is_allowed_past_soft_is_challenged_past_hard_is_blocked() {
         let limiter = TieredLimiter::<u32>::default();
-        let now = 1_000_040; // 20s into a window (1_000_020 is a multiple of 60)
+        let now = at(1_000_040); // 20s into a window (1_000_020 is a multiple of 60)
         for _ in 0..3 {
             assert_eq!(
                 limiter.check(&1, LIMITS, false, RouteClass::Page, now),
@@ -349,7 +374,7 @@ mod tests {
     #[test]
     fn a_client_that_waits_for_retry_after_is_let_through() {
         let limiter = TieredLimiter::<u32>::default();
-        let now = 1_000_040;
+        let now = at(1_000_040);
         for _ in 0..6 {
             limiter.check(&1, LIMITS, false, RouteClass::Page, now);
         }
@@ -361,14 +386,14 @@ mod tests {
         // Hammering while blocked changes nothing.
         for i in 1..30 {
             assert!(matches!(
-                limiter.check(&1, LIMITS, false, RouteClass::Page, now + i),
+                limiter.check(&1, LIMITS, false, RouteClass::Page, later(now, i)),
                 Tier::Blocked { .. }
             ));
         }
-        let later = now + retry_after_secs as i64;
+        let promised = later(now, retry_after_secs);
         assert!(
             !matches!(
-                limiter.check(&1, LIMITS, false, RouteClass::Page, later),
+                limiter.check(&1, LIMITS, false, RouteClass::Page, promised),
                 Tier::Blocked { .. }
             ),
             "allowed (or challenged) at the promised time"
@@ -380,7 +405,7 @@ mod tests {
     #[test]
     fn a_pass_granted_to_an_evicted_client_still_counts() {
         let limiter = TieredLimiter::<u32>::with_capacity(2);
-        let now = 1_000_000;
+        let now = at(1_000_000);
         assert_eq!(
             limiter.check(&1, LIMITS, true, RouteClass::Page, now),
             Tier::Challenge
@@ -391,7 +416,7 @@ mod tests {
         limiter.grant_pass(&1, work(now), now);
         assert!(has_pass(&limiter, &1, RouteClass::Page, now));
         assert_eq!(
-            limiter.check(&1, LIMITS, true, RouteClass::Page, now + 1),
+            limiter.check(&1, LIMITS, true, RouteClass::Page, later(now, 1)),
             Tier::Allowed
         );
         assert_eq!(limiter.tracked(), 2, "the cap still holds");
@@ -400,7 +425,7 @@ mod tests {
     #[test]
     fn a_pass_skips_the_challenge_for_ten_minutes_but_not_the_hard_limit() {
         let limiter = TieredLimiter::<u32>::default();
-        let now = 1_000_000;
+        let now = at(1_000_000);
         for _ in 0..4 {
             limiter.check(&1, LIMITS, false, RouteClass::Page, now);
         }
@@ -409,12 +434,22 @@ mod tests {
             &limiter,
             &1,
             RouteClass::Page,
-            now + PASS_SECS - 1
+            later(now, PASS_FOR.as_secs() - 1)
         ));
-        assert!(!has_pass(&limiter, &1, RouteClass::Page, now + PASS_SECS));
+        assert!(!has_pass(
+            &limiter,
+            &1,
+            RouteClass::Page,
+            later(now, PASS_FOR.as_secs())
+        ));
         // The same token again, later: its pass still ends when it did.
-        limiter.grant_pass(&1, work(now), now + 60);
-        assert!(!has_pass(&limiter, &1, RouteClass::Page, now + PASS_SECS));
+        limiter.grant_pass(&1, work(now), later(now, 60));
+        assert!(!has_pass(
+            &limiter,
+            &1,
+            RouteClass::Page,
+            later(now, PASS_FOR.as_secs())
+        ));
         assert_eq!(
             limiter.check(&1, LIMITS, false, RouteClass::Page, now),
             Tier::Allowed
@@ -437,7 +472,7 @@ mod tests {
         }
         let wait = PassGrant {
             pass: Pass::Wait,
-            until: now + PASS_SECS,
+            until: now.saturating_add(PASS_FOR),
         };
         limiter.grant_pass(&2, wait, now);
         assert_eq!(
@@ -450,10 +485,10 @@ mod tests {
         );
     }
 
-    fn work(now: i64) -> PassGrant {
+    fn work(now: UnixTime) -> PassGrant {
         PassGrant {
             pass: Pass::Work,
-            until: now + PASS_SECS,
+            until: now.saturating_add(PASS_FOR),
         }
     }
 
@@ -461,12 +496,12 @@ mod tests {
     fn under_attack_challenges_every_client_without_a_pass() {
         let limiter = TieredLimiter::<u32>::default();
         assert_eq!(
-            limiter.check(&1, LIMITS, true, RouteClass::Page, 1_000_000),
+            limiter.check(&1, LIMITS, true, RouteClass::Page, at(1_000_000)),
             Tier::Challenge
         );
-        limiter.grant_pass(&1, work(1_000_000), 1_000_000);
+        limiter.grant_pass(&1, work(at(1_000_000)), at(1_000_000));
         assert_eq!(
-            limiter.check(&1, LIMITS, true, RouteClass::Page, 1_000_001),
+            limiter.check(&1, LIMITS, true, RouteClass::Page, at(1_000_001)),
             Tier::Allowed
         );
     }
@@ -474,24 +509,24 @@ mod tests {
     #[test]
     fn the_count_is_a_rolling_minute() {
         let limiter = TieredLimiter::<u32>::default();
-        let start = 1_000_040; // 20s into the window starting at 1_000_020
+        let start = at(1_000_040); // 20s into the window starting at 1_000_020
         for _ in 0..3 {
             limiter.check(&1, LIMITS, false, RouteClass::Page, start);
         }
         // 30s into the next window, half of the previous window still counts:
         // 1.5 + 1 = 2.5, under the soft limit of 3.
         assert_eq!(
-            limiter.check(&1, LIMITS, false, RouteClass::Page, start + 70),
+            limiter.check(&1, LIMITS, false, RouteClass::Page, later(start, 70)),
             Tier::Allowed
         );
         // 1.5 + 2 = 3.5: challenged.
         assert_eq!(
-            limiter.check(&1, LIMITS, false, RouteClass::Page, start + 70),
+            limiter.check(&1, LIMITS, false, RouteClass::Page, later(start, 70)),
             Tier::Challenge
         );
         // Two windows later nothing of it remains.
         assert_eq!(
-            limiter.check(&1, LIMITS, false, RouteClass::Page, start + 200),
+            limiter.check(&1, LIMITS, false, RouteClass::Page, later(start, 200)),
             Tier::Allowed
         );
     }
@@ -499,7 +534,7 @@ mod tests {
     #[test]
     fn memory_is_capped_by_forgetting_the_least_recently_seen_client() {
         let limiter = TieredLimiter::<u32>::with_capacity(3);
-        let now = 1_000_000;
+        let now = at(1_000_000);
         for client in 1..=3 {
             limiter.check(&client, LIMITS, false, RouteClass::Page, now);
         }
