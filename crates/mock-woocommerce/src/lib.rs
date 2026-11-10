@@ -1132,12 +1132,14 @@ mod tests {
             state.push.clone(),
             state.apps.clone(),
             monokulo::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
+            state.clock.clone(),
         );
         let worker = monokulo::webhooks::delivery::run_delivery_loop(
             state.db.clone(),
             state.encryption_key.clone(),
             state.settings.clone(),
             state.webhooks.clone(),
+            state.clock.clone(),
         );
         let router = build_router(state);
 
