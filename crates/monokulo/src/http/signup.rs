@@ -15,7 +15,6 @@
 use uuid::Uuid;
 
 use crate::db::RedeemInviteResult;
-use crate::now_unix;
 use crate::settings::SignupMode;
 
 use super::AppState;
@@ -85,7 +84,7 @@ pub(super) async fn create_account(
         .and_then(Result::ok)
         .ok_or(CreateAccountError::Internal)?;
     let id = crate::db::UserId::new(Uuid::new_v4().to_string());
-    let created_at = now_unix();
+    let created_at = state.clock.now().as_secs();
 
     // The signup mode is read again now the password is hashed, so a mode
     // saved in between still holds.

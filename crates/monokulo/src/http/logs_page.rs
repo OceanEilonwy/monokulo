@@ -1661,6 +1661,7 @@ pub async fn save_search(
         };
     }
     let (admin_id, name, saved_query) = (admin.id.clone(), name.to_string(), query_string.clone());
+    let now = state.clock.now().as_secs();
     let created = state
         .db
         .write(move |db| {
@@ -1669,7 +1670,7 @@ pub async fn save_search(
                 &admin_id,
                 &name,
                 &saved_query,
-                crate::now_unix(),
+                now,
                 MAX_SAVED,
             )
         })

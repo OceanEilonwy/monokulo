@@ -75,6 +75,7 @@ async fn relay_on_file(text: &str, env: Env) -> (TempDir, std::path::PathBuf, Ap
         &dir.0.join("monokulo.db"),
         CancellationToken::new(),
         state.settings.relay.clone(),
+        state.clock.clone(),
     )
     .await
     .unwrap();

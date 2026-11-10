@@ -5,7 +5,6 @@
 
 use crate::db::{NewWalletRow, UserRow, WalletId, WalletOrigin, WalletRow};
 use crate::engine_client::{CreateWalletRequest, EngineClientError};
-use crate::now_unix;
 
 use super::AppState;
 
@@ -123,6 +122,7 @@ pub(crate) async fn add_wallet(
     let user_id = user.id.clone();
     let row_id = id.clone();
     let origin = req.origin;
+    let now = state.clock.now().as_secs();
     // Whether the account has it already, and adding it, in one write: two
     // submissions of the same wallet at once find the first's row, not a
     // unique violation taken for the name's.
@@ -151,7 +151,7 @@ pub(crate) async fn add_wallet(
                 origin,
                 backup,
                 app,
-                created_at: now_unix(),
+                created_at: now,
             })?;
             Ok::<_, crate::db::DbError>(Ok(name))
         })
@@ -268,6 +268,7 @@ pub(crate) async fn adopt_unlinked_stores(state: &AppState, user: &UserRow) {
         };
         let user_id = user.id.clone();
         let connection = store.id.clone();
+        let now = state.clock.now().as_secs();
         let adopted = state
             .db
             .write(move |db| {
@@ -286,12 +287,12 @@ pub(crate) async fn adopt_unlinked_stores(state: &AppState, user: &UserRow) {
                             origin: WalletOrigin::Imported,
                             backup: None,
                             app: None,
-                            created_at: now_unix(),
+                            created_at: now,
                         })?;
                         id
                     }
                 };
-                db.adopt_store_wallet(&connection, &wallet, now_unix())
+                db.adopt_store_wallet(&connection, &wallet, now)
             })
             .await;
         if let Err(e) = adopted {

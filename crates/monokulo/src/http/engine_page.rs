@@ -162,6 +162,7 @@ pub(crate) fn machine<'a>(
     client: &EngineClient,
     status: &'a EngineStatusResponse,
     network: &'a str,
+    now: clock::UnixTime,
 ) -> Machine<'a> {
     let reported = status.networks.iter().find(|n| n.network == network);
     let node = reported.and_then(|reported| {
@@ -176,7 +177,7 @@ pub(crate) fn machine<'a>(
     Machine {
         network,
         at_unix: status.generated_at,
-        now_unix: service_runtime::time::now_unix(),
+        now_unix: now.as_secs(),
         resources: resources(client, status),
         node,
         scaling: reported.and_then(|reported| reported.scaling.as_ref()),
@@ -195,7 +196,12 @@ async fn machine_event(state: &AppState, network: &str) -> Option<Event> {
     .ok()?;
     Event::default()
         .event("machine")
-        .json_data(machine(&state.engine.client, &status, network))
+        .json_data(machine(
+            &state.engine.client,
+            &status,
+            network,
+            state.clock.now(),
+        ))
         .ok()
 }
 
@@ -659,7 +665,13 @@ mod tests {
     fn the_machine_figures_follow_the_node_in_use_a_fallback_too() {
         let client = EngineClient::for_tests("http://engine.invalid");
         let json = |status: &EngineStatusResponse, network: &str| {
-            serde_json::to_value(machine(&client, status, network)).unwrap()
+            serde_json::to_value(machine(
+                &client,
+                status,
+                network,
+                clock::UnixTime::from_secs(1_800_000_000),
+            ))
+            .unwrap()
         };
         let primary_status = status_with_nodes(0);
         let primary = json(&primary_status, "stagenet");

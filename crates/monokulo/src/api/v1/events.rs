@@ -9,7 +9,6 @@ use super::order;
 use crate::api::runtime::auth;
 use crate::api::{self, prelude::*};
 use crate::apps::{SaleEvent, SaleKind};
-use crate::now_unix;
 
 api::resource!(
     "/api/v1/events",
@@ -146,7 +145,12 @@ async fn get(
     let pk = caller.0.store.tenant_public_key.clone();
     // Each event is written later, as this request's answer.
     let context = auth::context();
-    let ready = event("ready", &Ready { at: now_unix() });
+    let ready = event(
+        "ready",
+        &Ready {
+            at: state.clock.now().as_secs(),
+        },
+    );
     let events = stream::unfold(
         (receiver, pk, context),
         |(mut receiver, pk, context)| async move {

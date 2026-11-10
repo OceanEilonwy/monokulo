@@ -125,7 +125,10 @@ async fn an_expired_unpaid_order_is_renewed_once_keeping_its_id_and_address() {
     assert_eq!(renewed["status"], "pending");
     assert_eq!(renewed["xmr_amount_piconero"], 300_000_000_000u64);
     let expires_at = renewed["expires_at"].as_i64().unwrap();
-    assert!(expires_at > crate::now_unix(), "a fresh expiry: {renewed}");
+    assert!(
+        expires_at > clock::Clock::System.now().as_secs(),
+        "a fresh expiry: {renewed}"
+    );
     assert_eq!(renewed["_templates"]["renew-order"]["target"], path(&made));
 
     let app_order = fixture

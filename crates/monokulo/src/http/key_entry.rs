@@ -19,7 +19,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use axum::extract::{Path, State};
 use axum::http::header;
@@ -69,10 +71,10 @@ struct StoredBundle {
 
 impl KeyBundles {
     /// Whether `user` may open another key entry form now, at most
-    /// `per_minute` a minute; counts this one if so.
-    fn may_open(&self, user: &UserId, per_minute: u32) -> bool {
+    /// `per_minute` a minute, as of `now`; counts this one if so.
+    fn may_open(&self, user: &UserId, per_minute: u32, now: clock::UnixTime) -> bool {
         self.opened.set_limit(per_minute);
-        self.opened.check(user.clone(), crate::now_unix())
+        self.opened.check(user.clone(), now.as_secs())
     }
 
     /// Keeps `json` for `user`, dropping their oldest past `per_user` (and
@@ -163,7 +165,7 @@ pub async fn prepare(
     if !state
         .engine
         .key_bundles
-        .may_open(user, limits.per_user_per_min)
+        .may_open(user, limits.per_user_per_min, state.clock.now())
     {
         tracing::info!(user = %user, "an account opened too many SEV-SNP key entry forms");
         return Some(SnpKeyEntry::Limited(TOO_MANY_FORMS.to_owned()));

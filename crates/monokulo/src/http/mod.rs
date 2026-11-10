@@ -304,11 +304,16 @@ impl AppState {
     /// test that needs its own db doesn't also open and seed one it throws
     /// away.
     pub fn for_tests_with_db(db: crate::db::SharedDb) -> Self {
+        // One moment for the state's lifetime, close to now so the data a
+        // test makes relative to the system's time still lines up: a page
+        // rendered twice shows the same countdown, and a stream that diffs
+        // renders has no second tick to send.
+        let clock = clock::Clock::Fixed(clock::Clock::System.now());
         AppState {
             db: Database::inline(db),
             encryption_key: TEST_ENCRYPTION_KEY,
             exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-            abuse: Default::default(),
+            abuse: Arc::new(::abuse::AbuseProtection::default().with_clock(clock.clone())),
             proofs: domain_proof::Proofs {
                 dns: Arc::new(domain_proof::UnavailableDns(
                     "DNS is not available in tests".to_string(),
@@ -325,7 +330,7 @@ impl AppState {
             relay: Default::default(),
             revocations: Arc::default(),
             stopping: Default::default(),
-            clock: Default::default(),
+            clock,
             tor: tor_service::Tor::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
@@ -1065,15 +1070,19 @@ pub(crate) async fn hold_session(
     // Held before it's read again, so an end written after the read still
     // reaches the stream.
     let held = state.revocations.hold(token_hash);
-    let (hash, now) = (token_hash.clone(), crate::now_unix());
+    let now = state.clock.now();
+    let hash = token_hash.clone();
     let session = state
         .db
-        .read(move |db| db.find_session(&hash, now))
+        .read(move |db| db.find_session(&hash, now.as_secs()))
         .await
         .ok()
         .flatten()?;
-    let left = session.created_at + crate::db::SESSION_LIFETIME_SECONDS - now;
-    let left = std::time::Duration::from_secs(u64::try_from(left).unwrap_or(0));
+    let lifetime = std::time::Duration::from_secs(
+        u64::try_from(crate::db::SESSION_LIFETIME_SECONDS).unwrap_or(0),
+    );
+    let ends = clock::UnixTime::from_secs(session.created_at).saturating_add(lifetime);
+    let left = now.until(ends);
     Some(held.expiring_at(tokio::time::Instant::now() + left))
 }
 
@@ -1149,9 +1158,9 @@ fn embed_cors_layer(
     methods: &[axum::http::Method],
 ) -> tower_http::cors::CorsLayer {
     use tower_http::cors::AllowOrigin;
-    let db = state.db.clone();
+    let (db, clock) = (state.db.clone(), state.clock.clone());
     cors_layer_base(methods).allow_origin(AllowOrigin::async_predicate(move |origin, parts| {
-        let db = db.clone();
+        let (db, clock) = (db.clone(), clock.clone());
         // The store's public key, when the request carries one; the order,
         // on a checkout page.
         let public_key = parts
@@ -1182,7 +1191,7 @@ fn embed_cors_layer(
                 return false;
             };
             match crate::embed_domains::policy_for_public_key(&db, &public_key).await {
-                Ok(Some(policy)) => policy.allows_origin(origin, crate::now_unix()),
+                Ok(Some(policy)) => policy.allows_origin(origin, clock.now().as_secs()),
                 Ok(None) => true,
                 // Not knowing is not permission.
                 Err(_) => false,
@@ -1265,7 +1274,7 @@ pub(crate) async fn page_chrome(
         alerts.extend(status_page::known_slow_blocks(&state.engine));
         alerts.extend(status_page::known_snp_policy_alert(state));
     }
-    let mut chrome = crate::views::PageChrome::from_user(user, current_path)
+    let mut chrome = crate::views::PageChrome::from_user(user, current_path, state.clock.now())
         .with_health(status_page::known_health(&state.engine))
         .with_alerts(alerts);
     chrome.wallet_count = wallet_count;
@@ -1348,10 +1357,11 @@ pub(crate) async fn resolve_authed_user(
     let token_hash = token.hash();
 
     let hash = token_hash.clone();
+    let now = state.clock.now().as_secs();
     let mut user = state
         .db
         .read(move |db| {
-            let Some(session) = db.find_session(&hash, crate::now_unix())? else {
+            let Some(session) = db.find_session(&hash, now)? else {
                 return Ok(None);
             };
             db.get_user_by_id(&session.user_id)

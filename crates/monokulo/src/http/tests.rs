@@ -1498,7 +1498,13 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
     let router = build_router(state);
     let raw_token = credentials::auth::generate_invite_token();
     db.lock()
-        .create_invite_link("link-1", &raw_token.hash(), None, None, crate::now_unix())
+        .create_invite_link(
+            "link-1",
+            &raw_token.hash(),
+            None,
+            None,
+            clock::Clock::System.now().as_secs(),
+        )
         .unwrap();
 
     let first = router
@@ -2007,7 +2013,7 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
         .unwrap();
     assert_eq!(script.status(), StatusCode::OK);
 
-    let chrome = crate::views::PageChrome::from_user(None, "/");
+    let chrome = crate::views::PageChrome::from_user(None, "/", clock::Clock::System.now());
     let page = crate::views::Page::new("t", ui::PageHeader::new("t"))
         .render(&chrome, maud::html! {})
         .into_string();
@@ -2117,13 +2123,13 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
         db.create_session(
             &credentials::auth::RawToken::presented("owner-token").hash(),
             &engine_protocol::ids::UserId::new("u_owner"),
-            crate::now_unix(),
+            clock::Clock::System.now().as_secs(),
         )
         .unwrap();
         db.create_session(
             &credentials::auth::RawToken::presented("other-token").hash(),
             &engine_protocol::ids::UserId::new("u_other"),
-            crate::now_unix(),
+            clock::Clock::System.now().as_secs(),
         )
         .unwrap();
     }

@@ -125,12 +125,12 @@ impl LoadError {
     /// What the checkout page, or its refund form, answers instead: a page
     /// or a bare status for a browser, `problem+json` for the auto-save
     /// (`wants_json`).
-    fn response(self, wants_json: bool) -> Response {
+    fn response(self, wants_json: bool, now: clock::UnixTime) -> Response {
         match (self, wants_json) {
             (LoadError::NotFound, true) => Problem::NotFound
                 .detail("There's no such order.")
                 .into_response(),
-            (LoadError::NotFound, false) => not_found_response(),
+            (LoadError::NotFound, false) => not_found_response(now),
             (LoadError::EngineUnavailable, true) => ApiError::EngineUnavailable.into_response(),
             (LoadError::EngineUnavailable, false) => {
                 StatusCode::SERVICE_UNAVAILABLE.into_response()
@@ -266,7 +266,7 @@ impl CheckoutOptions {
             .as_deref()
             .filter(|name| jiff::tz::TimeZone::get(name).is_ok())
     }
-    fn clock(&self, now: i64) -> views::time::Clock {
+    fn clock(&self, now: clock::UnixTime) -> views::time::Clock {
         views::time::Clock::new(self.zone(), None, now)
     }
     fn theme(&self) -> crate::db::Theme {
@@ -350,10 +350,10 @@ pub async fn checkout_page(
     options.onion = on.kind == NetworkKind::Onion;
     let (row, sk, detail) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
-        Err(error) => return error.response(false),
+        Err(error) => return error.response(false, state.clock.now()),
     };
     if must_open_from_shop(&state, &row, &order_id, &headers).await {
-        return open_from_shop_response(&order_id);
+        return open_from_shop_response(&order_id, state.clock.now());
     }
     with_vary_on_fetch_dest(
         render_checkout_page(&state, row, sk, detail, None, &options, &headers).await,
@@ -413,9 +413,9 @@ async fn must_open_from_shop(
     }
 }
 
-fn open_from_shop_response(order_id: &crate::db::OrderId) -> Response {
+fn open_from_shop_response(order_id: &crate::db::OrderId, now: clock::UnixTime) -> Response {
     let order_id = order_id.clone();
-    let chrome = views::PageChrome::from_user(None, CheckoutPath { order_id }.to_string());
+    let chrome = views::PageChrome::from_user(None, CheckoutPath { order_id }.to_string(), now);
     with_vary_on_fetch_dest(
         (
             StatusCode::FORBIDDEN,
@@ -434,8 +434,8 @@ fn with_vary_on_fetch_dest(mut response: Response) -> Response {
     response
 }
 
-fn not_found_response() -> Response {
-    let chrome = views::PageChrome::from_user(None, "/");
+fn not_found_response(now: clock::UnixTime) -> Response {
+    let chrome = views::PageChrome::from_user(None, "/", now);
     (
         StatusCode::NOT_FOUND,
         views::checkout::not_found_page(&chrome),
@@ -456,6 +456,7 @@ async fn choose_page(
     row: &StoreConnectionRow,
     options: &CheckoutOptions,
     headers: &HeaderMap,
+    now: clock::UnixTime,
 ) -> Option<crate::checkout_pages::ChosenPage> {
     let frame = crate::checkout_pages::frame_of(headers, options.framed == Some(true));
     let id = row.id.clone();
@@ -470,7 +471,7 @@ async fn choose_page(
         .await
         .ok()?;
     let page = page?;
-    let now = state.clock.now().as_secs();
+    let now = now.as_secs();
     crate::checkout_pages::recheck_if_due(
         state.db.clone(),
         state.proofs.clone(),
@@ -501,12 +502,17 @@ async fn render_checkout_page(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     let order_id = detail.order.order_id.clone();
+    // One moment for the whole render: which page is chosen, the countdown
+    // and the rest of the page agree, and a test can fix it
+    // (`AppState::clock`).
+    let now = state.clock.now();
     let options = &CheckoutOptions {
-        chosen: choose_page(state, &row, options, headers).await,
+        chosen: choose_page(state, &row, options, headers, now).await,
         ..options.clone()
     };
-    let view = build_checkout_view(state, &row, &sk, detail, refund_address_error, options).await;
-    let mut chrome = views::PageChrome::from_user(None, CheckoutPath { order_id }.to_string());
+    let view =
+        build_checkout_view(state, &row, &sk, detail, refund_address_error, options, now).await;
+    let mut chrome = views::PageChrome::from_user(None, CheckoutPath { order_id }.to_string(), now);
     chrome.theme = options.theme();
     // Browser problem reports only from a store that opted in (D8).
     let id = row.id.clone();
@@ -550,6 +556,7 @@ async fn build_checkout_view(
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
     options: &CheckoutOptions,
+    now: clock::UnixTime,
 ) -> CheckoutViewModel {
     // A reasonable, safe-side default if the engine is briefly unreachable
     // for this one extra call - the order data itself already loaded fine
@@ -573,10 +580,13 @@ async fn build_checkout_view(
         })
         .await
         .unwrap_or_default();
-    // One moment for the whole render: the countdown and the rest of the
-    // page agree, and a test can fix it (`AppState::clock`).
-    let now = state.clock.now().as_secs();
-    let header = merchant_header(row, &detail.order, metadata.as_ref(), &domains, now);
+    let header = merchant_header(
+        row,
+        &detail.order,
+        metadata.as_ref(),
+        &domains,
+        now.as_secs(),
+    );
     let (amount, currency) = match metadata {
         Some(metadata) => (metadata.amount, metadata.currency),
         None => ("—".to_string(), "".to_string()),
@@ -644,7 +654,10 @@ async fn build_checkout_view(
         double_spend_detected_at: detail.order.double_spend_detected_at,
         clock: options.clock(now),
         local_times: options.zone().is_none(),
-        expires_in_display: crate::templates::format_duration_until(detail.order.expires_at, now),
+        expires_in_display: crate::templates::format_duration_until(
+            detail.order.expires_at,
+            now.as_secs(),
+        ),
         created_at: detail.order.created_at,
         expires_at: detail.order.expires_at,
         refund_address: detail.order.refund_address.clone(),
@@ -790,7 +803,7 @@ pub async fn set_refund_address(
     };
     let (row, sk, detail) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
-        Err(error) => return error.response(wants_json),
+        Err(error) => return error.response(wants_json, state.clock.now()),
     };
     // The one way out for a rejected address.
     let (page_state, page_options, page_headers) = (&state, &options, &headers);
@@ -978,11 +991,10 @@ pub async fn checkout_events(
     let on_page = match &options.page {
         Some(token) => {
             let (id, token) = (row.id.clone(), token.clone());
+            let now = state.clock.now().as_secs();
             state
                 .db
-                .read(move |db| {
-                    crate::checkout_pages::page_still_showing(db, &id, &token, crate::now_unix())
-                })
+                .read(move |db| crate::checkout_pages::page_still_showing(db, &id, &token, now))
                 .await
                 .ok()
                 .flatten()
@@ -1034,7 +1046,12 @@ pub async fn checkout_events(
                         // An unreachable engine waits for the next change.
                         Err(LoadError::EngineUnavailable | LoadError::Internal) => return None,
                     };
-                let view = build_checkout_view(&state, &row, &sk, detail, None, &options).await;
+                // One moment for this render, read as it is made: a stream
+                // that diffs renders sees the times move only as the clock
+                // does.
+                let now = state.clock.now();
+                let view =
+                    build_checkout_view(&state, &row, &sk, detail, None, &options, now).await;
                 let status = CheckoutStatusResponse {
                     status: view.status,
                     confirmations: view.confirmations,
@@ -1055,7 +1072,7 @@ pub async fn checkout_events(
                                 db,
                                 &id,
                                 &token,
-                                crate::now_unix(),
+                                now.as_secs(),
                             )
                         })
                         .await
@@ -1213,7 +1230,7 @@ pub async fn checkout_share_page(
             // would otherwise show a browser-created order of a restricted
             // store as a full page - the same rule applies to it.
             if must_open_from_shop(&state, &row, &order_id, &headers).await {
-                return open_from_shop_response(&order_id);
+                return open_from_shop_response(&order_id, state.clock.now());
             }
             true
         }
@@ -1248,9 +1265,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(options("Asia/Tokyo").suffix(), "?timezone=Asia%2FTokyo");
-        assert_eq!(options("Asia/Tokyo").clock(0).name(), "Asia/Tokyo");
+        assert_eq!(
+            options("Asia/Tokyo").clock(clock::UnixTime::EPOCH).name(),
+            "Asia/Tokyo"
+        );
         assert_eq!(options("Not/AZone").suffix(), "");
-        assert_eq!(options("Not/AZone").clock(0).name(), "UTC");
+        assert_eq!(
+            options("Not/AZone").clock(clock::UnixTime::EPOCH).name(),
+            "UTC"
+        );
         let compact = super::CheckoutOptions {
             view: Some("compact".into()),
             ..options("Europe/London")
@@ -1536,6 +1559,7 @@ mod tests {
                     detail,
                     None,
                     &CheckoutOptions::default(),
+                    state.clock.now(),
                 )
                 .await
             }
@@ -1563,11 +1587,12 @@ mod tests {
         assert_eq!(shown.merchant_reference, None);
 
         let store_id = store.id.clone();
+        let now = state.clock.now().as_secs();
         state
             .db
             .write(move |db| {
                 for domain in db.list_store_domains(&store_id)? {
-                    db.record_store_domain_check(&domain.id, crate::now_unix(), None)?;
+                    db.record_store_domain_check(&domain.id, now, None)?;
                 }
                 Ok::<_, crate::db::DbError>(())
             })
@@ -1937,7 +1962,7 @@ mod tests {
             .lock()
             .mark_double_spend_detected(
                 &engine_protocol::ids::OrderId::new(order_id.to_string()),
-                crate::now_unix()
+                clock::Clock::System.now().as_secs()
             )
             .unwrap());
 
@@ -2139,7 +2164,7 @@ mod tests {
             .lock()
             .mark_double_spend_detected(
                 &engine_protocol::ids::OrderId::new(order_id.to_string()),
-                crate::now_unix()
+                clock::Clock::System.now().as_secs()
             )
             .unwrap());
         let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
@@ -2342,7 +2367,7 @@ mod tests {
             ..Default::default()
         };
         let hash = crate::views::checkout_style::stylesheet_hash(&style.css().unwrap());
-        let now = crate::now_unix();
+        let now = state.clock.now().as_secs();
         state
             .db
             .lock()
@@ -2377,10 +2402,13 @@ mod tests {
     #[tokio::test]
     async fn one_source_may_hold_only_so_many_open_streams_per_store() {
         let (mut state, _engine) = test_state_with_real_engine().await;
-        state.abuse = std::sync::Arc::new(abuse::AbuseProtection::new(abuse::AbuseConfig {
-            stream_cap: 1,
-            ..Default::default()
-        }));
+        state.abuse = std::sync::Arc::new(
+            abuse::AbuseProtection::new(abuse::AbuseConfig {
+                stream_cap: 1,
+                ..Default::default()
+            })
+            .with_clock(state.clock.clone()),
+        );
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,

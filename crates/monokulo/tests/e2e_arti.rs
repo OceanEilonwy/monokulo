@@ -24,7 +24,9 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use domain_proof::WellKnownFetch as _;
 use domain_proof::WellKnownOverTor;

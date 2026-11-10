@@ -34,7 +34,9 @@
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Json, Response};
@@ -482,7 +484,9 @@ pub async fn status_page(
     authed: Option<super::AuthedUser>,
 ) -> Response {
     let user = authed.map(|super::AuthedUser(user, _)| user);
-    let view_model = status_view(&state, user.as_ref().is_some_and(|user| user.is_admin)).await;
+    let now = state.clock.now();
+    let view_model =
+        status_view(&state, user.as_ref().is_some_and(|user| user.is_admin), now).await;
     let chrome = super::page_chrome(&state, user.as_ref(), "/status").await;
     views::status::page(&chrome, &view_model).into_response()
 }
@@ -529,8 +533,12 @@ pub async fn status_events(
                     tokio::time::sleep(cache_ttl(&state.engine)).await;
                 }
                 let admin = admin.is_some_and(|session| !session.is_revoked());
-                let html =
-                    views::status::live_fragment(&status_view(&state, admin).await).into_string();
+                // One moment for each render: the times in it are worded
+                // from it, and the diff against the last one sees them move
+                // only when the clock does.
+                let now = state.clock.now();
+                let html = views::status::live_fragment(&status_view(&state, admin, now).await)
+                    .into_string();
                 if last.as_deref() == Some(html.as_str()) {
                     // Unchanged: a comment keeps the connection's clock honest.
                     return Some((
@@ -552,7 +560,11 @@ pub async fn status_events(
 }
 
 /// The status page's content; abuse figures only for an admin.
-async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPageViewModel {
+async fn status_view(
+    state: &AppState,
+    admin: bool,
+    now: clock::UnixTime,
+) -> views::status::StatusPageViewModel {
     let mut view_model = match get_status_cached(&state.engine).await {
         Ok(status) => {
             let slow = slow_block_messages(&status, admin);
@@ -568,7 +580,7 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
             views::status::StatusPageViewModel {
                 slow_blocks: slow,
                 snp_alert,
-                ..build_view_model(status)
+                ..build_view_model(status, now)
             }
         }
         Err(message) => views::status::StatusPageViewModel {
@@ -606,7 +618,7 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
     // Challenge activity is for operators only; anonymous visitors and
     // merchants don't see it.
     if admin {
-        let counts = state.abuse.stats.last_hour(crate::now_unix());
+        let counts = state.abuse.stats.last_hour(now.as_secs());
         view_model.abuse = Some(views::status::AbuseStatusView {
             under_attack: state.abuse.config().under_attack,
             issued: counts.issued,
@@ -652,8 +664,10 @@ fn describe_engine_error(err: &EngineClientError) -> String {
     }
 }
 
-fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageViewModel {
-    let now = crate::now_unix();
+fn build_view_model(
+    status: EngineStatusResponse,
+    now: clock::UnixTime,
+) -> views::status::StatusPageViewModel {
     let networks = status
         .networks
         .into_iter()
@@ -671,7 +685,10 @@ fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageVi
     }
 }
 
-fn build_network_view(network: NetworkStatus, now: i64) -> views::status::StatusNetworkView {
+fn build_network_view(
+    network: NetworkStatus,
+    now: clock::UnixTime,
+) -> views::status::StatusNetworkView {
     use views::status::NodeUse;
     let headers_first = network
         .scaling
@@ -748,7 +765,10 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
 /// the recent window while following, and the
 /// facts behind it. Each node's verdict goes on its own row
 /// ([`build_network_view`]).
-fn proof_view(proof: engine_protocol::proof::ProofStatus, now: i64) -> views::status::ProofView {
+fn proof_view(
+    proof: engine_protocol::proof::ProofStatus,
+    now: clock::UnixTime,
+) -> views::status::ProofView {
     use engine_protocol::proof::{NodeVerdict, ProofState};
     use views::scaling::thousands;
     let plural = |n: u64, one: &'static str, many: &'static str| if n == 1 { one } else { many };
@@ -861,7 +881,7 @@ pub async fn take_new_anchor(
 /// A network's announcements as shown to an admin.
 fn announcements_view(
     announcements: engine_protocol::announcements::Announcements,
-    now: i64,
+    now: clock::UnixTime,
 ) -> views::status::AnnouncementsView {
     let publishers = announcements
         .publishers
@@ -899,8 +919,8 @@ fn announcements_view(
 /// How long ago `at` was, worded as every merchant page words a past time
 /// ([`views::time::Clock::relative`]). A time the engine reports ahead of
 /// this clock reads as just now, never as in the future.
-fn relative_time(now: i64, at: i64) -> String {
-    views::time::Clock::utc(now).relative(at.min(now))
+fn relative_time(now: clock::UnixTime, at: i64) -> String {
+    views::time::Clock::utc(now).relative(at.min(now.as_secs()))
 }
 
 #[cfg(test)]
@@ -994,7 +1014,10 @@ mod tests {
     fn the_status_page_says_when_block_headers_are_read_first() {
         let mut status = status_with_slow(None);
         let network = status.networks.remove(0);
-        assert_eq!(build_network_view(network.clone(), 0).headers_first, None);
+        assert_eq!(
+            build_network_view(network.clone(), clock::UnixTime::EPOCH).headers_first,
+            None
+        );
         let mut network = network;
         if let Some(scaling) = network.scaling.as_mut() {
             scaling.scan.headers_first = Some(engine_protocol::scaling::HeadersFirst {
@@ -1003,7 +1026,7 @@ mod tests {
             });
         }
         assert_eq!(
-            build_network_view(network, 0).headers_first.as_deref(),
+            build_network_view(network, clock::UnixTime::EPOCH).headers_first.as_deref(),
             Some("Reading block headers first for about 50 minutes more: a recent block came near the size that is scanned in pages, so each block's size is checked before it is fetched.")
         );
     }
@@ -1039,10 +1062,19 @@ mod tests {
 
     #[test]
     fn relative_time_never_reads_as_the_future() {
-        assert_eq!(relative_time(100, 100), "just now");
-        assert_eq!(relative_time(3700, 100), "60 min ago");
+        assert_eq!(
+            relative_time(clock::UnixTime::from_secs(100), 100),
+            "just now"
+        );
+        assert_eq!(
+            relative_time(clock::UnixTime::from_secs(3700), 100),
+            "60 min ago"
+        );
         // A clock that moved backward never reads as negative.
-        assert_eq!(relative_time(100, 200), "just now");
+        assert_eq!(
+            relative_time(clock::UnixTime::from_secs(100), 200),
+            "just now"
+        );
     }
 
     #[tokio::test]
@@ -1185,10 +1217,10 @@ mod tests {
             // The first fetch has reached the engine; the rest are queued
             // behind it (or still on their way). Nothing is timed: the
             // engine doesn't answer until released.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
             while hits.load(Ordering::SeqCst) == 0 {
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    tokio::time::Instant::now() < deadline,
                     "no fetch reached the engine"
                 );
                 tokio::task::yield_now().await;
@@ -1342,7 +1374,8 @@ mod tests {
             use crate::engine_client::{
                 EngineStatusResponse, NetworkStatus, NodeStatus, ScannerStatusView,
             };
-            let now = crate::now_unix();
+            let at = clock::UnixTime::from_secs(1_790_000_000);
+            let now = at.as_secs();
             let scanner =
                 |ever_ticked, last_tick_ok, is_stale, last_error: Option<&str>| ScannerStatusView {
                     ever_ticked,
@@ -1386,24 +1419,27 @@ mod tests {
                 announcements: None,
                 proof: None,
             };
-            let view = super::super::build_view_model(EngineStatusResponse {
-                networks: vec![
-                    network("mainnet", scanner(true, true, false, None)),
-                    network("stagenet", scanner(true, true, true, None)),
-                    network(
-                        "testnet",
-                        scanner(true, false, false, Some("daemon request failed: timed out")),
-                    ),
-                ],
-                poll_interval_secs: 2,
-                generated_at: now - 5,
-                loop_restarts: Vec::new(),
-                unserved_tenants: vec![],
-                key_custody: vec![],
-                key_custody_default: None,
-                key_custody_snp_trust: None,
-                resources: None,
-            });
+            let view = super::super::build_view_model(
+                EngineStatusResponse {
+                    networks: vec![
+                        network("mainnet", scanner(true, true, false, None)),
+                        network("stagenet", scanner(true, true, true, None)),
+                        network(
+                            "testnet",
+                            scanner(true, false, false, Some("daemon request failed: timed out")),
+                        ),
+                    ],
+                    poll_interval_secs: 2,
+                    generated_at: now - 5,
+                    loop_restarts: Vec::new(),
+                    unserved_tenants: vec![],
+                    key_custody: vec![],
+                    key_custody_default: None,
+                    key_custody_snp_trust: None,
+                    resources: None,
+                },
+                at,
+            );
             use crate::views::status::ScannerState;
             let states: Vec<ScannerState> = view.networks.iter().map(|n| n.scanner.state).collect();
             assert_eq!(
@@ -1423,7 +1459,7 @@ mod tests {
             assert!(!node_b.is_reachable);
             assert_eq!(node_b.height_display, "-");
             let html = crate::views::status::page(
-                &crate::views::PageChrome::from_user(None, "/status"),
+                &crate::views::PageChrome::from_user(None, "/status", at),
                 &view,
             )
             .into_string();
@@ -1440,7 +1476,8 @@ mod tests {
         /// publisher addresses and errors can name internal hosts.
         #[tokio::test]
         async fn announcements_are_shown_to_admins_only() {
-            let now = crate::now_unix();
+            let at = clock::UnixTime::from_secs(1_790_000_000);
+            let now = at.as_secs();
             let mut status = super::status_with_slow(None);
             status.networks[0].announcements =
                 Some(engine_protocol::announcements::Announcements {
@@ -1469,10 +1506,10 @@ mod tests {
             let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
             super::super::seed_status_for_tests(&state.engine, status);
 
-            let anonymous = super::super::status_view(&state, false).await;
+            let anonymous = super::super::status_view(&state, false, at).await;
             assert!(anonymous.networks[0].announcements.is_none());
 
-            let admin = super::super::status_view(&state, true).await;
+            let admin = super::super::status_view(&state, true, at).await;
             let shown = admin.networks[0].announcements.as_ref().unwrap();
             assert_eq!(shown.publishers[0].state_display, "since 10 min ago");
             assert_eq!(shown.publishers[0].last_announcement_display, "3 min ago");
@@ -1511,7 +1548,8 @@ mod tests {
             use engine_protocol::proof::{
                 AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus,
             };
-            let now = crate::now_unix();
+            let at = clock::UnixTime::from_secs(1_790_000_000);
+            let now = at.as_secs();
             let mut status = super::status_with_slow(None);
             status.networks[0].proof = Some(ProofStatus {
                 state: ProofState::Following,
@@ -1562,7 +1600,7 @@ mod tests {
             let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
             super::super::seed_status_for_tests(&state.engine, status.clone());
 
-            let anonymous = super::super::status_view(&state, false).await;
+            let anonymous = super::super::status_view(&state, false, at).await;
             assert!(anonymous.networks[0].proof.is_none());
             assert!(anonymous.networks[0]
                 .nodes
@@ -1576,7 +1614,7 @@ mod tests {
                 "{html}"
             );
 
-            let admin = super::super::status_view(&state, true).await;
+            let admin = super::super::status_view(&state, true, at).await;
             // One row a node, its verdict beside its use; the caught one
             // left out, with what it was caught on.
             let nodes = &admin.networks[0].nodes;
@@ -1613,7 +1651,7 @@ mod tests {
             held.networks[0].proof.as_mut().unwrap().state = ProofState::Held;
             let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
             super::super::seed_status_for_tests(&state.engine, held);
-            let admin = super::super::status_view(&state, true).await;
+            let admin = super::super::status_view(&state, true, at).await;
             let html = crate::views::status::live_fragment(&admin).into_string();
             assert!(html.contains(
                 r#"<span class="mk-status-text" data-tone="error">settlement held</span>"#
@@ -1631,7 +1669,7 @@ mod tests {
                 ),
                 "an admin is linked to the engine page: {html}"
             );
-            let anonymous = super::super::status_view(&state, false).await;
+            let anonymous = super::super::status_view(&state, false, at).await;
             assert!(!crate::views::status::live_fragment(&anonymous)
                 .into_string()
                 .contains("/status/engine"));

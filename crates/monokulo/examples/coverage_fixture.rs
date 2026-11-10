@@ -99,7 +99,7 @@ async fn seed_apps(
     if query.contains_key("empty") {
         return Ok(Json(serde_json::json!({})));
     }
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now().as_secs();
     let connect =
         |slug: &str, name: &str, device: &str, platform: &str, version: &str, ago: i64| {
             let raw = credentials::auth::generate_app_connect_token();
@@ -745,7 +745,11 @@ async fn challenge(State(control): State<Controls>) -> axum::response::Html<Stri
     };
     axum::response::Html(
         views::challenge::challenge_page(
-            &views::PageChrome::from_user(None, "/__coverage/challenge"),
+            &views::PageChrome::from_user(
+                None,
+                "/__coverage/challenge",
+                clock::Clock::System.now(),
+            ),
             &view,
         )
         .into_string(),
@@ -764,7 +768,7 @@ async fn verified_domain(State(control): State<Controls>) -> StatusCode {
     {
         return StatusCode::NO_CONTENT;
     }
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now().as_secs();
     let made = db
         .create_store_domain(id, &store, "coverage-shop.example", "token", now, None)
         .is_ok_and(|made| made.is_ok());
@@ -798,14 +802,15 @@ async fn seed_custom_page(
         css: String::new(),
         written_css: text("written_css"),
         preview_token: uuid::Uuid::new_v4().to_string(),
-        created_at: monokulo::now_unix(),
+        created_at: clock::Clock::System.now().as_secs(),
     };
     let token = uuid::Uuid::new_v4().to_string();
-    match control
-        .db
-        .lock()
-        .publish_checkout_page(&draft, &token, &domains, monokulo::now_unix())
-    {
+    match control.db.lock().publish_checkout_page(
+        &draft,
+        &token,
+        &domains,
+        clock::Clock::System.now().as_secs(),
+    ) {
         Ok(true) => StatusCode::NO_CONTENT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -856,7 +861,7 @@ async fn connect_plugin(
     State(control): State<Controls>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let store = engine_protocol::ids::ConnectionId::new("coverage-store");
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now().as_secs();
     // Connected six days ago, as a plugin's connect finishes.
     let connected = monokulo::plugins::connect(
         &control.db,
@@ -904,7 +909,7 @@ async fn seed_webhooks(
             .delete_webhook(&store, &webhook.id)
             .map_err(failed)?;
     }
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now().as_secs();
     // `?receiver`: one webhook, to this fixture's own receiver, which
     // answers every delivery (`?receiver=500` with that status): "Send a
     // test webhook" has a real server to reach.
@@ -921,6 +926,7 @@ async fn seed_webhooks(
                 ),
             },
             &Default::default(),
+            clock::Clock::System.now(),
         )
         .await
         .map_err(failed)?;
@@ -935,6 +941,7 @@ async fn seed_webhooks(
             &store,
             "https://bakery.example/hooks/monokulo",
             &Default::default(),
+            clock::Clock::System.now(),
         )
         .await
         .map_err(failed)?;
@@ -1095,6 +1102,7 @@ async fn seed_webhooks(
             &store,
             url,
             &Default::default(),
+            clock::Clock::System.now(),
         )
         .await
         .map_err(failed)?;
@@ -1210,7 +1218,7 @@ async fn status_story(State(control): State<Controls>, Path(story): Path<String>
     let Ok(mut status) = control.client.get_status().await else {
         return StatusCode::BAD_GATEWAY;
     };
-    let now = monokulo::now_unix();
+    let now = clock::Clock::System.now().as_secs();
     let tip = 3_412_881;
     let behind = match story.as_str() {
         "following" | "held" => 3,
@@ -1416,7 +1424,7 @@ fn record_order(
         amount: "0.001",
         piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(1_000_000_000_000),
         provider: "fixed",
-        created_at: monokulo::now_unix(),
+        created_at: clock::Clock::System.now().as_secs(),
         base_currency: "XMR",
         base_currency_piconero_per_unit: None,
         confirmations_required_applied: 1,
@@ -1483,7 +1491,7 @@ async fn main() {
         &credentials::auth::RawToken::presented(SESSION).hash(),
         &engine_protocol::ids::UserId::new("coverage-merchant"),
         // Now, not 0: a session expires (`Db::SESSION_LIFETIME_SECONDS`).
-        monokulo::now_unix(),
+        clock::Clock::System.now().as_secs(),
     )
     .expect("create fixture session");
     db.create_user(
@@ -1497,7 +1505,7 @@ async fn main() {
     db.create_session(
         &credentials::auth::RawToken::presented(ADMIN_SESSION).hash(),
         &engine_protocol::ids::UserId::new("coverage-admin"),
-        monokulo::now_unix(),
+        clock::Clock::System.now().as_secs(),
     )
     .expect("create fixture admin session");
     record_baseline(&engine);
@@ -1551,7 +1559,7 @@ async fn main() {
         Some("Fixture order"),
         // Recorded as the order is made, as the POS does: the time left to
         // pay runs from here.
-        monokulo::now_unix(),
+        clock::Clock::System.now().as_secs(),
     )
     .expect("create fixture POS order");
     record_order(&db, &order.order_id, Some("pos")).expect("record fixture POS order");
@@ -1567,12 +1575,17 @@ async fn main() {
         // Every browser test comes from one address, far faster than a real
         // visitor: generous per-address limits, so no test is sent to the
         // challenge page by accident (the challenge has its own route).
-        abuse: Arc::new(abuse::AbuseProtection::new(abuse::AbuseConfig {
-            soft_per_min: 10_000,
-            hard_per_min: 20_000,
-            signed_in_per_min: 10_000,
-            ..Default::default()
-        })),
+        abuse: Arc::new(
+            abuse::AbuseProtection::new(abuse::AbuseConfig {
+                soft_per_min: 10_000,
+                hard_per_min: 20_000,
+                signed_in_per_min: 10_000,
+                ..Default::default()
+            })
+            .with_clock(clock::Clock::System),
+        ),
+        // A live server: the browser sees the real time.
+        clock: clock::Clock::System,
         proofs: domain_proof::Proofs {
             dns: Arc::new(domain_proof::UnavailableDns(
                 "DNS is unavailable in browser tests".into(),

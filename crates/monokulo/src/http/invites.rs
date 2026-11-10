@@ -22,7 +22,6 @@ use serde::Deserialize;
 
 use crate::db::{InviteRequestRow, UserRow};
 use crate::network::OnNetwork;
-use crate::now_unix;
 use crate::views;
 use crate::views::admin::{AdminInviteRequestRow, AdminInvitesViewModel, RequestInviteViewModel};
 
@@ -90,7 +89,7 @@ pub async fn request_invite_submit(
     }
 
     let request_id = uuid::Uuid::new_v4().to_string();
-    let now = now_unix();
+    let now = state.clock.now().as_secs();
     let raw_token = credentials::auth::generate_invite_token();
     let token_hash = raw_token.hash();
     let token_encrypted = crate::crypto::encrypt(
@@ -250,7 +249,7 @@ async fn render_invites_page(
     // Built on the address the admin is using: the onion address for an
     // admin on Tor, so a link they pass on works where they got it.
     let base = on.link("");
-    let clock = crate::views::time::Clock::for_user(admin_user);
+    let clock = crate::views::time::Clock::for_user(admin_user, state.clock.now());
     let deleted_id = deleted_id.map(str::to_string);
     let (total_pages, page, rows, just_deleted) = state
         .db
@@ -333,9 +332,10 @@ pub async fn create_invite_link(
     let raw_token = credentials::auth::generate_invite_token();
     let token_hash = raw_token.hash();
     let link_id = uuid::Uuid::new_v4().to_string();
+    let now = state.clock.now().as_secs();
     let created = state
         .db
-        .write(move |db| db.create_invite_link(&link_id, &token_hash, None, None, now_unix()))
+        .write(move |db| db.create_invite_link(&link_id, &token_hash, None, None, now))
         .await;
     if created.is_err() {
         return render_invites_page(
@@ -381,9 +381,10 @@ pub async fn delete_invite_request(
 ) -> Response {
     let deleted = id.clone();
     let page = query.page.unwrap_or(1);
+    let now = state.clock.now().as_secs();
     let result = state
         .db
-        .write(move |db| db.delete_invite_request(&deleted, now_unix()))
+        .write(move |db| db.delete_invite_request(&deleted, now))
         .await;
     // A delete that didn't happen is said so, not shown struck through.
     if let Err(e) = result {
@@ -431,9 +432,10 @@ pub async fn delete_all_invite_requests(
     fx: FxRequest,
     on: OnNetwork,
 ) -> Response {
+    let now = state.clock.now().as_secs();
     let cleared = state
         .db
-        .write(|db| db.delete_all_unactioned_invite_requests(now_unix()))
+        .write(move |db| db.delete_all_unactioned_invite_requests(now))
         .await
         .unwrap_or(0);
     if fx.0 {

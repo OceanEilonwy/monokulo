@@ -199,12 +199,14 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         state.push.clone(),
         state.apps.clone(),
         crate::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
+        state.clock.clone(),
     ));
     let worker = tokio::spawn(crate::webhooks::delivery::run_delivery_loop(
         state.db.clone(),
         state.encryption_key.clone(),
         state.settings.clone(),
         state.webhooks.clone(),
+        state.clock.clone(),
     ));
     let session_token = signed_up_and_logged_in_session_token(
         &router,
@@ -260,12 +262,15 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         .to_string();
     engine.mark_order_paid(&order_id).unwrap();
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60); // bounds only a hung run
     let (headers, body) = loop {
         if let Some(first) = received.lock().first().cloned() {
             break first;
         }
-        assert!(std::time::Instant::now() < deadline, "no webhook delivered");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no webhook delivered"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
     subscriber.abort();
@@ -276,7 +281,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         &secret,
         body.as_bytes(),
         headers["x-monokulo-signature"].to_str().unwrap(),
-        service_runtime::time::now_unix()
+        state.clock.now().as_secs()
     ));
     let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(payload["order_id"], order_id.as_str(), "{payload}");
@@ -329,11 +334,12 @@ async fn store_with_deliveries(
         &crate::db::ConnectionId::new(store.clone()),
         "https://erp.bakery.example/payments/in",
         &std::collections::BTreeMap::from([("X-Api-Key".to_string(), "never-shown".to_string())]),
+        state.clock.now(),
     )
     .await
     .unwrap();
     let webhook = created.webhook.id.to_string();
-    let now = crate::now_unix();
+    let now = state.clock.now().as_secs();
     let db = state.db.lock();
     let mut ids = Vec::new();
     for (seq, (event_type, attempts, delivered)) in [
