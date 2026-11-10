@@ -3640,7 +3640,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some(("old", "50", 20, clock::Clock::System.now().as_secs())),
+                Some(("old", "50", 20, state.clock.now().as_secs())),
             )
             .unwrap();
         let row = state
@@ -3732,7 +3732,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some(("keep", "50", 20, clock::Clock::System.now().as_secs())),
+                Some(("keep", "50", 20, state.clock.now().as_secs())),
             )
             .unwrap();
         let response = router
@@ -3850,7 +3850,7 @@ mod tests {
                 crate::confirmation_thresholds::PolicyProof::for_test(),
                 &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
-                Some((existing_id, "50", 20, clock::Clock::System.now().as_secs())),
+                Some((existing_id, "50", 20, state.clock.now().as_secs())),
             )
             .unwrap();
         let delete_field = format!("delete_{existing_id}");
@@ -5325,6 +5325,7 @@ mod tests {
             display_name: "shop.example.com".to_string(),
             order: Some(order),
         };
+        // A page built from a model: no time on it is compared with a clock.
         let chrome = crate::views::PageChrome::from_user(None, "", clock::Clock::System.now());
         let html = crate::views::orders::detail_page(&chrome, &data).into_string();
         assert!(

@@ -40,7 +40,7 @@ impl Shop {
             ..fixture.state.clone()
         };
         // Only the domain this test says: the fixture's own isn't verified.
-        let at = clock::Clock::System.now().as_secs();
+        let at = state.clock.now().as_secs();
         {
             let db = state.db.lock();
             let conn = db.conn_for_test();
@@ -323,7 +323,7 @@ async fn a_draft_that_no_longer_passes_is_refused_as_such() {
             "",
             "",
             "older",
-            clock::Clock::System.now().as_secs(),
+            shop.state.clock.now().as_secs(),
         )
         .unwrap();
     let refused = shop.sk("POST", PUBLISH, None).await;
@@ -339,7 +339,7 @@ async fn a_draft_that_no_longer_passes_is_refused_as_such() {
 async fn a_store_with_both_domains_needs_both_to_approve() {
     const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
     let shop = Shop::new(Some("shop.example")).await;
-    let at = clock::Clock::System.now().as_secs();
+    let at = shop.state.clock.now().as_secs();
     shop.state
         .db
         .lock()
@@ -400,7 +400,7 @@ async fn a_store_with_both_domains_needs_both_to_approve() {
 async fn a_stores_two_proofs_cant_be_matched() {
     const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
     let shop = Shop::new(Some("shop.example")).await;
-    let at = clock::Clock::System.now().as_secs();
+    let at = shop.state.clock.now().as_secs();
     shop.state
         .db
         .lock()
@@ -439,7 +439,7 @@ async fn a_turned_off_page_stays_off() {
         .lock()
         .set_checkout_page_turned_off(
             &store,
-            Some((clock::Clock::System.now().as_secs(), "Wrong address"))
+            Some((shop.state.clock.now().as_secs(), "Wrong address"))
         )
         .unwrap());
 

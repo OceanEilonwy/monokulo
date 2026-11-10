@@ -900,12 +900,7 @@ async fn malformed_stored_threshold_cannot_fall_back_to_zero_conf() {
             crate::confirmation_thresholds::PolicyProof::for_test(),
             &row.id,
             &[],
-            Some((
-                "corrupt",
-                "not-an-amount",
-                20,
-                clock::Clock::System.now().as_secs(),
-            )),
+            Some(("corrupt", "not-an-amount", 20, state.clock.now().as_secs())),
         )
         .unwrap();
     let response = router

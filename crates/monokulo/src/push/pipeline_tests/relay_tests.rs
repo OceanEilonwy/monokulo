@@ -302,6 +302,8 @@ async fn a_paid_sale_reaches_apns_through_the_relay_and_decrypts_on_the_device_o
         policy_topic(&target, &order)
     );
     let expiration: i64 = received.header("apns-expiration").parse().unwrap();
+    // The relay reads the system's time (`Clock::System`, `chain`), not the
+    // world's, so its expiry is checked against the system's.
     let now = clock::Clock::System.now().as_secs();
     assert!(
         (now + 1_700..=now + 1_800).contains(&expiration),

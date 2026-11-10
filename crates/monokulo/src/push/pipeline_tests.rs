@@ -45,7 +45,7 @@ async fn world() -> World {
         engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let fixture = fixture(engine.router(), PUBLIC_URI, &Recorder::default()).await;
     let client = PushClient::build(fixture.state.push.vapid(), None).unwrap();
-    let (clock, hand) = clock::Clock::manual(clock::Clock::System.now());
+    let (clock, hand) = clock::Clock::manual(fixture.state.clock.now());
     World {
         engine,
         fixture,
@@ -1281,7 +1281,6 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
     .await
     .expect("the paid event is queued and wakes the worker");
     subscriber.abort();
-    world.set(clock::Clock::System.now().as_secs());
     assert_eq!(world.tick().await, 1);
 
     let received = stub.received.lock();
@@ -1300,7 +1299,7 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
         &authorization,
         &state.push.vapid_public_key(),
         &::push::Origin::parse(&origin).unwrap(),
-        clock::Clock::System.now(),
+        world.clock.now(),
     )
     .expect("signed by this Monokulo for the push service's origin");
 

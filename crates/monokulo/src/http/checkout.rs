@@ -1962,7 +1962,7 @@ mod tests {
             .lock()
             .mark_double_spend_detected(
                 &engine_protocol::ids::OrderId::new(order_id.to_string()),
-                clock::Clock::System.now().as_secs()
+                state.clock.now().as_secs()
             )
             .unwrap());
 
@@ -2024,13 +2024,9 @@ mod tests {
     /// replaces, then only the parts that change.
     #[tokio::test]
     async fn the_routed_checkout_stream_sends_only_changed_parts_to_their_elements() {
+        // The state's clock is fixed, so the countdown is the same in every
+        // render and only the order's own change is sent.
         let (state, engine) = test_state_with_real_engine().await;
-        // Fixed, so the countdown is the same in every render and only the
-        // order's own change is sent.
-        let state = AppState {
-            clock: clock::Clock::Fixed(clock::Clock::System.now()),
-            ..state
-        };
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2164,7 +2160,7 @@ mod tests {
             .lock()
             .mark_double_spend_detected(
                 &engine_protocol::ids::OrderId::new(order_id.to_string()),
-                clock::Clock::System.now().as_secs()
+                state.clock.now().as_secs()
             )
             .unwrap());
         let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)

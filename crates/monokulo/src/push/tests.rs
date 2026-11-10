@@ -2,6 +2,10 @@ use super::*;
 use crate::db::{Database, Db};
 use crate::http::TEST_ENCRYPTION_KEY;
 
+// These tests have no state and no clock: the key's creation time is stored
+// but never compared with a render, so the system clock is read where it is
+// made.
+
 fn database() -> Database {
     Database::inline(Db::open_in_memory().unwrap().into_shared())
 }

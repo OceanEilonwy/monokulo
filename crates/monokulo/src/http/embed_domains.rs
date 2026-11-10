@@ -1134,7 +1134,7 @@ mod tests {
             &state.db,
             &state.proofs,
             &row,
-            clock::Clock::System.now().as_secs(),
+            state.clock.now().as_secs(),
         )
         .await
         .unwrap();
@@ -1255,7 +1255,7 @@ mod tests {
             &state.db,
             &state.proofs,
             &row,
-            clock::Clock::System.now().as_secs(),
+            state.clock.now().as_secs(),
         )
         .await
         .unwrap();
@@ -1522,7 +1522,7 @@ mod tests {
             &state.db,
             &state.proofs,
             &row,
-            clock::Clock::System.now().as_secs(),
+            state.clock.now().as_secs(),
         )
         .await
         .unwrap();
@@ -1658,12 +1658,18 @@ mod tests {
         let warnings = super::store_page_warnings(
             &state,
             &engine_protocol::ids::ConnectionId::new(id.to_string()),
-            clock::Clock::System.now().as_secs(),
+            state.clock.now().as_secs(),
         )
         .await;
         assert!(!warnings.shown_nowhere);
         dns.remove("_monokulo.store-home.example");
-        let later = clock::Clock::System.now().as_secs() + domain_proof::RECHECK_EVERY_SECS;
+        let later = state
+            .clock
+            .now()
+            .saturating_add(std::time::Duration::from_secs(
+                domain_proof::RECHECK_EVERY_SECS.unsigned_abs(),
+            ))
+            .as_secs();
         embed_domains::recheck_due(&state.db, &state.proofs, later).await;
         let failing_since = state
             .db
@@ -1942,7 +1948,7 @@ mod tests {
             "_monokulo.shop.example",
             &domain_proof::VERIFY.value(&row.token),
         );
-        let now = clock::Clock::System.now().as_secs();
+        let now = state.clock.now().as_secs();
         embed_domains::check_and_record(&state.db, &state.proofs, &row, now)
             .await
             .unwrap();
@@ -2126,7 +2132,13 @@ mod tests {
             .lock()
             .record_store_domain_check(
                 &row.id,
-                clock::Clock::System.now().as_secs() - domain_proof::MIN_CHECK_GAP_SECS,
+                state
+                    .clock
+                    .now()
+                    .saturating_sub(std::time::Duration::from_secs(
+                        domain_proof::MIN_CHECK_GAP_SECS.unsigned_abs(),
+                    ))
+                    .as_secs(),
                 Some("missing"),
             )
             .unwrap();
@@ -2236,7 +2248,7 @@ mod tests {
         // DNS is back and the record published: verified; the store is
         // restricted to it.
         dns.publish(name, &domain_proof::VERIFY.value(&row.token));
-        let now = clock::Clock::System.now().as_secs();
+        let now = state.clock.now().as_secs();
         embed_domains::check_and_record(&state.db, &state.proofs, &row, now)
             .await
             .unwrap();
@@ -2440,7 +2452,7 @@ mod tests {
             &domain_proof::VERIFY.record_name(&old.domain),
             &domain_proof::VERIFY.value(&old.token),
         );
-        let now = clock::Clock::System.now().as_secs();
+        let now = state.clock.now().as_secs();
         embed_domains::check_and_record(&state.db, &state.proofs, &old, now)
             .await
             .unwrap();
@@ -2557,7 +2569,11 @@ mod tests {
             &state.db,
             &state.proofs,
             &old,
-            clock::Clock::System.now().as_secs() - 60,
+            state
+                .clock
+                .now()
+                .saturating_sub(std::time::Duration::from_secs(60))
+                .as_secs(),
         )
         .await
         .unwrap();
@@ -2761,7 +2777,7 @@ mod tests {
         let id = create_store(&router, &state, &session).await;
         let store = engine_protocol::ids::ConnectionId::new(id.to_string());
         let domain = state.db.lock().list_store_domains(&store).unwrap()[0].clone();
-        let now = clock::Clock::System.now().as_secs();
+        let now = state.clock.now().as_secs();
         state
             .db
             .lock()

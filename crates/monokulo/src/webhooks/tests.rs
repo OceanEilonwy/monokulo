@@ -190,7 +190,7 @@ async fn a_delivery_is_signed_with_the_webhooks_secret_and_names_its_event() {
         &store,
         &url,
         &BTreeMap::from([("X-Api-Key".to_string(), "k1".to_string())]),
-        clock::Clock::System.now(),
+        UnixTime::from_secs(1_000),
     )
     .await
     .unwrap();
@@ -205,7 +205,8 @@ async fn a_delivery_is_signed_with_the_webhooks_secret_and_names_its_event() {
     let paid = event(1, "s1", "o1", "order.paid");
     assert_eq!(queue(&db, &paid, 1000), 1);
 
-    let (clock, hand) = manual(clock::Clock::System.now().as_secs());
+    // No state here, so a moment of its own: well after the delivery's queueing.
+    let (clock, hand) = manual(1_790_000_000);
     let now = hand.now().as_secs();
     let picked = tick(&db, &client(), &config(true, 8), &clock).await;
     assert_eq!(picked, 1);
@@ -278,7 +279,7 @@ async fn a_webhook_is_refused_a_reserved_header_or_a_url_that_isnt_http() {
             &store,
             url,
             &headers,
-            clock::Clock::System.now(),
+            UnixTime::from_secs(1_000),
         )
         .await
         {
@@ -656,6 +657,7 @@ impl Shop {
             self.state.engine.client.clone(),
             Arc::clone(&self.state.webhooks),
         );
+        let clock = self.state.clock.clone();
         let addresses =
             crate::webhooks::Addresses::new(self.state.settings.clone(), self.state.tor.clone());
         tokio::spawn(async move {
@@ -666,7 +668,7 @@ impl Shop {
                 &crate::push::Push::for_tests(),
                 &Default::default(),
                 &addresses,
-                &clock::Clock::System,
+                &clock,
                 || {},
             )
             .await;
@@ -989,7 +991,7 @@ async fn the_subscriber_skips_events_the_engine_no_longer_has() {
                     engine_protocol::order_status::OrderStatus::Unconfirmed,
                 ),
                 &[],
-                clock::Clock::System.now().as_secs(),
+                shop.state.clock.now().as_secs(),
             )
             .unwrap();
         store
@@ -1026,7 +1028,7 @@ async fn an_engine_event_reaches_the_endpoint_once() {
     let reading = shop.subscribe();
     shop.deliveries(&webhook, 1).await;
     reading.abort();
-    let (clock, hand) = manual(clock::Clock::System.now().as_secs());
+    let (clock, hand) = manual(shop.state.clock.now().as_secs());
     let sent = AtomicUsize::new(0);
     for _ in 0..3 {
         sent.fetch_add(
@@ -1152,12 +1154,12 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
             &token,
             &shop.store,
             "Till",
-            clock::Clock::System.now().as_secs(),
+            shop.state.clock.now().as_secs(),
         )
         .unwrap();
         db.redeem_app_connect_token(
             &token,
-            clock::Clock::System.now().as_secs(),
+            shop.state.clock.now().as_secs(),
             600,
             &crate::db::NewApp {
                 slug: "monokular",
@@ -1184,6 +1186,7 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
         Arc::clone(&shop.state.webhooks),
         Arc::clone(&apps),
     );
+    let clock = shop.state.clock.clone();
     let addresses =
         crate::webhooks::Addresses::new(shop.state.settings.clone(), shop.state.tor.clone());
     let reader = tokio::spawn(async move {
@@ -1194,7 +1197,7 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
             &crate::push::Push::for_tests(),
             &listening,
             &addresses,
-            &clock::Clock::System,
+            &clock,
             || {},
         )
         .await;

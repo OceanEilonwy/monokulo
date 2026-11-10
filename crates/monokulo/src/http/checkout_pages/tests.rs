@@ -161,7 +161,7 @@ impl Wizard {
         self.state
             .db
             .lock()
-            .checkout_page_draft(&self.store, clock::Clock::System.now().as_secs())
+            .checkout_page_draft(&self.store, self.state.clock.now().as_secs())
             .unwrap()
     }
 }
@@ -200,7 +200,7 @@ async fn wizard(email: &str, verified: bool) -> Wizard {
             &state.db,
             &state.proofs,
             &row,
-            clock::Clock::System.now().as_secs(),
+            state.clock.now().as_secs(),
         )
         .await
         .unwrap();
@@ -495,8 +495,14 @@ async fn saving_is_limited_per_store_and_a_draft_expires_and_can_be_discarded() 
     assert!(html.contains("a lot of saves"), "{html}");
     assert!(html.contains("what I typed"), "{html}");
 
-    let now = clock::Clock::System.now().as_secs();
-    let later = now + crate::db::DRAFT_SECS + 1;
+    let later = wizard
+        .state
+        .clock
+        .now()
+        .saturating_add(std::time::Duration::from_secs(
+            crate::db::DRAFT_SECS.unsigned_abs() + 1,
+        ))
+        .as_secs();
     assert!(wizard.draft().is_some());
     let expired = wizard
         .state
@@ -526,7 +532,7 @@ async fn saving_is_limited_per_store_and_a_draft_expires_and_can_be_discarded() 
 async fn only_stylesheets_nothing_links_are_pruned() {
     let wizard = wizard("prune@example.com", true).await;
     let (store, day) = (wizard.store.clone(), 24 * 60 * 60);
-    let start = clock::Clock::System.now().as_secs();
+    let start = wizard.state.clock.now().as_secs();
     use crate::views::checkout_style::{CheckoutStyle, Roles};
     let replaced = CheckoutStyle {
         transparent: true,
@@ -573,7 +579,7 @@ async fn only_stylesheets_nothing_links_are_pruned() {
 async fn a_store_holds_one_drafts_stylesheet() {
     let wizard = wizard("one-sheet@example.com", true).await;
     let store = wizard.store.clone();
-    let now = clock::Clock::System.now().as_secs();
+    let now = wizard.state.clock.now().as_secs();
     let db = wizard.state.db.lock();
     let (first, second) = ("#checkout-root a{}", "#checkout-root b{}");
     db.save_checkout_page_draft(&store, GOOD, "", first, "t1", now)
@@ -808,7 +814,7 @@ async fn a_pages_proof_is_checked_with_a_grace_period_and_no_answer_means_nothin
             .unwrap()
         }
     };
-    let now = clock::Clock::System.now().as_secs();
+    let now = wizard.state.clock.now().as_secs();
     let at = |wizard: &Wizard, when: i64| standing(&wizard.published().unwrap(), &domains, when);
 
     // An outage, longer than the grace period: still working.
@@ -882,7 +888,7 @@ async fn an_onion_only_store_approves_with_a_file_over_tor() {
         db.create_store_domain("o", &id, ONION, "t", 1, None)
             .unwrap()
             .unwrap();
-        db.record_store_domain_check("o", clock::Clock::System.now().as_secs(), None)
+        db.record_store_domain_check("o", state.clock.now().as_secs(), None)
             .unwrap();
     }
     let wizard = Wizard {
@@ -1032,7 +1038,7 @@ async fn the_card_says_where_a_page_stands() {
         .state
         .db
         .lock()
-        .record_store_domain_check(&row.id, clock::Clock::System.now().as_secs(), None)
+        .record_store_domain_check(&row.id, wizard.state.clock.now().as_secs(), None)
         .unwrap();
     assert!(wizard.get(&tab).await.1.contains("Create a custom page"));
     wizard.save(GOOD, "").await;
@@ -1055,7 +1061,7 @@ async fn the_card_says_where_a_page_stands() {
         db.record_checkout_page_check(
             &wizard.store,
             &token,
-            clock::Clock::System.now().as_secs(),
+            wizard.state.clock.now().as_secs(),
             true,
             "gone",
         )
@@ -1097,7 +1103,7 @@ async fn a_stream_on_an_old_version_tells_the_page_to_load_again() {
 #[tokio::test]
 async fn nothing_slow_touches_what_replaced_it() {
     let wizard = wizard("races@example.com", true).await;
-    let (store, now) = (wizard.store.clone(), clock::Clock::System.now().as_secs());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now().as_secs());
     let db = wizard.state.db.lock();
     db.save_checkout_page_draft(&store, GOOD, "", "", "t1", now)
         .unwrap();
@@ -1127,7 +1133,7 @@ async fn an_open_page_stops_following_a_page_that_stopped_showing() {
     let wizard = wizard("open-page@example.com", true).await;
     wizard.publish().await;
     let token = wizard.published().unwrap().token;
-    let (store, now) = (wizard.store.clone(), clock::Clock::System.now().as_secs());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now().as_secs());
     let db = wizard.state.db.lock();
     let showing = |at: i64| {
         crate::checkout_pages::page_still_showing(&db, &store, &token, at)
@@ -1151,7 +1157,7 @@ async fn an_open_page_stops_following_a_page_that_stopped_showing() {
 #[tokio::test]
 async fn each_start_writes_a_live_pages_css_again() {
     let wizard = wizard("refresh-page@example.com", true).await;
-    let (store, now) = (wizard.store.clone(), clock::Clock::System.now().as_secs());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now().as_secs());
     let css = "p{color:red}";
     let written = check_draft(GOOD, css).unwrap().written_css;
     let db = wizard.state.db.lock();
@@ -1191,7 +1197,7 @@ async fn a_web_domain_and_an_onion_address_must_both_approve() {
         state,
         ..wizard
     };
-    let (store, now) = (wizard.store.clone(), clock::Clock::System.now().as_secs());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now().as_secs());
     {
         let db = wizard.state.db.lock();
         db.create_store_domain("o", &store, ONION, "t", 1, None)
@@ -1294,7 +1300,7 @@ async fn a_domain_added_under_a_live_page_waits_for_its_own_proof() {
     const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
     let wizard = wizard("added@example.com", true).await;
     wizard.publish().await;
-    let (store, now) = (wizard.store.clone(), clock::Clock::System.now().as_secs());
+    let (store, now) = (wizard.store.clone(), wizard.state.clock.now().as_secs());
     {
         let db = wizard.state.db.lock();
         db.create_store_domain("o", &store, ONION, "t", 1, None)
