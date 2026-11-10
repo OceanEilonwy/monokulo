@@ -142,6 +142,7 @@ impl SnpSlot {
             Arc::clone(&self.guest),
             config,
             Arc::clone(&self.wraps),
+            clock::Clock::System,
         )?);
         *started = Some(Arc::clone(&backend));
         Ok(backend)
@@ -227,7 +228,7 @@ pub async fn request_handoff(
     anchor: &Anchor,
 ) -> Result<(), String> {
     let bundle = snp
-        .handoff_bundle(::key_custody::snp::unix_now())
+        .handoff_bundle(clock::Clock::System.now())
         .map_err(|e| e.to_string())?;
     let url = format!(
         "{}/api/v1/admin/key-custody/handoff",
@@ -247,5 +248,5 @@ pub async fn request_handoff(
     }
     let answer: ::key_custody::transport::HandoffAnswer =
         response.json().await.map_err(|e| e.to_string())?;
-    snp.accept_handoff(&answer, anchor, ::key_custody::snp::unix_now())
+    snp.accept_handoff(&answer, anchor, clock::Clock::System.now())
 }

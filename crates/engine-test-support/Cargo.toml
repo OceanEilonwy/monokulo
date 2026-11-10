@@ -5,6 +5,8 @@ repository.workspace = true
 edition = "2021"
 
 [dependencies]
+# What time it is, for the SNP stand-in's bundle check.
+clock = { path = "../clock" }
 telemetry = { path = "../telemetry" }
 live-settings = { path = "../live-settings" }
 parking_lot = "0.12.5"

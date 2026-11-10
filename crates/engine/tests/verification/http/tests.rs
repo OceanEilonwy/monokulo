@@ -4368,6 +4368,7 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
         false,
         "info",
         std::io::sink,
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
     );
     let log_store = telemetry.open_store(&dir.join("engine.logs.db")).unwrap();
     let trace_id = {

@@ -122,7 +122,10 @@ fn the_address_is_used_while_tor_publishes_it() {
 #[tokio::test]
 async fn tor_inside_monokulo_gives_its_own_address_once_it_has_one() {
     let state = AppState {
-        tor: Tor::running_at(ONION),
+        tor: Tor::running_at(
+            ONION,
+            clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
+        ),
         ..state_with(TorConfig {
             mode: TorMode::Inside,
             ..TorConfig::defaults()

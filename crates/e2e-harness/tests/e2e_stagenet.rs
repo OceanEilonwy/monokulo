@@ -49,7 +49,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
 use engine::http::rate_limit::ApiRateLimits;
-use engine::http::{build_router, now_unix, AppState};
+use engine::http::{build_router, AppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletMaterial};
 use engine::network::network_str;
 use engine::scanner::run_scan_tick;
@@ -170,7 +170,7 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
                 confirmations_required: Some(e2e_fixture::PAYMENT_CONFIRMATIONS_REQUIRED),
                 order_expiry_seconds: Some(e2e_fixture::PAYMENT_ORDER_EXPIRY_MINUTES * 60),
             },
-            now_unix(),
+            clock::Clock::System.now().as_secs(),
         )
         .expect("failed to create tenant");
     let sk = created.secret_token.clone();
@@ -238,7 +238,7 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
         "POST",
         "/api/v1/admin/tenant/orders".to_owned(),
         Some(json!({
-            "merchant_order_id": format!("rust-e2e-{}", now_unix()),
+            "merchant_order_id": format!("rust-e2e-{}", clock::Clock::System.now()),
             "xmr_amount_piconero": 335_000_000u64,
         })),
     )

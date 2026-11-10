@@ -434,7 +434,7 @@ fn challenge_page(
     client: &ClientIdentity,
     request: &Request,
     error: Option<String>,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Response {
     let config = state.abuse.config();
     let issued = state
@@ -468,7 +468,7 @@ fn challenge_json(
     state: &AppState,
     client: &ClientIdentity,
     error: Option<String>,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Response {
     let issued = state
         .abuse
@@ -1182,10 +1182,10 @@ mod tests {
             )
             .unwrap();
         }
-        state
-            .abuse
-            .stats
-            .record(abuse::stats::Event::Issued, crate::now_unix());
+        state.abuse.stats.record(
+            abuse::stats::Event::Issued,
+            clock::UnixTime::from_secs(crate::now_unix()),
+        );
         let router = build_router(state);
         let page = |cookie: Option<&'static str>| {
             let mut request = Request::builder()

@@ -296,6 +296,7 @@ mod tests {
             false,
             "info",
             std::io::sink,
+            clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
         );
         let store = telemetry
             .open_store(&dir.join(format!("{service}.logs.db")))

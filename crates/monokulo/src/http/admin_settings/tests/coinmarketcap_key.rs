@@ -201,6 +201,7 @@ impl Lines {
             false,
             "trace",
             move || writer.clone(),
+            clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
         );
         (lines, tracing::subscriber::set_default(subscriber))
     }

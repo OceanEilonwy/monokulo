@@ -32,7 +32,10 @@ api::resource!(
 )]
 async fn publish(store: Store, instance: Instance) -> api::Result<checkout_page::Body> {
     let state = instance.0;
-    if !pages::CHECKS.check(store.id.clone(), crate::now_unix()) {
+    if !pages::CHECKS.check(
+        store.id.clone(),
+        clock::UnixTime::from_secs(crate::now_unix()),
+    ) {
         return Err(checkout_page_draft::too_often(
             "That's a lot of lookups. Wait a minute, then try again.",
         ));

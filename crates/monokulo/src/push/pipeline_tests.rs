@@ -411,6 +411,7 @@ impl Lines {
             false,
             "trace",
             move || writer.clone(),
+            clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
         );
         (lines, tracing::subscriber::set_default(subscriber))
     }
@@ -1302,7 +1303,7 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
         &authorization,
         &state.push.vapid_public_key(),
         &::push::Origin::parse(&origin).unwrap(),
-        crate::now_unix(),
+        clock::UnixTime::from_secs(crate::now_unix()),
     )
     .expect("signed by this Monokulo for the push service's origin");
 
@@ -2483,7 +2484,7 @@ async fn each_push_service_gets_a_token_for_its_own_origin_only_over_http() {
 
     let key = world.fixture.state.push.vapid_public_key();
     let origin = |text: &str| ::push::Origin::parse(text).unwrap();
-    let now = world.clock.now();
+    let now = clock::UnixTime::from_secs(world.clock.now());
     let header = |stub: &Stub| {
         let received = stub.received.lock();
         assert_eq!(received.len(), 1);
@@ -2510,9 +2511,13 @@ async fn each_push_service_gets_a_token_for_its_own_origin_only_over_http() {
             ::push::vapid::verify(&authorization, &stranger, &origin(own), now),
             Err(::push::vapid::VapidError::KeyMismatch)
         ));
-        let expiry = i64::try_from(::push::vapid::EXPIRY.as_secs()).unwrap();
         assert!(matches!(
-            ::push::vapid::verify(&authorization, &key, &origin(own), now + expiry),
+            ::push::vapid::verify(
+                &authorization,
+                &key,
+                &origin(own),
+                now.saturating_add(::push::vapid::EXPIRY)
+            ),
             Err(::push::vapid::VapidError::Expired)
         ));
     }

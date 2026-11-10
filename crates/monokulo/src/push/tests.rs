@@ -192,7 +192,7 @@ async fn the_published_key_verifies_pushes_signed_after_a_restart() {
     let handed: ::push::VapidPublicKey = before.vapid_public_key().to_string().parse().unwrap();
     let after = Push::load_or_make(&db, &TEST_ENCRYPTION_KEY).await.unwrap();
     let service = ::push::Origin::parse("https://ntfy.sh").unwrap();
-    let now = 1_800_000_000;
+    let now = clock::UnixTime::from_secs(1_800_000_000);
     let signed = after.vapid.authorization(&service, None, now).unwrap();
     let claims = ::push::vapid::verify(&signed, &handed, &service, now).unwrap();
     assert_eq!(claims.aud, service);
@@ -209,7 +209,7 @@ async fn the_published_key_verifies_pushes_signed_after_a_restart() {
         ::push::vapid::verify(&signed, &handed, &elsewhere, now),
         Err(::push::vapid::VapidError::Audience)
     ));
-    let late = now + ::push::vapid::EXPIRY.as_secs() as i64;
+    let late = now.saturating_add(::push::vapid::EXPIRY);
     assert!(matches!(
         ::push::vapid::verify(&signed, &handed, &service, late),
         Err(::push::vapid::VapidError::Expired)

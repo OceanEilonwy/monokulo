@@ -42,7 +42,10 @@ struct DomainFound {
 #[post(sk, form = "check-checkout-page-approval", problems = [NotFound, RateLimited, Internal])]
 async fn check(store: Store, instance: Instance) -> api::Result<Body> {
     let state = instance.0;
-    if !pages::CHECKS.check(store.id.clone(), crate::now_unix()) {
+    if !pages::CHECKS.check(
+        store.id.clone(),
+        clock::UnixTime::from_secs(crate::now_unix()),
+    ) {
         return Err(checkout_page_draft::too_often(
             "That's a lot of lookups. Wait a minute, then try again.",
         ));

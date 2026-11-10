@@ -88,13 +88,15 @@ impl ApiRateLimits {
     /// Whether a call on the instance's budget is allowed at `now`, having
     /// counted it. Always, while the instance limit is off.
     fn allows_instance(&self, now: i64) -> bool {
-        !self.instance_on.load(Ordering::Relaxed) || self.instance.check((), now)
+        !self.instance_on.load(Ordering::Relaxed)
+            || self.instance.check((), clock::UnixTime::from_secs(now))
     }
 
     /// Whether a request of the store `id` is allowed at `now`, having
     /// counted it against that store's budget.
     fn allows_store(&self, id: &TenantId, now: i64) -> bool {
-        self.store.check(id.clone(), now)
+        self.store
+            .check(id.clone(), clock::UnixTime::from_secs(now))
     }
 }
 

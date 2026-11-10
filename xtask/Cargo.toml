@@ -6,6 +6,8 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# What time it is, for the wall-clock stamps on reports and timings.
+clock = { path = "../crates/clock" }
 # The coverage report pages: maud escapes every value it renders.
 maud = "0.27.0"
 serde = { version = "1", features = ["derive"] }

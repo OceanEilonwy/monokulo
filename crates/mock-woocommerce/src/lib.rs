@@ -148,6 +148,10 @@ struct ReceiverState {
     signing_secret: Option<String>,
     events: Vec<RecordedWebhookEvent>,
     seen_event_ids: HashSet<String>,
+    /// What time the signatures are judged by. The system's: this stands in
+    /// for a shop, whose clock is the real one, receiving what a real
+    /// monokulo signed.
+    clock: clock::Clock,
 }
 
 /// This driver's own real webhook receiver - a genuine, network-bound axum
@@ -216,7 +220,10 @@ async fn webhook_handler(
         return StatusCode::UNAUTHORIZED;
     };
 
-    let signing_secret = { state.lock().signing_secret.clone() };
+    let (signing_secret, now) = {
+        let state = state.lock();
+        (state.signing_secret.clone(), state.clock.now())
+    };
     let Some(signing_secret) = signing_secret else {
         return StatusCode::UNAUTHORIZED;
     };
@@ -225,7 +232,7 @@ async fn webhook_handler(
         &signing_secret,
         &body,
         presented_signature,
-        service_runtime::time::now_unix(),
+        now.as_secs(),
     ) {
         return StatusCode::UNAUTHORIZED;
     }
@@ -1401,7 +1408,7 @@ mod tests {
             &credentials.webhook_signing_secret,
             &event.raw_body,
             &event.signature,
-            service_runtime::time::now_unix()
+            clock::Clock::System.now().as_secs()
         ));
         // And a specificity check: an arbitrary wrong secret must not verify the
         // same real bytes/signature - ruling out a `verify_signature` that
@@ -1410,7 +1417,7 @@ mod tests {
             "definitely-the-wrong-secret",
             &event.raw_body,
             &event.signature,
-            service_runtime::time::now_unix()
+            clock::Clock::System.now().as_secs()
         ));
 
         // And the receiver itself refuses what isn't signed with that
@@ -1425,7 +1432,7 @@ mod tests {
         let client = reqwest::Client::new();
         let wrong_signature = credentials::webhook_sign::sign_payload(
             "not-the-real-secret",
-            service_runtime::time::now_unix(),
+            clock::Clock::System.now().as_secs(),
             body.as_bytes(),
         );
         let rejected = client
@@ -1567,7 +1574,7 @@ mod tests {
             &credentials.webhook_signing_secret,
             &paid.raw_body,
             &paid.signature,
-            service_runtime::time::now_unix()
+            clock::Clock::System.now().as_secs()
         ));
 
         // And the order in the API, as the plugin reads it with its key, agrees.

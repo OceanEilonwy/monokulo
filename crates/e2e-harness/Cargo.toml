@@ -38,6 +38,8 @@ e2e = [
 ]
 
 [dependencies]
+# What time it is, for e2e email names and tenant creation.
+clock = { path = "../clock" }
 engine = { path = "../engine", optional = true }
 # The node client the harness watches the chain with.
 engine-daemon = { path = "../engine-daemon", optional = true }

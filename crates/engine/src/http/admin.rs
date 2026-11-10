@@ -829,7 +829,7 @@ pub(super) async fn answer_handoff(
         ApiError::Unavailable("this engine's snp key custody backend isn't running".into())
     })?;
     let answer = snp
-        .answer_handoff(&bundle, slot.anchor(), crate::key_custody::snp::unix_now())
+        .answer_handoff(&bundle, slot.anchor(), clock::Clock::System.now())
         .map_err(|e| match e {
             KeyCustodyError::InvalidKeyMaterial(m) => ApiError::Forbidden(m),
             other @ (KeyCustodyError::UnknownWallet

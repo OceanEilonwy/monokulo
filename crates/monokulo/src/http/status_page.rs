@@ -606,7 +606,10 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
     // Challenge activity is for operators only; anonymous visitors and
     // merchants don't see it.
     if admin {
-        let counts = state.abuse.stats.last_hour(crate::now_unix());
+        let counts = state
+            .abuse
+            .stats
+            .last_hour(clock::UnixTime::from_secs(crate::now_unix()));
         view_model.abuse = Some(views::status::AbuseStatusView {
             under_attack: state.abuse.config().under_attack,
             issued: counts.issued,

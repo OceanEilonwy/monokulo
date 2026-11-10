@@ -259,18 +259,30 @@ pub(crate) enum OnTimeout {
     KillGroup,
 }
 
+/// The monotonic clock, for measuring how long something took or waiting
+/// for a deadline. xtask is a developer tool run on one machine with no
+/// async runtime, so tokio's `Instant` (which exists for paused test time)
+/// has nothing to offer over the standard one.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a build tool with no tokio runtime: the standard monotonic clock is the right one"
+)]
+pub(crate) fn instant() -> Instant {
+    Instant::now()
+}
+
 /// Waits for `child` until `limit`; `None` when it ran out and was stopped.
 pub(crate) fn wait_with_deadline(
     child: &mut Child,
     limit: Duration,
     on_timeout: OnTimeout,
 ) -> io::Result<Option<ExitStatus>> {
-    let deadline = Instant::now() + limit;
+    let deadline = instant() + limit;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if Instant::now() >= deadline {
+        if instant() >= deadline {
             #[cfg(unix)]
             if let (OnTimeout::KillGroup, Ok(pid)) = (on_timeout, libc::pid_t::try_from(child.id()))
             {

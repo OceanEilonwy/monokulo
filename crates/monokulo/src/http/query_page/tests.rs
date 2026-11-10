@@ -311,6 +311,7 @@ async fn every_query_is_logged_with_who_ran_it() {
         false,
         "info",
         move || writer.clone(),
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
     );
     let dispatch = tracing::Dispatch::new(subscriber);
     let router = build_router(AppState::for_tests());

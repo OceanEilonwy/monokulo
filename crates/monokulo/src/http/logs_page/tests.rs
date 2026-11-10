@@ -42,6 +42,7 @@ async fn setup(extra: usize) -> Setup {
         false,
         "info",
         std::io::sink,
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
     );
     let store = telemetry
         .open_store(&dir.0.join("monokulo.logs.db"))
@@ -105,6 +106,7 @@ async fn setup(extra: usize) -> Setup {
         false,
         "info",
         std::io::sink,
+        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
     );
     let response = router
         .clone()

@@ -72,7 +72,8 @@ impl KeyBundles {
     /// `per_minute` a minute; counts this one if so.
     fn may_open(&self, user: &UserId, per_minute: u32) -> bool {
         self.opened.set_limit(per_minute);
-        self.opened.check(user.clone(), crate::now_unix())
+        self.opened
+            .check(user.clone(), clock::UnixTime::from_secs(crate::now_unix()))
     }
 
     /// Keeps `json` for `user`, dropping their oldest past `per_user` (and

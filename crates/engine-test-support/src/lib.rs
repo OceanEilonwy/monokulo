@@ -284,7 +284,7 @@ impl TestEngineHandle {
             bundle,
             &snp_test_trust(),
             &transport::Anchor::Vcek(vcek),
-            service_runtime::time::now_unix(),
+            clock::Clock::System.now(),
         )
         .expect("the test engine's bundle checks out");
         let mut keys = hex::decode(view_key_hex).unwrap();
@@ -1573,6 +1573,7 @@ mod tests {
                     trust: snp_test_trust(),
                 },
                 Arc::new(OtherImagesWrap),
+                clock::Clock::System,
             )
             .unwrap();
             new.refresh_evidence(&TestEvidence).await.unwrap();

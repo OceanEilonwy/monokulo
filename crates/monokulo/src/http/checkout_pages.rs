@@ -190,7 +190,7 @@ pub async fn save(
         Err(response) => return *response,
     };
     let now = crate::now_unix();
-    let checked = if SAVES.check(row.id.clone(), now) {
+    let checked = if SAVES.check(row.id.clone(), clock::UnixTime::from_secs(now)) {
         check_draft(&form.template, &form.css)
     } else {
         Err(Vec::new())
@@ -491,7 +491,10 @@ async fn show_approval(
             .iter()
             .map(|domain| (domain.clone(), checkout_pages::ApproveResult::NotChecked))
             .collect()
-    } else if !CHECKS.check(row.id.clone(), crate::now_unix()) {
+    } else if !CHECKS.check(
+        row.id.clone(),
+        clock::UnixTime::from_secs(crate::now_unix()),
+    ) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     } else {
         crate::checkout_pages::check_every(&state.proofs, &approval.domains, &approval.token)
@@ -525,7 +528,10 @@ pub async fn publish(
         Ok(row) => row,
         Err(response) => return *response,
     };
-    if !CHECKS.check(row.id.clone(), crate::now_unix()) {
+    if !CHECKS.check(
+        row.id.clone(),
+        clock::UnixTime::from_secs(crate::now_unix()),
+    ) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     match publish_draft(&state, &row.id).await {
@@ -585,7 +591,7 @@ pub async fn recheck(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let now = crate::now_unix();
-    if !CHECKS.check(row.id.clone(), now) {
+    if !CHECKS.check(row.id.clone(), clock::UnixTime::from_secs(now)) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     let store_id = row.id.clone();

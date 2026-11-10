@@ -60,7 +60,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tower::ServiceExt as _;
 
 use engine::http::rate_limit::ApiRateLimits;
-use engine::http::{build_router as build_engine_router, now_unix, AppState as EngineAppState};
+use engine::http::{build_router as build_engine_router, AppState as EngineAppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, WalletHandles};
 use engine::network::network_str;
 use engine::scanner::run_scan_tick;
@@ -461,7 +461,7 @@ async fn main() {
     // ---- one real account, one real store connected to the engine above,
     // through the real HTTP flow (not constructed directly) - same wallet
     // fixture `tests/e2e_dashboard_stagenet.rs` uses. ----
-    let email = format!("pos-e2e-{}@example.com", now_unix());
+    let email = format!("pos-e2e-{}@example.com", clock::Clock::System.now());
     let password = "correct horse battery staple";
     let signup_response = cp_router
         .clone()

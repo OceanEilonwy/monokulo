@@ -360,7 +360,7 @@ mod embedded {
         parent: &CancellationToken,
     ) -> Result<(Running, SocketAddr), String> {
         let stop = parent.child_token();
-        let relay = Relay::start(config, stop.clone())
+        let relay = Relay::start(config, stop.clone(), clock::Clock::System)
             .await
             .map_err(|error| format!("didn't start: {error}"))?;
         let listener = match tokio::net::TcpListener::bind(config.listen).await {
@@ -428,7 +428,7 @@ mod embedded {
             let handles_stored = match &run.running {
                 Some(running) => running
                     .relay
-                    .handles_stored(crate::now_unix())
+                    .handles_stored()
                     .await
                     .map_err(|error| {
                         tracing::warn!(error = %error, "the push relay's handles couldn't be counted")

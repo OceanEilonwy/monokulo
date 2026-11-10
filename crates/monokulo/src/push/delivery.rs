@@ -446,7 +446,7 @@ async fn deliver(
     };
     if let Err(wait) = client
         .budget
-        .check_with_retry(push.target.store_id.clone(), at)
+        .check_with_retry(push.target.store_id.clone(), clock::UnixTime::from_secs(at))
     {
         let until = at.saturating_add(i64::try_from(wait).unwrap_or(i64::MAX));
         if until >= push.expires_at {
@@ -466,7 +466,12 @@ async fn deliver(
         Err(refused) => Err(Failure::counted(refused.to_string())),
         Ok(()) => match tokio::time::timeout(
             config.delivery_timeout,
-            sender.send(&push.target.endpoint, &message, &options, at),
+            sender.send(
+                &push.target.endpoint,
+                &message,
+                &options,
+                clock::UnixTime::from_secs(at),
+            ),
         )
         .await
         {
