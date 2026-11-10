@@ -32,10 +32,8 @@ api::resource!(
 )]
 async fn publish(store: Store, instance: Instance) -> api::Result<checkout_page::Body> {
     let state = instance.0;
-    if !pages::CHECKS.check(
-        store.id.clone(),
-        clock::UnixTime::from_secs(crate::now_unix()),
-    ) {
+    let now = state.clock.now();
+    if !pages::CHECKS.check(store.id.clone(), now) {
         return Err(checkout_page_draft::too_often(
             "That's a lot of lookups. Wait a minute, then try again.",
         ));
@@ -66,7 +64,7 @@ async fn publish(store: Store, instance: Instance) -> api::Result<checkout_page:
         })
         .await;
     match published {
-        Ok((Some(page), domains)) => Ok(checkout_page::body_of(page, &domains, crate::now_unix())),
+        Ok((Some(page), domains)) => Ok(checkout_page::body_of(page, &domains, now.as_secs())),
         _ => Err(internal()),
     }
 }

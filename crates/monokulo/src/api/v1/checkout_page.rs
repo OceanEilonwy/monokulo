@@ -83,6 +83,7 @@ pub(crate) fn body_of(
 #[get(sk, problems = [NotFound, Internal])]
 async fn get(store: Store, instance: Instance) -> api::Result<Body> {
     let (id, state) = (store.id.clone(), instance.0);
+    let now = state.clock.now().as_secs();
     let found = state
         .db
         .read(move |db| {
@@ -93,7 +94,7 @@ async fn get(store: Store, instance: Instance) -> api::Result<Body> {
         })
         .await;
     match found {
-        Ok((Some(page), domains)) => Ok(body_of(page, &domains, crate::now_unix())),
+        Ok((Some(page), domains)) => Ok(body_of(page, &domains, now)),
         Ok((None, _)) => Err(Problem::NotFound.detail("This store has no custom page in use.")),
         Err(_) => Err(internal()),
     }

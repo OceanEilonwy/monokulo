@@ -278,6 +278,7 @@ async fn a_paid_sale_reaches_apns_through_the_relay_and_decrypts_on_the_device_o
         state.push.clone(),
         state.apps.clone(),
         crate::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
+        world.clock.clone(),
     ));
     world.engine.mark_order_paid(order.as_str()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -288,7 +289,7 @@ async fn a_paid_sale_reaches_apns_through_the_relay_and_decrypts_on_the_device_o
     .await
     .expect("the paid event is queued and wakes the worker");
     subscriber.abort();
-    world.clock.set(crate::now_unix());
+    world.set(clock::Clock::System.now().as_secs());
     assert_eq!(world.tick().await, 1);
 
     let received = chain.apns.only();
@@ -301,7 +302,7 @@ async fn a_paid_sale_reaches_apns_through_the_relay_and_decrypts_on_the_device_o
         policy_topic(&target, &order)
     );
     let expiration: i64 = received.header("apns-expiration").parse().unwrap();
-    let now = crate::now_unix();
+    let now = clock::Clock::System.now().as_secs();
     assert!(
         (now + 1_700..=now + 1_800).contains(&expiration),
         "{expiration}"
@@ -320,7 +321,7 @@ async fn a_paid_sale_reaches_apns_through_the_relay_and_decrypts_on_the_device_o
     let delivered = &world.pushes(&target)[0];
     assert_eq!(
         (delivered.delivered_at, delivered.last_status_code),
-        (Some(world.clock.now()), Some(201))
+        (Some(world.now()), Some(201))
     );
 }
 

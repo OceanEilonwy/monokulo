@@ -1487,7 +1487,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/stores/conn_1/settings")
+        PageChrome::from_user(None, "/stores/conn_1/settings", clock::Clock::System.now())
     }
 
     fn base_store() -> StoreSettingsData {
@@ -1496,7 +1496,7 @@ mod tests {
             checkout_style: Default::default(),
             custom_page: Default::default(),
             tab: StoreTab::General,
-            clock: crate::views::time::Clock::utc(0),
+            clock: crate::views::time::Clock::utc(clock::UnixTime::EPOCH),
             connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             site: "shop.example.com".to_string(),
@@ -1527,7 +1527,7 @@ mod tests {
             webhooks: super::super::webhooks::WebhooksCard {
                 store_id: "conn_1".into(),
                 store_name: "shop.example.com".into(),
-                clock: crate::views::time::Clock::utc(0),
+                clock: crate::views::time::Clock::utc(clock::UnixTime::EPOCH),
                 max_attempts: 8,
                 webhooks: vec![],
                 unavailable: false,

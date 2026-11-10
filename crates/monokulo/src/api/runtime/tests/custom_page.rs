@@ -40,7 +40,7 @@ impl Shop {
             ..fixture.state.clone()
         };
         // Only the domain this test says: the fixture's own isn't verified.
-        let at = crate::now_unix();
+        let at = clock::Clock::System.now().as_secs();
         {
             let db = state.db.lock();
             let conn = db.conn_for_test();
@@ -317,7 +317,14 @@ async fn a_draft_that_no_longer_passes_is_refused_as_such() {
     shop.state
         .db
         .lock()
-        .save_checkout_page_draft(&store, "{{status}}", "", "", "older", crate::now_unix())
+        .save_checkout_page_draft(
+            &store,
+            "{{status}}",
+            "",
+            "",
+            "older",
+            clock::Clock::System.now().as_secs(),
+        )
         .unwrap();
     let refused = shop.sk("POST", PUBLISH, None).await;
     assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -332,7 +339,7 @@ async fn a_draft_that_no_longer_passes_is_refused_as_such() {
 async fn a_store_with_both_domains_needs_both_to_approve() {
     const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
     let shop = Shop::new(Some("shop.example")).await;
-    let at = crate::now_unix();
+    let at = clock::Clock::System.now().as_secs();
     shop.state
         .db
         .lock()
@@ -393,7 +400,7 @@ async fn a_store_with_both_domains_needs_both_to_approve() {
 async fn a_stores_two_proofs_cant_be_matched() {
     const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
     let shop = Shop::new(Some("shop.example")).await;
-    let at = crate::now_unix();
+    let at = clock::Clock::System.now().as_secs();
     shop.state
         .db
         .lock()
@@ -430,7 +437,10 @@ async fn a_turned_off_page_stays_off() {
         .state
         .db
         .lock()
-        .set_checkout_page_turned_off(&store, Some((crate::now_unix(), "Wrong address")))
+        .set_checkout_page_turned_off(
+            &store,
+            Some((clock::Clock::System.now().as_secs(), "Wrong address"))
+        )
         .unwrap());
 
     let page = body_json(shop.sk("GET", PAGE, None).await).await;

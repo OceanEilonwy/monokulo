@@ -176,6 +176,7 @@ pub async fn create(
     store_id: &ConnectionId,
     url: &str,
     headers: &BTreeMap<String, String>,
+    now: clock::UnixTime,
 ) -> Result<Created, CreateError> {
     let url = check_url(url).map_err(CreateError::Invalid)?;
     let extra_headers = check_extra_headers(headers).map_err(CreateError::Invalid)?;
@@ -192,7 +193,7 @@ pub async fn create(
         url,
         signing_secret_encrypted: encrypted,
         extra_headers,
-        created_at: crate::now_unix(),
+        created_at: now.as_secs(),
     };
     let row = webhook.clone();
     db.write(move |db| {

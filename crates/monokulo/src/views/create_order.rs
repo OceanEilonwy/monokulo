@@ -109,7 +109,11 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/stores/conn_1/orders/new")
+        PageChrome::from_user(
+            None,
+            "/stores/conn_1/orders/new",
+            clock::Clock::System.now(),
+        )
     }
 
     fn data() -> CreateOrderData {

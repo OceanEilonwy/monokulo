@@ -24,7 +24,6 @@ use crate::api::runtime::extract::JsonBody;
 use crate::api::runtime::problem::{internal, Problem, ProblemDetails};
 use crate::apps::{clean_device_name, CONNECT_TOKEN_TTL_SECONDS};
 use crate::db::{AppConnection, AppPushSummary, ConnectionId, UserRow};
-use crate::now_unix;
 use crate::plugins::{Plugin, PluginName, PluginSlug};
 use crate::views::connected_apps::{AppRow, AppsView, PushLine};
 
@@ -191,11 +190,10 @@ pub async fn connect_submit(
     let hash = raw.hash();
     let device_name = clean_device_name(&form.device_name);
     let (store_id, stored_name, stored_hash) = (row.id.clone(), device_name.clone(), hash.clone());
+    let now = state.clock.now().as_secs();
     if let Err(e) = state
         .db
-        .write(move |db| {
-            db.create_app_connect_token(&stored_hash, &store_id, &stored_name, now_unix())
-        })
+        .write(move |db| db.create_app_connect_token(&stored_hash, &store_id, &stored_name, now))
         .await
     {
         tracing::error!(store.id = %row.id, error = %e, "a connect code could not be stored");
@@ -268,11 +266,17 @@ pub async fn connect_status(
     // than one that ran out.
     let (device_name, code_state) = match code {
         Some(code) => {
-            let age = now_unix().saturating_sub(code.created_at);
+            // The page's own moment, so the wait it shows agrees with the
+            // times beside it.
+            let age = chrome
+                .clock
+                .now()
+                .since(clock::UnixTime::from_secs(code.created_at));
+            let ttl = std::time::Duration::from_secs(CONNECT_TOKEN_TTL_SECONDS.unsigned_abs());
             let code_state = match code.app {
                 Some(app) => CodeState::Connected(Box::new(app_row(&app, &chrome.clock, None))),
-                None if age < CONNECT_TOKEN_TTL_SECONDS => CodeState::Waiting {
-                    remaining: (CONNECT_TOKEN_TTL_SECONDS - age.max(0)).unsigned_abs(),
+                None if age < ttl => CodeState::Waiting {
+                    remaining: (ttl - age).as_secs(),
                 },
                 None => CodeState::RanOut,
             };
@@ -446,12 +450,13 @@ pub async fn redeem(
         credentials::auth::RawToken::presented(&req.token).hash(),
         key.hash(),
     );
+    let now = state.clock.now().as_secs();
     let redeemed = state
         .db
         .write(move |db| {
             let Some(app) = db.redeem_app_connect_token(
                 &token_hash,
-                now_unix(),
+                now,
                 CONNECT_TOKEN_TTL_SECONDS,
                 &crate::db::NewApp {
                     slug: slug.as_str(),

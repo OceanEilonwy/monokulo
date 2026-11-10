@@ -243,6 +243,7 @@ mod embedded {
         monokulo_db: &Path,
         stop: CancellationToken,
         switch: Live<RelaySwitch>,
+        clock: clock::Clock,
     ) -> Result<Handle, String> {
         let Prepared { file, env } = prepared;
         // Beside monokulo's database unless `store.path` says otherwise:
@@ -261,6 +262,7 @@ mod embedded {
             registry,
             switch,
             stop,
+            clock,
             run: tokio::sync::Mutex::new(Run {
                 running: None,
                 state: RelayState::Off,
@@ -291,6 +293,8 @@ mod embedded {
         switch: Live<RelaySwitch>,
         /// The process's stop: each run's own stop is a child of it.
         stop: CancellationToken,
+        /// What time it is, for when the relay started and its handle count.
+        clock: clock::Clock,
         run: tokio::sync::Mutex<Run>,
     }
 
@@ -358,9 +362,10 @@ mod embedded {
     async fn start_one(
         config: &RelayConfig,
         parent: &CancellationToken,
+        clock: &clock::Clock,
     ) -> Result<(Running, SocketAddr), String> {
         let stop = parent.child_token();
-        let relay = Relay::start(config, stop.clone(), clock::Clock::System)
+        let relay = Relay::start(config, stop.clone(), clock.clone())
             .await
             .map_err(|error| format!("didn't start: {error}"))?;
         let listener = match tokio::net::TcpListener::bind(config.listen).await {
@@ -506,7 +511,7 @@ mod embedded {
                 }
                 None => false,
             };
-            let now = crate::now_unix();
+            let now = embedded.clock.now().as_secs();
             let outcome = if !embedded.switch.load().enabled {
                 run.state = RelayState::Off;
                 if was_running {
@@ -516,7 +521,7 @@ mod embedded {
                 }
             } else {
                 let started = match settings::config(&embedded.registry) {
-                    Ok(config) => start_one(&config, &embedded.stop).await,
+                    Ok(config) => start_one(&config, &embedded.stop, &embedded.clock).await,
                     Err(error) => Err(format!("can't read its settings: {error}")),
                 };
                 match started {
@@ -613,6 +618,7 @@ mod without {
         _monokulo_db: &Path,
         _stop: CancellationToken,
         _switch: live_settings::Live<crate::settings::RelaySwitch>,
+        _clock: clock::Clock,
     ) -> Result<Handle, String> {
         Ok(Handle(()))
     }
@@ -704,7 +710,14 @@ mod tests {
     async fn started(text: &str, env: Env, on: bool, tag: &str) -> Result<Handle, String> {
         let (_, live) = switch(on).await;
         let prepared = prepare_in(&file(text), env, on).unwrap();
-        start(prepared, &monokulo_db(tag), CancellationToken::new(), live).await
+        start(
+            prepared,
+            &monokulo_db(tag),
+            CancellationToken::new(),
+            live,
+            clock::Clock::System,
+        )
+        .await
     }
 
     fn listening(text: u16) -> String {
@@ -776,9 +789,15 @@ mod tests {
         let (_, live) = switch(false).await;
         let prepared = prepare(&file(&text), HashMap::new(), false).unwrap();
         let db = monokulo_db("off");
-        let handle = start(prepared, &db, CancellationToken::new(), live)
-            .await
-            .unwrap();
+        let handle = start(
+            prepared,
+            &db,
+            CancellationToken::new(),
+            live,
+            clock::Clock::System,
+        )
+        .await
+        .unwrap();
         let view = handle.view().await.unwrap();
         assert_eq!(view.state, RelayState::Off);
         assert!(!view.enabled);
@@ -810,10 +829,16 @@ mod tests {
         let (_, live) = switch(true).await;
         let prepared = prepare_in(&file(text), Env::fixed::<&str, &str>([]), true).unwrap();
         let db = monokulo_db("no-key");
-        let error = start(prepared, &db, CancellationToken::new(), live)
-            .await
-            .err()
-            .unwrap();
+        let error = start(
+            prepared,
+            &db,
+            CancellationToken::new(),
+            live,
+            clock::Clock::System,
+        )
+        .await
+        .err()
+        .unwrap();
         assert!(
             error.contains("MONOKULO_RELAY_HANDLE_KEY must be set"),
             "{error}"
@@ -833,9 +858,15 @@ mod tests {
         let (_, live) = switch(true).await;
         let prepared = prepare_in(&file(text), env, true).unwrap();
         let db = monokulo_db("on");
-        let handle = start(prepared, &db, CancellationToken::new(), live)
-            .await
-            .unwrap();
+        let handle = start(
+            prepared,
+            &db,
+            CancellationToken::new(),
+            live,
+            clock::Clock::System,
+        )
+        .await
+        .unwrap();
         assert!(db.with_file_name(STORE_FILE).exists());
         // Its app is known, for Android alone.
         let problem = register_at(port).await.unwrap();
@@ -906,7 +937,9 @@ mod tests {
         let db = monokulo_db("stopped");
         let stop = CancellationToken::new();
         stop.cancel();
-        let handle = start(prepared, &db, stop, live).await.unwrap();
+        let handle = start(prepared, &db, stop, live, clock::Clock::System)
+            .await
+            .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), handle.stop())
             .await
             .expect("the relay stopped without waiting out its grace period");
@@ -923,9 +956,15 @@ mod tests {
         let (_, live) = switch(true).await;
         let prepared = prepare_in(&file(&listening(old)), with_key(HashMap::new()), true).unwrap();
         let db = monokulo_db("moved");
-        let handle = start(prepared, &db, CancellationToken::new(), live)
-            .await
-            .unwrap();
+        let handle = start(
+            prepared,
+            &db,
+            CancellationToken::new(),
+            live,
+            clock::Clock::System,
+        )
+        .await
+        .unwrap();
         register_at(old).await.unwrap();
         handle
             .registry()
@@ -960,9 +999,15 @@ mod tests {
         let (switches, live) = switch(true).await;
         let prepared = prepare_in(&file(&listening(port)), with_key(HashMap::new()), true).unwrap();
         let db = monokulo_db("turned-off");
-        let handle = start(prepared, &db, CancellationToken::new(), live)
-            .await
-            .unwrap();
+        let handle = start(
+            prepared,
+            &db,
+            CancellationToken::new(),
+            live,
+            clock::Clock::System,
+        )
+        .await
+        .unwrap();
         switches
             .save(vec![(RELAY_ENABLED.key.into(), Some("false".into()))])
             .await
@@ -991,9 +1036,15 @@ mod tests {
         let prepared =
             prepare_in(&file(&listening(first)), with_key(HashMap::new()), true).unwrap();
         let db = monokulo_db("taken");
-        let handle = start(prepared, &db, CancellationToken::new(), live)
-            .await
-            .unwrap();
+        let handle = start(
+            prepared,
+            &db,
+            CancellationToken::new(),
+            live,
+            clock::Clock::System,
+        )
+        .await
+        .unwrap();
         let occupied = std::net::TcpListener::bind(("127.0.0.1", taken)).unwrap();
         let registry = handle.registry().unwrap();
         registry

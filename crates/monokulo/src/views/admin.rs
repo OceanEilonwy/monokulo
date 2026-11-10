@@ -2450,7 +2450,7 @@ mod tests {
     }
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/admin/settings")
+        PageChrome::from_user(None, "/admin/settings", clock::Clock::System.now())
     }
 
     /// Every setting both registries have today, with the tab and the card

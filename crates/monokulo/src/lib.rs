@@ -40,6 +40,3 @@ pub mod templates;
 pub mod views;
 pub mod wallets;
 pub mod webhooks;
-
-/// Seconds since the Unix epoch: the one clock both services share.
-pub use service_runtime::time::now_unix;

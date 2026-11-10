@@ -244,10 +244,10 @@ fn suggest(db: &Db, connection_id: &crate::db::ConnectionId, domain: &str, now: 
 /// (`store_connections.domains_imported`); every store made since has its
 /// site's domain added when it is made. Local to monokulo: the engine holds
 /// no embedding policy, so nothing is read from it. Returns whether it ran.
-pub fn import_existing_domains(db: &Db) -> Result<bool, crate::db::DbError> {
+pub fn import_existing_domains(db: &Db, now: clock::UnixTime) -> Result<bool, crate::db::DbError> {
     db.run_backfill_step(crate::db::STORE_DOMAINS_STEP, |db| {
         for store in db.list_store_connections_awaiting_domain_import()? {
-            suggest_site_domain(db, &store.id, store.site.as_ref(), crate::now_unix());
+            suggest_site_domain(db, &store.id, store.site.as_ref(), now.as_secs());
             db.mark_store_domains_imported(&store.id)?;
         }
         Ok(())
@@ -303,8 +303,13 @@ pub async fn recheck_due(db: &Database, proofs: &Proofs, now: i64) {
     }
 }
 
-/// Runs [`recheck_due`] every few minutes for the life of the process.
-pub fn spawn_rechecks(db: Database, proofs: Proofs) -> tokio::task::JoinHandle<()> {
+/// Runs [`recheck_due`] every few minutes for the life of the process, at
+/// the time `clock` gives each pass.
+pub fn spawn_rechecks(
+    db: Database,
+    proofs: Proofs,
+    clock: clock::Clock,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(5 * 60));
         loop {
@@ -312,9 +317,9 @@ pub fn spawn_rechecks(db: Database, proofs: Proofs) -> tokio::task::JoinHandle<(
             // Each pass on a task of its own: a panic in one is logged and
             // the next pass still runs, rather than ending the re-checks
             // for the life of the process.
-            let (db, proofs) = (db.clone(), proofs.clone());
+            let (db, proofs, now) = (db.clone(), proofs.clone(), clock.now());
             let pass = tokio::spawn(async move {
-                recheck_due(&db, &proofs, crate::now_unix()).await;
+                recheck_due(&db, &proofs, now.as_secs()).await;
             });
             if let Err(e) = pass.await {
                 tracing::error!(error = %e, "a domain re-check pass failed");

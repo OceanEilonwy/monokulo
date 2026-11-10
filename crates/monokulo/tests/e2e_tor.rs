@@ -33,7 +33,9 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use abuse::proxy_protocol::{OnionListener, OnionPeer};
 use abuse::ClientIdentity;

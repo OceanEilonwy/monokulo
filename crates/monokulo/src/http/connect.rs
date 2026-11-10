@@ -38,7 +38,6 @@ use url::Url;
 
 use crate::api::runtime::extract::JsonBody;
 use crate::api::runtime::problem::{internal, Problem, ProblemDetails};
-use crate::now_unix;
 use crate::plugins::{ConnectingPlugin, Plugin, PluginName, PluginSlug};
 use crate::stores::Site;
 use crate::views::connect::PluginRequestView;
@@ -487,12 +486,13 @@ pub async fn confirm_submit(
             return refuse(ConnectRefusal::NotTheShopsStore);
         }
         let (store_id, name, site) = (store.id.clone(), store.name.clone(), target.site.clone());
+        let now = state.clock.now().as_secs();
         let written = state
             .db
             .write(move |db| {
                 db.set_store_name_and_site(&store_id, &name, Some(&site))?;
                 // The shop's domain waits to be verified, as at setup.
-                crate::embed_domains::suggest_site_domain(db, &store_id, Some(&site), now_unix());
+                crate::embed_domains::suggest_site_domain(db, &store_id, Some(&site), now);
                 Ok::<_, crate::db::DbError>(())
             })
             .await;
@@ -525,9 +525,10 @@ async fn mint_token_and_redirect(
     let raw_token = credentials::auth::generate_connect_token();
     let token_hash = raw_token.hash();
     let (id, stored_nonce) = (connection_id.clone(), nonce.to_owned());
+    let now = state.clock.now().as_secs();
     state
         .db
-        .write(move |db| db.create_connect_token(&token_hash, &id, &stored_nonce, now_unix()))
+        .write(move |db| db.create_connect_token(&token_hash, &id, &stored_nonce, now))
         .await
         .ok()?;
     let mut redirect_url = target.return_to.clone();
@@ -661,11 +662,14 @@ pub async fn finish(
     }
     let token_hash = credentials::auth::RawToken::presented(&req.token).hash();
 
+    // One moment for the whole connect: when the token is spent and when
+    // the plugin is recorded as connected.
+    let now = state.clock.now().as_secs();
     // The token is spent and its connection read in one write job.
     let row = state
         .db
         .write(move |db| {
-            match db.consume_connect_token(&token_hash, now_unix(), CONNECT_TOKEN_TTL_SECONDS)? {
+            match db.consume_connect_token(&token_hash, now, CONNECT_TOKEN_TTL_SECONDS)? {
                 Some(id) => db.get_store_connection_by_id(&id),
                 None => Ok(None),
             }
@@ -706,7 +710,7 @@ pub async fn finish(
             site: row.site.clone(),
             version,
             webhook_url: req.webhook_url.clone(),
-            at: now_unix(),
+            at: now,
         },
     )
     .await;

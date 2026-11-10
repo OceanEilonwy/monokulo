@@ -91,7 +91,9 @@ async fn state_with(base: &str, env: live_settings::Env) -> AppState {
         service_runtime::unreachable::address()
     ));
     let exchange_rate = test_exchange_rate_provider();
-    let abuse: std::sync::Arc<abuse::AbuseProtection> = Default::default();
+    let app = AppState::for_tests_with_db(db.clone());
+    let abuse =
+        std::sync::Arc::new(abuse::AbuseProtection::default().with_clock(app.clock.clone()));
     let options = live_settings::OptionsFile::in_memory(format!(
         "[exchange_rate]\ncoinmarketcap_base_url = \"{base}\"\n"
     ));
@@ -113,7 +115,7 @@ async fn state_with(base: &str, env: live_settings::Env) -> AppState {
         exchange_rate,
         abuse,
         settings,
-        ..AppState::for_tests_with_db(db)
+        ..app
     }
 }
 

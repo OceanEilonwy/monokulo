@@ -55,7 +55,7 @@ pub(crate) async fn current(
     state: &crate::http::AppState,
     id: &crate::db::ConnectionId,
 ) -> Result<Option<Body>, crate::db::DbError> {
-    let now = crate::now_unix();
+    let now = state.clock.now().as_secs();
     let store_id = id.clone();
     let (draft, domains) = state
         .db
@@ -141,8 +141,8 @@ struct Input {
 )]
 async fn save(store: Store, instance: Instance, input: Input) -> api::Result<Body> {
     let state = instance.0;
-    let now = crate::now_unix();
-    if !pages::SAVES.check(store.id.clone(), clock::UnixTime::from_secs(now)) {
+    let now = state.clock.now();
+    if !pages::SAVES.check(store.id.clone(), now) {
         return Err(too_often(
             "That's a lot of saves. Wait a minute, then try again.",
         ));
@@ -153,7 +153,7 @@ async fn save(store: Store, instance: Instance, input: Input) -> api::Result<Bod
         .read(move |db| db.list_store_domains(&id))
         .await
         .map_err(|_| internal())?;
-    if crate::checkout_pages::approvers(&domains, now).is_empty() {
+    if crate::checkout_pages::approvers(&domains, now.as_secs()).is_empty() {
         return Err(Problem::CheckoutPageNeedsDomain
             .detail("Verify a web domain or onion address for this store first."));
     }
@@ -163,7 +163,7 @@ async fn save(store: Store, instance: Instance, input: Input) -> api::Result<Bod
                 .detail("Something in this template or CSS can't be used.")
                 .with("errors", errors_of(&problems))
         })?;
-    pages::save_checked(&state, &store.id, checked, now)
+    pages::save_checked(&state, &store.id, checked, now.as_secs())
         .await
         .map_err(|_| internal())?;
     match current(&state, &store.id).await {

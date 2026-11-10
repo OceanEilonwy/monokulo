@@ -15,7 +15,6 @@ use uuid::Uuid;
 use crate::crypto;
 use crate::db::UserRow;
 use crate::engine_client::{CreateTenantRequest, EngineClientError};
-use crate::now_unix;
 use crate::stores::Site;
 
 use super::AppState;
@@ -174,6 +173,7 @@ pub(super) async fn create_connection_for_user(
         created.public_key.clone(),
         wallet.id.clone(),
     );
+    let now = state.clock.now().as_secs();
     let saved = state
         .db
         .write(move |db| {
@@ -185,18 +185,13 @@ pub(super) async fn create_connection_for_user(
                 &public_key,
                 &encrypted_secret_token,
                 &secret_key_hash,
-                now_unix(),
+                now,
                 &base_currency,
                 &wallet_id,
             )?;
             // The site's domain joins the store's domains waiting for DNS
             // (`crate::embed_domains`).
-            crate::embed_domains::suggest_site_domain(
-                db,
-                &connection_id,
-                req.site.as_ref(),
-                now_unix(),
-            );
+            crate::embed_domains::suggest_site_domain(db, &connection_id, req.site.as_ref(), now);
             Ok::<_, crate::db::DbError>(())
         })
         .await;

@@ -92,7 +92,7 @@ async fn store_for_wizard(
         Ok(None) => return Err(Box::new(StatusCode::NOT_FOUND.into_response())),
         Err(()) => return Err(Box::new(StatusCode::INTERNAL_SERVER_ERROR.into_response())),
     };
-    let now = crate::now_unix();
+    let now = state.clock.now().as_secs();
     let store_id = row.id.clone();
     let verified = state
         .db
@@ -125,7 +125,7 @@ pub async fn edit(
         Ok(row) => row,
         Err(response) => return *response,
     };
-    let now = crate::now_unix();
+    let now = state.clock.now().as_secs();
     let store_id = row.id.clone();
     let draft = match state
         .db
@@ -189,8 +189,8 @@ pub async fn save(
         Ok(row) => row,
         Err(response) => return *response,
     };
-    let now = crate::now_unix();
-    let checked = if SAVES.check(row.id.clone(), clock::UnixTime::from_secs(now)) {
+    let now = state.clock.now();
+    let checked = if SAVES.check(row.id.clone(), now) {
         check_draft(&form.template, &form.css)
     } else {
         Err(Vec::new())
@@ -230,7 +230,7 @@ pub async fn save(
                 .into_response();
         }
     };
-    let saved = save_checked(&state, &row.id, checked, now).await;
+    let saved = save_checked(&state, &row.id, checked, now.as_secs()).await;
     match saved {
         Ok(()) => crate::base::see_other(format!("/stores/{id}/settings/checkout-page/preview")),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -281,7 +281,7 @@ pub async fn preview_step(
         Ok(row) => row,
         Err(response) => return *response,
     };
-    let now = crate::now_unix();
+    let now = state.clock.now().as_secs();
     let store_id = row.id.clone();
     let draft = match state
         .db
@@ -356,7 +356,7 @@ pub async fn approval_for(
     state: &AppState,
     id: &ConnectionId,
 ) -> Result<Option<Approval>, crate::db::DbError> {
-    let now = crate::now_unix();
+    let now = state.clock.now().as_secs();
     let store_id = id.clone();
     let (draft, domains) = state
         .db
@@ -430,7 +430,7 @@ pub async fn publish_draft(state: &AppState, id: &ConnectionId) -> Result<(), Pu
             return Err(PublishRefused::CantCheck(reason))
         }
     }
-    let now = crate::now_unix();
+    let now = state.clock.now().as_secs();
     let Approval {
         mut draft,
         token,
@@ -491,10 +491,7 @@ async fn show_approval(
             .iter()
             .map(|domain| (domain.clone(), checkout_pages::ApproveResult::NotChecked))
             .collect()
-    } else if !CHECKS.check(
-        row.id.clone(),
-        clock::UnixTime::from_secs(crate::now_unix()),
-    ) {
+    } else if !CHECKS.check(row.id.clone(), state.clock.now()) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     } else {
         crate::checkout_pages::check_every(&state.proofs, &approval.domains, &approval.token)
@@ -528,10 +525,7 @@ pub async fn publish(
         Ok(row) => row,
         Err(response) => return *response,
     };
-    if !CHECKS.check(
-        row.id.clone(),
-        clock::UnixTime::from_secs(crate::now_unix()),
-    ) {
+    if !CHECKS.check(row.id.clone(), state.clock.now()) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     match publish_draft(&state, &row.id).await {
@@ -590,8 +584,8 @@ pub async fn recheck(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let now = crate::now_unix();
-    if !CHECKS.check(row.id.clone(), clock::UnixTime::from_secs(now)) {
+    let now = state.clock.now();
+    if !CHECKS.check(row.id.clone(), now) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     let store_id = row.id.clone();
@@ -608,7 +602,7 @@ pub async fn recheck(
         Ok(found) => found,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let domains = crate::checkout_pages::approver_names(&domains, now);
+    let domains = crate::checkout_pages::approver_names(&domains, now.as_secs());
     if let Some(page) = page.filter(|_| !domains.is_empty()) {
         let checked = crate::checkout_pages::check_and_record(
             &state.db,
@@ -616,7 +610,7 @@ pub async fn recheck(
             &row.id,
             &domains,
             &page.token,
-            now,
+            now.as_secs(),
         )
         .await;
         if checked.is_err() {
@@ -683,7 +677,7 @@ pub(super) async fn page_card(
                 .map(|row| row.domain.clone())
                 .collect(),
             waiting: waiting_on(&page, domains, now),
-            checked: crate::views::time::Clock::utc(now)
+            checked: crate::views::time::Clock::utc(clock::UnixTime::from_secs(now))
                 .relative(page.last_checked_at.unwrap_or(page.published_at)),
             trouble: page.last_error,
             draft: has_draft,
@@ -716,15 +710,15 @@ pub async fn shared_preview(
     Path(token): Path<String>,
     Query(query): Query<PreviewQuery>,
 ) -> Response {
-    let now = crate::now_unix();
+    let now = state.clock.now();
     let lookup = token.clone();
     match state
         .db
-        .read(move |db| db.checkout_page_draft_by_token(&lookup, now))
+        .read(move |db| db.checkout_page_draft_by_token(&lookup, now.as_secs()))
         .await
     {
         Ok(Some(_)) => {
-            let chrome = crate::views::PageChrome::from_user(None, "/");
+            let chrome = crate::views::PageChrome::from_user(None, "/", now);
             (
                 [NO_INDEX],
                 checkout_pages::shared_preview(&chrome, &token, preview_state(&query)),
@@ -780,11 +774,12 @@ pub async fn preview_frame(
     if !framed_here(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let now = crate::now_unix();
+    let now = state.clock.now();
+    let at = now.as_secs();
     let found = state
         .db
         .read(move |db| {
-            let Some(draft) = db.checkout_page_draft_by_token(&token, now)? else {
+            let Some(draft) = db.checkout_page_draft_by_token(&token, at)? else {
                 return Ok::<_, crate::db::DbError>(None);
             };
             let store = db.get_store_connection_by_id(&draft.connection_id)?;
@@ -855,7 +850,7 @@ pub async fn layout_preview_frame(
         layout.layout(&row).source(),
         "",
         &query,
-        crate::now_unix(),
+        state.clock.now(),
     )
 }
 
@@ -865,7 +860,7 @@ fn frame_of(
     source: &str,
     written_css: &str,
     query: &PreviewQuery,
-    now: i64,
+    now: clock::UnixTime,
 ) -> Response {
     // Checked when it was saved; a release may have changed what reads.
     let Ok(template) = checkout_template::Template::load(source) else {
@@ -878,7 +873,7 @@ fn frame_of(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let page_css = (!written_css.is_empty()).then(|| stylesheet_hash(written_css));
-    let chrome = crate::views::PageChrome::from_user(None, "/");
+    let chrome = crate::views::PageChrome::from_user(None, "/", now);
     (
         [
             (
@@ -903,7 +898,7 @@ pub async fn admin_list(
     AuthedAdmin(admin, _): AuthedAdmin,
     Query(query): Query<AdminListQuery>,
 ) -> Response {
-    let now = crate::now_unix();
+    let now = state.clock.now();
     let find = query.q.clone().filter(|q| !q.trim().is_empty());
     let listings = match state
         .db
@@ -914,6 +909,7 @@ pub async fn admin_list(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let clock = crate::views::time::Clock::utc(now);
+    let now = now.as_secs();
     let rows: Vec<checkout_pages::AdminPageRow> = listings
         .into_iter()
         .map(|listing| {
@@ -1001,7 +997,7 @@ pub async fn admin_frame(
             &page.template,
             &page.written_css,
             &query,
-            crate::now_unix(),
+            state.clock.now(),
         ),
         Err(status) => status.into_response(),
     }
@@ -1036,7 +1032,7 @@ pub async fn admin_turn_off(
     Form(form): Form<TurnOffForm>,
 ) -> Response {
     let reason: String = form.reason.trim().chars().take(280).collect();
-    let now = crate::now_unix();
+    let now = state.clock.now().as_secs();
     let (store_id, logged) = (id.clone(), reason.clone());
     let changed = state
         .db

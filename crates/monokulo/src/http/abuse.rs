@@ -454,7 +454,7 @@ fn challenge_page(
         wait_url,
         error,
     };
-    let chrome = views::PageChrome::from_user(None, request.uri().path());
+    let chrome = views::PageChrome::from_user(None, request.uri().path(), state.clock.now());
     // 429: this is not the page that was asked for (yet).
     // Never kept: both routers' no-store default covers it.
     (
@@ -494,9 +494,8 @@ fn challenge_json(
 }
 
 fn blocked(state: &AppState, class: RouteClass, retry_after_secs: u64) -> Response {
-    let _ = state;
     let mut response = if class == RouteClass::Page {
-        let chrome = views::PageChrome::from_user(None, "/");
+        let chrome = views::PageChrome::from_user(None, "/", state.clock.now());
         (
             StatusCode::TOO_MANY_REQUESTS,
             views::challenge::too_many_requests_page(&chrome, retry_after_secs),
@@ -532,9 +531,10 @@ mod tests {
     use super::super::{build_router, AppState};
 
     fn state(config: AbuseConfig) -> AppState {
+        let base = AppState::for_tests_with_db(Db::open_in_memory().unwrap().into_shared());
         AppState {
-            abuse: Arc::new(AbuseProtection::new(config)),
-            ..AppState::for_tests_with_db(Db::open_in_memory().unwrap().into_shared())
+            abuse: Arc::new(AbuseProtection::new(config).with_clock(base.clock.clone())),
+            ..base
         }
     }
 
@@ -918,7 +918,7 @@ mod tests {
             db.create_session(
                 &credentials::auth::RawToken::presented("session-token").hash(),
                 &engine_protocol::ids::UserId::new("u1"),
-                crate::now_unix(),
+                state.clock.now().as_secs(),
             )
             .unwrap();
         }
@@ -1172,20 +1172,20 @@ mod tests {
             db.create_session(
                 &credentials::auth::RawToken::presented("admin-token").hash(),
                 &engine_protocol::ids::UserId::new("admin"),
-                crate::now_unix(),
+                state.clock.now().as_secs(),
             )
             .unwrap();
             db.create_session(
                 &credentials::auth::RawToken::presented("merchant-token").hash(),
                 &engine_protocol::ids::UserId::new("merchant"),
-                crate::now_unix(),
+                state.clock.now().as_secs(),
             )
             .unwrap();
         }
-        state.abuse.stats.record(
-            abuse::stats::Event::Issued,
-            clock::UnixTime::from_secs(crate::now_unix()),
-        );
+        state
+            .abuse
+            .stats
+            .record(abuse::stats::Event::Issued, state.clock.now());
         let router = build_router(state);
         let page = |cookie: Option<&'static str>| {
             let mut request = Request::builder()

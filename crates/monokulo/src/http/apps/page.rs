@@ -68,7 +68,12 @@ async fn read(
     tested: Option<i64>,
 ) -> Result<Option<(AppPageView, Option<crate::db::PushDeliveryRow>)>, DbError> {
     let (store_id, app_id) = (store.id.clone(), app_id.clone());
-    let since = clock.now().saturating_sub(app_page::RECENT_DAYS * 86_400);
+    let since = clock
+        .now()
+        .saturating_sub(std::time::Duration::from_secs(
+            app_page::RECENT_DAYS.unsigned_abs() * 86_400,
+        ))
+        .as_secs();
     let read = state
         .db
         .read(move |db| {
@@ -324,7 +329,7 @@ pub async fn test_push(
     let config = state.settings.push.load();
     let reach =
         outbound::Reach::allowing_private(state.settings.webhooks.load().allow_private_urls);
-    let at = crate::now_unix();
+    let at = state.clock.now().as_secs();
     let left = i64::try_from(config.delivery_timeout.as_secs())
         .unwrap_or(i64::MAX)
         .saturating_add(1 + LEFT_TO_THE_REQUEST_SECS);
@@ -380,7 +385,7 @@ pub async fn test_push(
                 &push,
                 &config,
                 reach,
-                &crate::webhooks::delivery::SystemClock,
+                &state.clock,
             )
             .await;
             tracing::info!(

@@ -464,9 +464,10 @@ async fn active_pos_orders(
         let store_id = connection_id.clone();
         let closed: Vec<crate::db::OrderId> = closed.into_iter().map(|row| row.order_id).collect();
         // Only saves asking again: a failure here is retried next time.
+        let now = state.clock.now().as_secs();
         let _ = state
             .db
-            .write(move |db| db.close_pos_orders(&store_id, &closed, crate::now_unix()))
+            .write(move |db| db.close_pos_orders(&store_id, &closed, now))
             .await;
     }
     let mut metadata = order_metadata(
@@ -1646,7 +1647,7 @@ mod tests {
             .lock()
             .mark_double_spend_detected(
                 &engine_protocol::ids::OrderId::new(order_ids[1].to_string()),
-                crate::now_unix()
+                clock::Clock::System.now().as_secs()
             )
             .unwrap());
         let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)

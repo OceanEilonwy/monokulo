@@ -510,9 +510,10 @@ async fn apply(
 
     if let Some(style) = plan.style {
         let store_id = row.id.clone();
+        let now = state.clock.now().as_secs();
         state
             .db
-            .write(move |db| db.set_store_checkout_style(&store_id, &style, crate::now_unix()))
+            .write(move |db| db.set_store_checkout_style(&store_id, &style, now))
             .await
             .map_err(|_| (StoreSection::Style, something_went_wrong()))?;
         saved.push(StoreSection::Style);
@@ -547,17 +548,13 @@ async fn apply(
         // Stored as its plain spelling, what `UnitAmount::parse` reads back.
         let new_threshold = new_threshold.map(|(n, amount)| (n, amount.to_string()));
         let new_amount = new_threshold.as_ref().map(|(_, amount)| amount.clone());
+        let now = state.clock.now().as_secs();
         let written = state
             .db
             .write(move |db| {
-                let new_threshold = new_threshold.as_ref().map(|(n, amount)| {
-                    (
-                        threshold_id.as_str(),
-                        amount.as_str(),
-                        *n,
-                        crate::now_unix(),
-                    )
-                });
+                let new_threshold = new_threshold
+                    .as_ref()
+                    .map(|(n, amount)| (threshold_id.as_str(), amount.as_str(), *n, now));
                 db.replace_confirmation_thresholds(proof, &store_id, &deleted, new_threshold)
             })
             .await;

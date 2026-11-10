@@ -67,7 +67,7 @@ async fn setup(extra: usize) -> Setup {
             .trace_id()
             .to_string()
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     while store
         .query(&telemetry::store::LogQuery {
             limit: 1000,
@@ -78,7 +78,7 @@ async fn setup(extra: usize) -> Setup {
         < extra + 3
     {
         assert!(
-            std::time::Instant::now() < deadline,
+            tokio::time::Instant::now() < deadline,
             "the lines were never stored"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -292,7 +292,7 @@ async fn the_logs_pages_own_requests_are_hidden_unless_asked_for() {
             .in_scope(|| tracing::info!("the engine served its lines"));
     });
     let store = s.state.log_store.clone().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     while store
         .query(&telemetry::store::LogQuery {
             limit: 1000,
@@ -303,7 +303,7 @@ async fn the_logs_pages_own_requests_are_hidden_unless_asked_for() {
         < 5
     {
         assert!(
-            std::time::Instant::now() < deadline,
+            tokio::time::Instant::now() < deadline,
             "the lines were never stored"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -642,10 +642,10 @@ async fn live_streams_new_lines_to_the_top_of_the_list() {
         tracing::warn!(order.id = "o_live", "a live line for the page test")
     });
     let mut text = String::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     while !text.contains("a live line for the page test") || !text.ends_with("\n\n") {
         assert!(
-            std::time::Instant::now() < deadline,
+            tokio::time::Instant::now() < deadline,
             "no event came: {text}"
         );
         if let Ok(Some(Ok(frame))) =
@@ -768,7 +768,7 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
         )
     });
     let store = s.state.log_store.clone().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let stored = loop {
         let stored = store
             .query(&telemetry::store::LogQuery {
@@ -783,7 +783,7 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
             break stored;
         }
         assert!(
-            std::time::Instant::now() < deadline,
+            tokio::time::Instant::now() < deadline,
             "the POS lines were never stored"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -932,7 +932,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         let route = route.to_string();
         let store = store.clone();
         async move {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
                 let rows = store
                     .query(&telemetry::store::LogQuery {
@@ -947,7 +947,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
                     return row;
                 }
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    tokio::time::Instant::now() < deadline,
                     "no line for {route}: {:?}",
                     store
                         .query(&telemetry::store::LogQuery {
