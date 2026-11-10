@@ -38,6 +38,7 @@
 //! needs no credential, so a made-up token's row goes in days, not
 //! months.
 
+use clock::UnixTime;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
@@ -73,7 +74,7 @@ const NONCE_LEN: usize = 12;
 
 /// Expiries are kept to the hour, so rows registered in the same hour
 /// can't be told apart by theirs.
-const EXPIRY_STEP: i64 = 60 * 60;
+const EXPIRY_STEP: Duration = Duration::from_secs(60 * 60);
 
 /// The relay's handle key (`handles.id_key`): what a handle's id is a MAC
 /// under, so the id of a device's handle for one sender can't be worked
@@ -514,7 +515,7 @@ impl HandleStore {
     /// The handle for `new`, made if there is none. A new one lives the
     /// unused lifetime from `now`; one a push has reached, the delivered
     /// lifetime. Never shortened.
-    pub async fn register(&self, new: NewHandle, now: i64) -> Result<Handle, StoreError> {
+    pub async fn register(&self, new: NewHandle, now: UnixTime) -> Result<Handle, StoreError> {
         let id = HandleId::of(&self.key, &new);
         let sealed = seal(&id, &new);
         let unused = expiry(now, self.lifetimes.unused);
@@ -554,8 +555,9 @@ impl HandleStore {
     }
 
     /// The handle `id`, unless it has expired by `now` (or never was).
-    pub async fn find(&self, id: &HandleId, now: i64) -> Result<Option<Handle>, StoreError> {
+    pub async fn find(&self, id: &HandleId, now: UnixTime) -> Result<Option<Handle>, StoreError> {
         let id = id.clone();
+        let now = now.as_secs();
         self.pool
             .run(move |connection| {
                 let row = connection
@@ -596,7 +598,7 @@ impl HandleStore {
 
     /// Marks `id` as reached by a push at `now`: it lives the delivered
     /// lifetime from then.
-    pub async fn touch(&self, id: &HandleId, now: i64) -> Result<(), StoreError> {
+    pub async fn touch(&self, id: &HandleId, now: UnixTime) -> Result<(), StoreError> {
         let key = id.row_key();
         let expires_at = expiry(now, self.lifetimes.delivered);
         self.pool
@@ -625,7 +627,8 @@ impl HandleStore {
     }
 
     /// How many handles haven't expired by `now`.
-    pub async fn count(&self, now: i64) -> Result<u64, StoreError> {
+    pub async fn count(&self, now: UnixTime) -> Result<u64, StoreError> {
+        let now = now.as_secs();
         self.pool
             .run(move |connection| {
                 let count: i64 = connection.query_row(
@@ -639,7 +642,8 @@ impl HandleStore {
     }
 
     /// Forgets every handle expired by `now`, and says how many there were.
-    pub async fn sweep(&self, now: i64) -> Result<usize, StoreError> {
+    pub async fn sweep(&self, now: UnixTime) -> Result<usize, StoreError> {
+        let now = now.as_secs();
         self.pool
             .run(move |connection| {
                 Ok(connection
@@ -650,12 +654,11 @@ impl HandleStore {
 }
 
 /// `ttl` from `now`, rounded up to the hour ([`EXPIRY_STEP`]).
-fn expiry(now: i64, ttl: Duration) -> i64 {
-    let at = now.saturating_add(i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX));
-    match at.rem_euclid(EXPIRY_STEP) {
-        0 => at,
-        past => at.saturating_add(EXPIRY_STEP - past),
-    }
+fn expiry(now: UnixTime, ttl: Duration) -> i64 {
+    let since_epoch = now.saturating_add(ttl).since(UnixTime::EPOCH).as_secs();
+    let step = EXPIRY_STEP.as_secs();
+    let rounded = Duration::from_secs(since_epoch.div_ceil(step).saturating_mul(step));
+    UnixTime::EPOCH.saturating_add(rounded).as_secs()
 }
 
 #[cfg(test)]
@@ -664,8 +667,17 @@ mod tests {
     use push::VapidKey;
 
     /// On the hour, as every expiry is kept.
-    const NOW: i64 = 1_800_000_000;
+    const NOW_SECS: i64 = 1_800_000_000;
+    const NOW: UnixTime = UnixTime::from_secs(NOW_SECS);
     const DAY: i64 = 86_400;
+
+    fn at(secs: i64) -> UnixTime {
+        UnixTime::from_secs(secs)
+    }
+
+    fn after(secs: i64) -> UnixTime {
+        at(NOW_SECS + secs)
+    }
     const LIFETIMES: Lifetimes = Lifetimes {
         unused: Duration::from_secs(7 * 86_400),
         delivered: Duration::from_secs(90 * 86_400),
@@ -741,15 +753,15 @@ mod tests {
             first.id.as_str()
         );
         assert_eq!(first.id.as_str().parse::<HandleId>(), Ok(first.id.clone()));
-        assert_eq!(first.expires_at, NOW + 7 * DAY);
+        assert_eq!(first.expires_at, NOW_SECS + 7 * DAY);
 
         // Pushed back to the hour.
         let again = store
-            .register(new(Platform::Apns, &token, &monokulo), NOW + 100)
+            .register(new(Platform::Apns, &token, &monokulo), after(100))
             .await
             .unwrap();
         assert_eq!(again.id, first.id);
-        assert_eq!(again.expires_at, NOW + 7 * DAY + 3_600);
+        assert_eq!(again.expires_at, NOW_SECS + 7 * DAY + 3_600);
 
         let other = store
             .register(new(Platform::Apns, &token, &bell), NOW)
@@ -785,11 +797,11 @@ mod tests {
             .unwrap();
         // Later in the same minute, as an app registers both at launch.
         let two = store
-            .register(new(Platform::Apns, &token, &bell), NOW + 40)
+            .register(new(Platform::Apns, &token, &bell), after(40))
             .await
             .unwrap();
         // The second one's first push, a day later.
-        store.touch(&two.id, NOW + DAY).await.unwrap();
+        store.touch(&two.id, after(DAY)).await.unwrap();
         drop(store);
 
         let connection = Connection::open(&path).unwrap();
@@ -938,26 +950,26 @@ mod tests {
             .register(new(Platform::Fcm, "fcm:pushed", &sender), NOW)
             .await
             .unwrap();
-        assert_eq!(unused.expires_at, NOW + 7 * DAY);
-        store.touch(&used.id, NOW + DAY).await.unwrap();
+        assert_eq!(unused.expires_at, NOW_SECS + 7 * DAY);
+        store.touch(&used.id, after(DAY)).await.unwrap();
 
         assert!(store
-            .find(&unused.id, NOW + 7 * DAY - 1)
+            .find(&unused.id, after(7 * DAY - 1))
             .await
             .unwrap()
             .is_some());
-        assert_eq!(store.find(&unused.id, NOW + 7 * DAY).await.unwrap(), None);
-        assert_eq!(store.sweep(NOW + 7 * DAY).await.unwrap(), 1);
-        let found = store.find(&used.id, NOW + 7 * DAY).await.unwrap().unwrap();
-        assert_eq!(found.expires_at, NOW + DAY + 90 * DAY);
+        assert_eq!(store.find(&unused.id, after(7 * DAY)).await.unwrap(), None);
+        assert_eq!(store.sweep(after(7 * DAY)).await.unwrap(), 1);
+        let found = store.find(&used.id, after(7 * DAY)).await.unwrap().unwrap();
+        assert_eq!(found.expires_at, NOW_SECS + DAY + 90 * DAY);
 
         // Registered again, the delivered one keeps its lifetime from now.
         let again = store
-            .register(new(Platform::Fcm, "fcm:pushed", &sender), NOW + 2 * DAY)
+            .register(new(Platform::Fcm, "fcm:pushed", &sender), after(2 * DAY))
             .await
             .unwrap();
-        assert_eq!(again.expires_at, NOW + 2 * DAY + 90 * DAY);
-        assert_eq!(store.sweep(NOW + 90 * DAY).await.unwrap(), 0);
+        assert_eq!(again.expires_at, NOW_SECS + 2 * DAY + 90 * DAY);
+        assert_eq!(store.sweep(after(90 * DAY)).await.unwrap(), 0);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -975,25 +987,29 @@ mod tests {
         store.touch(&handle.id, NOW).await.unwrap();
         let ttl = 90 * DAY;
         let found = store
-            .find(&handle.id, NOW + ttl - 1)
+            .find(&handle.id, after(ttl - 1))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
             found,
             Handle {
-                expires_at: NOW + ttl,
+                expires_at: NOW_SECS + ttl,
                 ..handle.clone()
             }
         );
-        assert_eq!(store.find(&handle.id, NOW + ttl).await.unwrap(), None);
+        assert_eq!(store.find(&handle.id, after(ttl)).await.unwrap(), None);
 
-        store.touch(&handle.id, NOW + 1_000).await.unwrap();
+        store.touch(&handle.id, after(1_000)).await.unwrap();
         // To the hour.
-        let until = NOW + 3_600 + ttl;
-        assert!(store.find(&handle.id, until - 1).await.unwrap().is_some());
-        assert_eq!(store.sweep(until - 1).await.unwrap(), 0);
-        assert_eq!(store.sweep(until).await.unwrap(), 1);
+        let until = NOW_SECS + 3_600 + ttl;
+        assert!(store
+            .find(&handle.id, at(until - 1))
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(store.sweep(at(until - 1)).await.unwrap(), 0);
+        assert_eq!(store.sweep(at(until)).await.unwrap(), 1);
         assert_eq!(store.find(&handle.id, NOW).await.unwrap(), None);
 
         // Registered again after the sweep: the same endpoint, new again.
@@ -1002,7 +1018,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(back.id, handle.id);
-        assert_eq!(back.expires_at, NOW + 7 * DAY);
+        assert_eq!(back.expires_at, NOW_SECS + 7 * DAY);
         store.delete(&back.id).await.unwrap();
         assert_eq!(store.find(&back.id, NOW).await.unwrap(), None);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -1021,16 +1037,16 @@ mod tests {
             .register(new(Platform::Apns, &token, &sender), NOW)
             .await
             .unwrap();
-        let later = NOW + 7 * DAY + 3_600;
-        assert_eq!(store.find(&handle.id, later).await.unwrap(), None);
+        let later = NOW_SECS + 7 * DAY + 3_600;
+        assert_eq!(store.find(&handle.id, at(later)).await.unwrap(), None);
         let back = store
-            .register(new(Platform::Apns, &token, &sender), later)
+            .register(new(Platform::Apns, &token, &sender), at(later))
             .await
             .unwrap();
         assert_eq!(back.id, handle.id);
         assert_eq!(back.expires_at, later + 7 * DAY);
-        assert!(store.find(&handle.id, later).await.unwrap().is_some());
-        assert_eq!(store.sweep(later).await.unwrap(), 0);
+        assert!(store.find(&handle.id, at(later)).await.unwrap().is_some());
+        assert_eq!(store.sweep(at(later)).await.unwrap(), 0);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1112,9 +1128,9 @@ mod tests {
     #[test]
     fn expiries_are_kept_to_the_hour() {
         let hour = Duration::from_secs(3_600);
-        assert_eq!(expiry(NOW, hour), NOW + 3_600);
-        assert_eq!(expiry(NOW + 1, hour), NOW + 7_200);
-        assert_eq!(expiry(NOW + 3_599, Duration::ZERO), NOW + 3_600);
+        assert_eq!(expiry(NOW, hour), NOW_SECS + 3_600);
+        assert_eq!(expiry(after(1), hour), NOW_SECS + 7_200);
+        assert_eq!(expiry(after(3_599), Duration::ZERO), NOW_SECS + 3_600);
     }
 
     #[test]

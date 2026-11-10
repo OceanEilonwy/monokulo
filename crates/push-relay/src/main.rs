@@ -118,7 +118,7 @@ fn main() {
         // for the process, which the relay's sweep, the servers and the
         // wait below all see.
         let stopping = service_runtime::shutdown::on_signal();
-        let relay = Relay::start(&config, stopping.clone())
+        let relay = Relay::start(&config, stopping.clone(), clock::Clock::System)
             .await
             .unwrap_or_else(|e| stop(didnt_start(e)));
         let listener = bind(config.listen, "").await;
@@ -128,7 +128,7 @@ fn main() {
             None => None,
         };
         tracing::info!(server.address = %address, "push relay listening");
-        let started_at = service_runtime::time::now_unix();
+        let started_at = clock::Clock::System.now();
         let status_serving = status_listener.map(|listener| {
             if let Ok(at) = listener.local_addr() {
                 tracing::info!(status.address = %at, "push relay status listening");

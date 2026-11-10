@@ -6,6 +6,7 @@
 
 use std::net::SocketAddr;
 
+use clock::UnixTime;
 use serde::Serialize;
 use service_runtime::status::Event;
 
@@ -72,7 +73,7 @@ pub struct Registrations {
 
 impl Bell {
     /// The Bell's status now, listening on `listen` since `started_at`.
-    pub async fn report(&self, listen: SocketAddr, started_at: i64) -> Report {
+    pub async fn report(&self, listen: SocketAddr, started_at: UnixTime) -> Report {
         let shared = &self.shared;
         let stored = match shared.store.count().await {
             Ok(stored) => Some(stored),
@@ -85,7 +86,7 @@ impl Bell {
             service: "monokulo-bell",
             version: env!("CARGO_PKG_VERSION"),
             commit: service_runtime::status::commit(),
-            started_at,
+            started_at: started_at.as_secs(),
             listen,
             public_uri: shared.public_uri.as_str().to_owned(),
             registrations: Registrations { stored },

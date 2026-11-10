@@ -17,6 +17,7 @@ use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
+use clock::UnixTime;
 use push::{AuthSecret, Endpoint, P256dh, Subscription, SubscriptionKeys};
 use rand::Rng as _;
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
@@ -182,9 +183,10 @@ impl RegistrationStore {
     pub async fn register(
         &self,
         new: NewRegistration,
-        now: i64,
+        now: UnixTime,
     ) -> Result<RegistrationId, RegisterError> {
         let id = RegistrationId::generate();
+        let now = now.as_secs();
         self.pool
             .run(move |connection| {
                 // Immediate: the count and the insert see the same rows.
@@ -329,8 +331,9 @@ impl RegistrationStore {
     }
 
     /// `id`'s push service took a ding at `now`: its failures start over.
-    pub async fn delivered(&self, id: &RegistrationId, now: i64) -> Result<(), StoreError> {
+    pub async fn delivered(&self, id: &RegistrationId, now: UnixTime) -> Result<(), StoreError> {
         let id = id.clone();
+        let now = now.as_secs();
         self.pool
             .run(move |connection| {
                 connection.execute(
@@ -407,7 +410,12 @@ pub(crate) mod tests {
     const SANDBOX: Integration = Integration::Square(SquareEnvironment::Sandbox);
     const CLOVER: Integration = Integration::Clover(CloverEnvironment::NorthAmerica);
 
-    const NOW: i64 = 1_800_000_000;
+    const NOW_SECS: i64 = 1_800_000_000;
+    const NOW: UnixTime = UnixTime::from_secs(NOW_SECS);
+
+    fn after(secs: u64) -> UnixTime {
+        NOW.saturating_add(std::time::Duration::from_secs(secs))
+    }
 
     pub(crate) fn temp_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir()
@@ -489,7 +497,7 @@ pub(crate) mod tests {
         store.failed(&first, 20).await.unwrap();
         let moved = new("M1", "L2", till);
         let keys = moved.subscription.keys.clone();
-        let again = store.register(moved, NOW + 1).await.unwrap();
+        let again = store.register(moved, after(1)).await.unwrap();
         assert_eq!(again, first);
         let at_l1 = store
             .at_location(SQUARE, &merchant("M1"), &location("L1"))
@@ -521,7 +529,7 @@ pub(crate) mod tests {
         let id = store.register(first, NOW).await.unwrap();
         store.failed(&id, 20).await.unwrap();
 
-        let taken = store.register(new("M2", "L9", till), NOW + 1).await;
+        let taken = store.register(new("M2", "L9", till), after(1)).await;
         assert!(matches!(taken, Err(RegisterError::Taken)), "{taken:?}");
         let at_l1 = store
             .at_location(SQUARE, &merchant("M1"), &location("L1"))
@@ -534,7 +542,7 @@ pub(crate) mod tests {
         let mut signed_in_elsewhere = new("M2", "L9", till);
         signed_in_elsewhere.subscription.keys = keys;
         assert_eq!(
-            store.register(signed_in_elsewhere, NOW + 2).await.unwrap(),
+            store.register(signed_in_elsewhere, after(2)).await.unwrap(),
             id
         );
         assert!(
@@ -625,7 +633,7 @@ pub(crate) mod tests {
         let keys = staying.subscription.keys.clone();
         let id = store.register(staying, NOW).await.unwrap();
         store.failed(&id, 20).await.unwrap();
-        let refused = store.register(new("M1", "L1", till), NOW + 1).await;
+        let refused = store.register(new("M1", "L1", till), after(1)).await;
         assert!(matches!(refused, Err(RegisterError::Full)), "{refused:?}");
         let at_l2 = store
             .at_location(SQUARE, &merchant("M1"), &location("L2"))
@@ -671,7 +679,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(store.failed(&id, 3).await.unwrap(), Failed::Counted(1));
         assert_eq!(store.failed(&id, 3).await.unwrap(), Failed::Counted(2));
-        store.delivered(&id, NOW + 5).await.unwrap();
+        store.delivered(&id, after(5)).await.unwrap();
         assert_eq!(store.failed(&id, 3).await.unwrap(), Failed::Counted(1));
         assert_eq!(store.failed(&id, 3).await.unwrap(), Failed::Counted(2));
         assert_eq!(store.failed(&id, 3).await.unwrap(), Failed::Deleted);
@@ -711,7 +719,7 @@ pub(crate) mod tests {
                             endpoint,
                             keys.p256dh.to_base64url(),
                             keys.auth.to_base64url(),
-                            NOW
+                            NOW_SECS
                         ],
                     )
                     .unwrap();
@@ -814,11 +822,11 @@ pub(crate) mod tests {
         let first = new("M1", "L1", till);
         let keys = first.subscription.keys.clone();
         let id = store.register(first, NOW).await.unwrap();
-        let taken = store.register(at(CLOVER, "M1", "M1", till), NOW + 1).await;
+        let taken = store.register(at(CLOVER, "M1", "M1", till), after(1)).await;
         assert!(matches!(taken, Err(RegisterError::Taken)), "{taken:?}");
         let mut moving = at(CLOVER, "M1", "M1", till);
         moving.subscription.keys = keys;
-        assert_eq!(store.register(moving, NOW + 2).await.unwrap(), id);
+        assert_eq!(store.register(moving, after(2)).await.unwrap(), id);
         assert!(
             store
                 .at_location(SQUARE, &merchant("M1"), &location("L1"))
@@ -875,7 +883,7 @@ pub(crate) mod tests {
                             endpoint,
                             keys.p256dh.to_base64url(),
                             keys.auth.to_base64url(),
-                            NOW
+                            NOW_SECS
                         ],
                     )
                     .unwrap();
@@ -961,11 +969,13 @@ pub(crate) mod tests {
         let first = new("M1", "L1", till);
         let keys = first.subscription.keys.clone();
         let id = store.register(first, NOW).await.unwrap();
-        let taken = store.register(at(SANDBOX, "M1", "L1", till), NOW + 1).await;
+        let taken = store
+            .register(at(SANDBOX, "M1", "L1", till), after(1))
+            .await;
         assert!(matches!(taken, Err(RegisterError::Taken)), "{taken:?}");
         let mut moving = at(SANDBOX, "M1", "L1", till);
         moving.subscription.keys = keys;
-        assert_eq!(store.register(moving, NOW + 2).await.unwrap(), id);
+        assert_eq!(store.register(moving, after(2)).await.unwrap(), id);
         assert!(
             store
                 .at_location(SQUARE, &merchant("M1"), &location("L1"))

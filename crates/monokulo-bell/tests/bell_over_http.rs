@@ -152,10 +152,7 @@ async fn a_completed_payment_dings_every_till_at_its_location_over_http() {
     let mut private = [0u8; 32];
     hex::decode_to_slice(VAPID_HEX, &mut private).unwrap();
     let bell_key = push::VapidKey::from_bytes(&private).unwrap().public();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    let now = NOW;
     for (ding, till) in dings.iter().zip([&back, &front]) {
         assert_eq!(ding.header("urgency"), "high");
         assert_eq!(ding.header("ttl"), "60");
@@ -575,7 +572,7 @@ async fn a_square_slower_than_the_timeout_is_unavailable_over_http() {
     let (_silent, square) = silent_url();
     let push = Stub::push_service().await;
     let bell = TestBell::start(&square, &[("bell.timeout_ms", "100")]).await;
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let answered = bell
         .register(TOKEN, LOCATION, &Till::at(&push, "front"))
         .await;
@@ -758,7 +755,7 @@ async fn each_push_service_gets_a_vapid_token_for_its_own_origin_over_http() {
     bell.registered(TOKEN, LOCATION, &Till::at(&two, "back"))
         .await;
     bell.webhook(&completed_payment()).await;
-    let now = now();
+    let now = NOW;
     let key = vapid_public_key();
     let (at_one, at_two) = (one.next().await, two.next().await);
     let read = |ding: &Received| PushRequest::parse(&ding.headers, &ding.body).unwrap();
@@ -771,17 +768,18 @@ async fn each_push_service_gets_a_vapid_token_for_its_own_origin_over_http() {
         assert_eq!(*request.authorization.key(), key);
         let claims = push::vapid::verify(&request.authorization, &key, &own, now).unwrap();
         assert_eq!(claims.aud, own);
-        assert!(
-            claims.exp > now + 11 * 3600 && claims.exp <= now + 24 * 3600,
-            "{}",
-            claims.exp - now
-        );
+        assert_eq!(claims.exp, NOW_SECS + 12 * 3600);
         assert!(matches!(
             push::vapid::verify(&request.authorization, &key, &other, now),
             Err(push::vapid::VapidError::Audience)
         ));
         assert!(matches!(
-            push::vapid::verify(&request.authorization, &key, &own, claims.exp),
+            push::vapid::verify(
+                &request.authorization,
+                &key,
+                &own,
+                clock::UnixTime::from_secs(claims.exp)
+            ),
             Err(push::vapid::VapidError::Expired)
         ));
         let forged = push::VapidKey::generate().public();
@@ -1242,7 +1240,7 @@ async fn a_clover_payment_dings_every_till_at_its_merchant_over_http() {
             .collect::<Vec<_>>(),
         ["/push/back", "/push/front"]
     );
-    let now = now();
+    let now = NOW;
     for (ding, till) in dings.iter().zip([&back, &front]) {
         assert_eq!(ding.header("urgency"), "high");
         assert_eq!(ding.header("ttl"), "60");
@@ -1489,7 +1487,7 @@ async fn clovers_answers_map_to_its_problems_over_http() {
     );
     let (_silent, slow) = silent_url();
     let slow = TestBell::clover(&slow, &[("bell.timeout_ms", "100")]).await;
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     assert_eq!(
         slow.register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
             .await
@@ -1711,7 +1709,7 @@ async fn the_status_says_how_the_last_ding_went_and_nothing_private_over_http() 
     .await;
     let bell = TestBell::start(&square.url(), &[]).await;
     let listen: std::net::SocketAddr = "127.0.0.1:8445".parse().unwrap();
-    let started_at = now();
+    let started_at = NOW;
     let report =
         || async { serde_json::to_value(bell.bell.report(listen, started_at).await).unwrap() };
     assert_eq!(
@@ -1720,7 +1718,7 @@ async fn the_status_says_how_the_last_ding_went_and_nothing_private_over_http() 
             "service": "monokulo-bell",
             "version": env!("CARGO_PKG_VERSION"),
             "commit": service_runtime::status::commit(),
-            "started_at": started_at,
+            "started_at": started_at.as_secs(),
             "listen": "127.0.0.1:8445",
             "public_uri": PUBLIC_URI,
             "registrations": { "stored": 0 },
@@ -1745,7 +1743,7 @@ async fn the_status_says_how_the_last_ding_went_and_nothing_private_over_http() 
     assert_eq!(rung["registrations"], serde_json::json!({ "stored": 1 }));
     assert_eq!(rung["last_ding"]["outcome"], "sent");
     let at = rung["last_ding"]["at"].as_i64().unwrap();
-    assert!((now() - 5..=now()).contains(&at), "{at}");
+    assert_eq!(at, NOW_SECS);
 
     bell.registered(TOKEN, OTHER_LOCATION, &Till::at(&push, "gone"))
         .await;

@@ -29,7 +29,9 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
+use clock::{Clock, UnixTime};
 use outbound::Reach;
 use push::{Message, Options, SendError, Sender, Topic, Ttl, Urgency};
 use rate_limit::RateLimiter;
@@ -46,9 +48,9 @@ pub const TTL: Ttl = Ttl::seconds(60);
 /// A ding's topic.
 pub const TOPIC: &str = "wake";
 
-/// How long, in seconds, a payment rung is remembered: past the minute or
-/// so in which Square sends a payment's later updates.
-pub const REMEMBERED_FOR: i64 = 10 * 60;
+/// How long a payment rung is remembered: past the minute or so in which
+/// Square sends a payment's later updates.
+pub const REMEMBERED_FOR: Duration = Duration::from_secs(10 * 60);
 
 /// The most payments remembered at once, the oldest forgotten first: a
 /// bound on the memory a burst of payments takes.
@@ -69,6 +71,8 @@ pub struct Dings {
     running: watch::Sender<usize>,
     /// The last ding sent, and how it went.
     last: Last<Dinged>,
+    /// What time it is, read once per ring and once per ding.
+    clock: Clock,
 }
 
 impl Dings {
@@ -85,6 +89,7 @@ impl Dings {
         reach: Reach,
         failure_limit: u32,
         dings_per_merchant_per_minute: u32,
+        clock: Clock,
     ) -> Self {
         Dings {
             sender,
@@ -100,6 +105,7 @@ impl Dings {
             rung: Mutex::new(Rung::default()),
             running: watch::Sender::new(0),
             last: Last::default(),
+            clock,
         }
     }
 
@@ -114,7 +120,7 @@ impl Dings {
     /// webhook that asked is answered at once. A payment rung already,
     /// lately, isn't rung again.
     pub fn ring(self: &Arc<Self>, ring: Ring) {
-        let now = service_runtime::time::now_unix();
+        let now = self.clock.now();
         let first = self
             .rung
             .lock()
@@ -141,7 +147,7 @@ impl Dings {
     }
 
     async fn ring_now(self: &Arc<Self>, ring: &Ring) {
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
         let registrations = match self
             .store
             .at_location(ring.integration, &ring.merchant_id, &ring.location_id)
@@ -175,7 +181,7 @@ impl Dings {
     /// what its answer means for it.
     async fn ding(&self, merchant: (Integration, MerchantId), registration: Registration) {
         let wake = merchant.0.point_of_sale().wake();
-        let now = service_runtime::time::now_unix();
+        let now = self.clock.now();
         let endpoint = &registration.subscription.endpoint;
         let outcome = match outbound::check_host(endpoint.as_url(), self.reach) {
             // Counted only when it is to be sent: a ding refused here
@@ -199,17 +205,20 @@ impl Dings {
             },
             Err(error) => {
                 tracing::warn!(registration = %registration.id, host = endpoint.host(), error = %error, "a ding wasn't sent");
-                self.last.record(Dinged::Failed);
+                self.last.record(Dinged::Failed, now);
                 self.failed(&registration).await;
                 return;
             }
         };
         let (id, host) = (&registration.id, endpoint.host());
-        self.last.record(match &outcome {
-            Ok(_) => Dinged::Sent,
-            Err(SendError::Gone) => Dinged::Gone,
-            Err(_) => Dinged::Failed,
-        });
+        self.last.record(
+            match &outcome {
+                Ok(_) => Dinged::Sent,
+                Err(SendError::Gone) => Dinged::Gone,
+                Err(_) => Dinged::Failed,
+            },
+            now,
+        );
         match outcome {
             Ok(_) => {
                 if let Err(error) = self.store.delivered(id, now).await {
@@ -260,16 +269,16 @@ type Rang = (Integration, PaymentId);
 /// The payments rung lately, oldest first.
 #[derive(Default)]
 struct Rung {
-    order: VecDeque<(i64, Rang)>,
+    order: VecDeque<(UnixTime, Rang)>,
     ids: HashSet<Rang>,
 }
 
 impl Rung {
     /// Whether `id` is rung for the first time at `now` (and so is
     /// remembered from now): false for one remembered still.
-    fn first(&mut self, id: Rang, now: i64) -> bool {
+    fn first(&mut self, id: Rang, now: UnixTime) -> bool {
         while let Some((at, _)) = self.order.front() {
-            if now - at < REMEMBERED_FOR {
+            if now.since(*at) < REMEMBERED_FOR {
                 break;
             }
             self.forget_oldest();
@@ -318,7 +327,11 @@ mod tests {
     const SANDBOX: Integration = Integration::Square(SquareEnvironment::Sandbox);
     const CLOVER: Integration = Integration::Clover(CloverEnvironment::NorthAmerica);
 
-    const NOW: i64 = 1_800_000_000;
+    const NOW: UnixTime = UnixTime::from_secs(1_800_000_000);
+
+    fn after(by: Duration) -> UnixTime {
+        NOW.saturating_add(by)
+    }
 
     fn payment(n: usize) -> Rang {
         (PRODUCTION, PaymentId::try_from(format!("P{n}")).unwrap())
@@ -333,20 +346,20 @@ mod tests {
         assert!(rung.first((PRODUCTION, id.clone()), NOW));
         assert!(rung.first((SANDBOX, id.clone()), NOW));
         assert!(rung.first((CLOVER, id.clone()), NOW));
-        assert!(!rung.first((SANDBOX, id.clone()), NOW + 1));
-        assert!(!rung.first((CLOVER, id), NOW + 1));
+        assert!(!rung.first((SANDBOX, id.clone()), after(Duration::from_secs(1))));
+        assert!(!rung.first((CLOVER, id), after(Duration::from_secs(1))));
     }
 
     #[test]
     fn a_payment_rings_once_until_it_is_forgotten() {
         let mut rung = Rung::default();
         assert!(rung.first(payment(1), NOW));
-        assert!(!rung.first(payment(1), NOW + 1));
-        assert!(rung.first(payment(2), NOW + 1));
-        assert!(!rung.first(payment(1), NOW + REMEMBERED_FOR - 1));
+        assert!(!rung.first(payment(1), after(Duration::from_secs(1))));
+        assert!(rung.first(payment(2), after(Duration::from_secs(1))));
+        assert!(!rung.first(payment(1), after(REMEMBERED_FOR - Duration::from_secs(1))));
         // Remembered from its first ring, not its last.
-        assert!(rung.first(payment(1), NOW + REMEMBERED_FOR));
-        assert!(!rung.first(payment(2), NOW + REMEMBERED_FOR));
+        assert!(rung.first(payment(1), after(REMEMBERED_FOR)));
+        assert!(!rung.first(payment(2), after(REMEMBERED_FOR)));
         assert_eq!(rung.order.len(), rung.ids.len());
     }
 

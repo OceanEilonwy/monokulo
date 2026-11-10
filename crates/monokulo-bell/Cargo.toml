@@ -13,6 +13,8 @@ name = "monokulo-bell"
 path = "src/main.rs"
 
 [dependencies]
+# What time it is, read once per request (`Bell::start`'s clock).
+clock = { path = "../clock" }
 # The client's address behind a trusted reverse proxy (`X-Forwarded-For`),
 # IPv6 grouped by its /64: the registration limit's key.
 abuse = { path = "../abuse" }
