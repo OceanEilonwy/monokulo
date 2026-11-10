@@ -27,6 +27,7 @@ pub mod stats;
 pub mod streams;
 
 use parking_lot::RwLock;
+use service_runtime::time::Clock;
 use std::sync::Arc;
 
 pub use identity::{ClientIdentity, TrustedProxies};
@@ -93,30 +94,6 @@ impl AbuseConfig {
                 soft_per_min: self.soft_per_min,
                 hard_per_min: self.hard_per_min,
             },
-        }
-    }
-}
-
-/// The time abuse protection reads: the system's, or one moment fixed.
-/// A client's rolling minute, and so the `Retry-After` it's told, depends
-/// on where in the minute its requests fall; on a fixed clock every
-/// request falls on the same second, so the answers are the same on every
-/// machine and every run. The recorded reference (`cargo xtask api
-/// openapi`) uses one, so its `rate-limited` examples never change.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Clock {
-    #[default]
-    System,
-    /// Always this moment, in Unix seconds.
-    Fixed(i64),
-}
-
-impl Clock {
-    /// Seconds since the Unix epoch, by this clock.
-    pub fn now(self) -> i64 {
-        match self {
-            Clock::System => service_runtime::time::now_unix(),
-            Clock::Fixed(at) => at,
         }
     }
 }

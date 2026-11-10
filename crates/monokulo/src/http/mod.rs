@@ -241,6 +241,10 @@ pub struct AppState {
     /// then (`crate::live::sse`), so the graceful shutdown only waits for
     /// ordinary requests. Browsers reconnect once the next process is up.
     pub stopping: tokio_util::sync::CancellationToken,
+    /// The time pages are rendered at: the system's, or, in a test that
+    /// compares renders, one fixed moment so a countdown never ticks between
+    /// them.
+    pub clock: service_runtime::time::Clock,
 }
 
 impl AppState {
@@ -321,6 +325,7 @@ impl AppState {
             relay: Default::default(),
             revocations: Arc::default(),
             stopping: Default::default(),
+            clock: Default::default(),
             tor: tor_service::Tor::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
