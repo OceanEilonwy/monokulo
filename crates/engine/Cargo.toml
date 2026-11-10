@@ -11,7 +11,8 @@ edition = "2021"
 name = "monokulo-engine"
 path = "src/main.rs"
 [dependencies]
-# What time it is, for the rate limiters (`rate_limit`).
+# What time it is, read from a `Clock` passed in; the system's in
+# production, pinned or moved by hand in tests.
 clock = { path = "../clock" }
 parking_lot = "0.12.5"
 live-settings = { path = "../live-settings" }

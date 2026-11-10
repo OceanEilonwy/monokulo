@@ -1962,7 +1962,7 @@ mod tests {
             .lock()
             .mark_double_spend_detected(
                 &engine_protocol::ids::OrderId::new(order_id.to_string()),
-                state.clock.now().as_secs()
+                state.clock.now()
             )
             .unwrap());
 
@@ -2160,7 +2160,7 @@ mod tests {
             .lock()
             .mark_double_spend_detected(
                 &engine_protocol::ids::OrderId::new(order_id.to_string()),
-                state.clock.now().as_secs()
+                state.clock.now()
             )
             .unwrap());
         let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)

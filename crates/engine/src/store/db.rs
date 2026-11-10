@@ -13,7 +13,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use super::{Result, SharedStore, Store, StoreError};
 
@@ -334,6 +336,7 @@ fn serve(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use clock::UnixTime;
 
     /// An inline handle whose store is already locked (by a caller that
     /// shouldn't be holding it) fails the job instead of deadlocking.
@@ -556,7 +559,7 @@ mod tests {
                     confirmations_required: Some(1),
                     order_expiry_seconds: None,
                 },
-                100,
+                UnixTime::from_secs(100),
             )
             .unwrap()
             .tenant;
@@ -590,7 +593,7 @@ mod tests {
                     Some(5),
                     None,
                 )?;
-                s.recompute_order_status(&order_id, 10, 200)?;
+                s.recompute_order_status(&order_id, 10, UnixTime::from_secs(200))?;
                 Ok(())
             })
         })

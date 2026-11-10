@@ -31,8 +31,11 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use tokio::time::Instant;
+
+use clock::Clock;
 use engine::key_custody::{KeyCustody, LiveWallet, PlainKeyCustody, SubaddressIndex};
 use engine::store::{Db, NewOrder, NewTenant, Store, TenantId};
 use engine::work::{RoundInputs, ScanState, ScanTuning, Tier};
@@ -393,9 +396,12 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
     let lowest = 10;
     let high_water = lowest + spacing * (group_count as u64 - 1);
     let tip = high_water + backlog;
-    let now = engine::now_unix();
-    let tip_time = u64::try_from(now)?;
-    let first_block_time = now - ((tip - lowest) * BLOCK_SECS) as i64;
+    // The sweep measures real time, so it tells time by the system's clock.
+    let clock = Clock::System;
+    let now = clock.now();
+    let tip_time = u64::try_from(now.as_secs())?;
+    let first_block_time = now.saturating_sub(Duration::from_secs((tip - lowest) * BLOCK_SECS));
+    let order_made_at = first_block_time.saturating_sub(Duration::from_secs(7200));
 
     let store = Store::open_file(&db_path)?;
     let sql = rusqlite::Connection::open(&db_path)?;
@@ -423,7 +429,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
                 confirmations_required: Some(10),
                 order_expiry_seconds: Some(3600),
             },
-            first_block_time - 7200,
+            order_made_at,
         )?;
         let group = index % group_count;
         let id = TenantId::new(format!("tn_sweep_{group:04}_{index:08}"));
@@ -452,8 +458,8 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
                 address: subaddress.to_string(),
                 xmr_amount_piconero: engine::store::Piconero(1),
                 description: None,
-                created_at: first_block_time - 7200,
-                expires_at: now + 7 * 24 * 3600,
+                created_at: order_made_at.as_secs(),
+                expires_at: now.saturating_add(Duration::from_hours(7 * 24)).as_secs(),
             })?;
         }
         groups[group].tenants.push(id.clone());
@@ -503,7 +509,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         round_budget,
         ..ScanTuning::DEFAULT
     };
-    let state = ScanState::default()
+    let state = ScanState::new(clock)
         .with_progress(Arc::clone(&progress))
         .with_tuning(tuning)?;
     let inputs = RoundInputs {

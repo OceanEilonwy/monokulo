@@ -15,6 +15,7 @@ use super::history_fixture::FlakyKeyCustody;
 use super::portfolio_fixture::{pair, transaction};
 use super::verification_backend as backend;
 use super::{fast_pass, run_round_at, RoundInputs, ScanState};
+use clock::UnixTime;
 use engine_daemon::fake::tx_id_hex;
 #[path = "effects.rs"]
 mod effects;
@@ -176,7 +177,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                             confirmations_required: Some(1),
                             order_expiry_seconds: None,
                         },
-                        1000,
+                        UnixTime::from_secs(1000),
                     )
                     .unwrap();
                 let tenant = created.tenant.id;
@@ -238,7 +239,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             let mut pool_since: Vec<Option<i64>> = vec![None; count];
             daemon.push_block(&effects::hash(0, 1), vec![]);
             daemon.push_block(&effects::hash(0, 2), vec![]);
-            let mut state = ScanState::default();
+            let mut state = crate::node_test_support::scan_state();
             let mut locations = vec![
                 if pool_first {
                     Location::Pool
@@ -287,7 +288,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     SqlFailure::default(),
                 )
                 .await;
-            state = ScanState::default();
+            state = crate::node_test_support::scan_state();
             let mut tip = 2;
             for command in &scenario.commands {
                 daemon.hit(&format!("selected-command:{}", command.family()));
@@ -442,7 +443,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                         }
                     }
                     Command::Restart => {
-                        state = ScanState::default();
+                        state = crate::node_test_support::scan_state();
                         backend.reopen().await;
                         daemon.hit("connection-reopened-mid-history");
                         if worker {
@@ -509,7 +510,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                             &daemon,
                         )
                         .await;
-                        state = ScanState::default();
+                        state = crate::node_test_support::scan_state();
                     }
                 }
                 daemon.hit(&format!(
@@ -576,7 +577,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             observed.fill(true);
             let restored = voided.iter().filter(|v| **v).count();
             voided.fill(false);
-            state = ScanState::default();
+            state = crate::node_test_support::scan_state();
             daemon.proof(backend.db(), 3, false).await;
             settle(
                 &Effects::new(&backend, &custody, &daemon, &tenants, &state),
@@ -781,20 +782,30 @@ async fn settle(effects: &Effects<'_>, ledger: &Ledger<'_>, tip: u64, oracle: &m
     let input = inputs(backend.db(), custody, daemon, tenants);
     for _ in 0..32 {
         daemon.release();
-        run_round_at(state, &input, Duration::ZERO, daemon.now.get())
-            .await
-            .into_result()
-            .unwrap();
+        run_round_at(
+            state,
+            &input,
+            Duration::ZERO,
+            UnixTime::from_secs(daemon.now.get()),
+        )
+        .await
+        .into_result()
+        .unwrap();
         if ledger.ready(&backend.store().lock(), daemon, tenants, tip, oracle) {
             break;
         }
     }
     for _ in 0..2 {
         daemon.release();
-        run_round_at(state, &input, Duration::ZERO, daemon.now.get())
-            .await
-            .into_result()
-            .unwrap();
+        run_round_at(
+            state,
+            &input,
+            Duration::ZERO,
+            UnixTime::from_secs(daemon.now.get()),
+        )
+        .await
+        .into_result()
+        .unwrap();
     }
     ledger.assert(&backend.store().lock(), daemon, tenants, tip, oracle);
 }

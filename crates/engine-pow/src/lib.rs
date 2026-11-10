@@ -23,6 +23,9 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use std::collections::VecDeque;
+use std::time::Duration;
+
+use clock::UnixTime;
 
 pub mod hasher;
 #[cfg(any(test, feature = "test-support"))]
@@ -421,14 +424,15 @@ pub fn check_header(window: &Window, candidate: &Candidate) -> Result<u128, Reje
     Ok(window.next_difficulty())
 }
 
-/// Whether `candidate`'s timestamp is within two hours of `now` (unix
-/// seconds). A block further ahead isn't invalid: its time hasn't come.
-pub fn check_time(candidate: &Candidate, now: u64) -> Result<(), Rejection> {
-    if candidate.timestamp > now.saturating_add(FUTURE_TIME_LIMIT_SECS) {
+/// Whether `candidate`'s timestamp is within two hours of `now`. A block
+/// further ahead isn't invalid: its time hasn't come.
+pub fn check_time(candidate: &Candidate, now: UnixTime) -> Result<(), Rejection> {
+    let timestamp = UnixTime::from_secs(i64::try_from(candidate.timestamp).unwrap_or(i64::MAX));
+    if timestamp > now.saturating_add(Duration::from_secs(FUTURE_TIME_LIMIT_SECS)) {
         return Err(Rejection::TimestampInFuture {
             height: candidate.height,
             timestamp: candidate.timestamp,
-            now,
+            now: u64::try_from(now.as_secs()).unwrap_or(0),
         });
     }
     Ok(())

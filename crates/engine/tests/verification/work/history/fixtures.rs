@@ -15,6 +15,7 @@ use crate::key_custody::{
     SubaddressIndex, WalletHandle, WalletMaterial,
 };
 use crate::store::{NewOrder, NewTenant, Store};
+use clock::UnixTime;
 use monero::consensus::encode::deserialize;
 use monero::{Address, Network, PrivateKey, PublicKey, Transaction};
 use std::collections::{HashMap, HashSet};
@@ -183,7 +184,7 @@ fn fixture_tenant_rows(
                 confirmations_required: Some(10),
                 order_expiry_seconds: None,
             },
-            1000,
+            UnixTime::from_secs(1000),
         )
         .unwrap();
     let index = store.allocate_minor_index(&tenant.tenant.id).unwrap();

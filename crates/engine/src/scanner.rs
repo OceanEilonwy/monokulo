@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
+use clock::{Clock, UnixTime};
 use engine_protocol::order_event::OrderEventKind;
 use monero::blockdata::transaction::TxOutTarget;
 use monero::Transaction;
@@ -317,7 +318,7 @@ pub fn record_scan_match(
     store: &Store,
     tenant_id: &crate::store::TenantId,
     scan: &ScanResult,
-    seen_at: i64,
+    seen_at: UnixTime,
     block_height: Option<u64>,
 ) -> Result<std::collections::BTreeSet<crate::store::OrderId>> {
     let mut touched = std::collections::BTreeSet::new();
@@ -352,7 +353,7 @@ pub fn record_scan_match(
             output_index(m.output_index)?,
             Piconero(amount),
             &scan.key_images_json,
-            seen_at,
+            seen_at.as_secs(),
             block_height.map(crate::store::sql_height).transpose()?,
             scan.output_keys.get(&m.output_index).map(String::as_str),
         )?;
@@ -368,7 +369,7 @@ pub(crate) fn stage_block_match(
     network: monero::Network,
     tenant_id: &crate::store::TenantId,
     scan: &ScanResult,
-    seen_at: i64,
+    seen_at: UnixTime,
 ) -> Result<()> {
     if stale_after_wallet_change(store, tenant_id, scan)? {
         return Ok(());
@@ -395,7 +396,7 @@ pub(crate) fn stage_block_match(
             output_index: output_index(m.output_index)?,
             amount,
             key_images_json: &scan.key_images_json,
-            seen_at,
+            seen_at: seen_at.as_secs(),
             output_key: scan.output_keys.get(&m.output_index).map(String::as_str),
         })?;
     }
@@ -492,7 +493,7 @@ pub(crate) async fn check_vanished_candidates(
     daemon: &dyn MoneroDaemonClient,
     mempool_txids: &HashSet<String>,
     current_height: u64,
-    now: i64,
+    now: UnixTime,
     unconfirmed: Vec<crate::store::OrderPaymentRow>,
     hints: &VanishedHints,
 ) -> Result<VanishedPoolReport> {
@@ -602,7 +603,7 @@ pub fn recompute_and_notify(
     store: &Store,
     order_id: &crate::store::OrderId,
     current_height: u64,
-    now: i64,
+    now: UnixTime,
 ) -> Result<Option<engine_protocol::activity::Transition>> {
     let result = store
         .in_transaction(|store| recompute_and_notify_in_tx(store, order_id, current_height, now));
@@ -621,7 +622,7 @@ pub(crate) fn recompute_and_notify_in_tx(
     store: &Store,
     order_id: &crate::store::OrderId,
     current_height: u64,
-    now: i64,
+    now: UnixTime,
 ) -> Result<Option<engine_protocol::activity::Transition>> {
     let (old_status, new_status) = store.recompute_order_status(order_id, current_height, now)?;
     if old_status == new_status {
@@ -659,7 +660,7 @@ async fn void_if_double_spend_proven(
     daemon: &dyn MoneroDaemonClient,
     payment: &crate::store::OrderPaymentRow,
     current_height: u64,
-    now: i64,
+    now: UnixTime,
     proven: Option<bool>,
 ) -> Result<bool> {
     // Invalid stored evidence is never proof, and never an error that would
@@ -720,7 +721,7 @@ fn void_and_notify(
     txid: &str,
     output_index: i64,
     current_height: u64,
-    now: i64,
+    now: UnixTime,
 ) -> Result<bool> {
     store.in_transaction(|store| {
         void_and_notify_in_tx(store, order_id, txid, output_index, current_height, now)
@@ -735,7 +736,7 @@ pub(crate) fn void_and_notify_in_tx(
     txid: &str,
     output_index: i64,
     current_height: u64,
-    now: i64,
+    now: UnixTime,
 ) -> Result<bool> {
     // Another payment on the order carries its output key: its inputs being
     // spent is no double spend of the order's money, as a copy of a real
@@ -796,7 +797,7 @@ fn unvoid_as_false_positive(
     output_index: i64,
     block_height: Option<u64>,
     current_height: u64,
-    now: i64,
+    now: UnixTime,
 ) -> Result<bool> {
     store.in_transaction(|store| {
         if !store.unvoid_payment(order_id, txid, output_index)? {
@@ -829,7 +830,7 @@ fn unvoid_as_false_positive(
 /// day later as a minute later (unlike zero-conf detection, there is no latency requirement to trade away here),
 /// and an old, long-settled void is not worth the cost of rechecking forever: if it were wrong, the merchant
 /// and customer have long since moved on regardless.
-pub const DOUBLE_SPEND_RECHECK_WINDOW_SECS: i64 = 48 * 3600;
+pub const DOUBLE_SPEND_RECHECK_WINDOW: std::time::Duration = std::time::Duration::from_hours(48);
 
 /// Rechecks one voided payment and restores it if fresh, corroborated
 /// evidence no longer supports the double-spend accusation. Returns whether
@@ -845,7 +846,7 @@ pub(crate) async fn recheck_voided_payment(
     network: monero::Network,
     payment: &crate::store::OrderPaymentRow,
     current_height: u64,
-    now: i64,
+    now: UnixTime,
     statuses: Option<&[KeyImageStatus]>,
 ) -> Result<bool> {
     // The transaction itself, first: a void was a false accusation if the
@@ -1117,7 +1118,12 @@ pub(crate) fn update_avg_bytes_per_block(
 /// left, and shares the state with the fast mempool path. This runs one
 /// round from empty in-memory state, over an inline store, for tests, the
 /// e2e harness and tools that want "scan once now".
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one round's genuinely independent inputs, and the clock"
+)]
 pub async fn run_scan_tick(
+    clock: Clock,
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
     daemon: &dyn MoneroDaemonClient,
@@ -1126,7 +1132,7 @@ pub async fn run_scan_tick(
     reorg_check_depth: u64,
     expired_order_grace_period_seconds: i64,
 ) -> Result<()> {
-    let state = crate::work::ScanState::default();
+    let state = crate::work::ScanState::new(clock);
     let budget = crate::engine_settings::EngineSettings::defaults()
         .scan
         .load()

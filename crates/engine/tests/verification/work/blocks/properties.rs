@@ -70,7 +70,7 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
         prev_hash: "parent".into(),
         parent: 2,
         idle_to: 3,
-        since: 1000,
+        since: UnixTime::from_secs(1000),
         grace: 0,
     };
     let db = crate::store::Db::open(&path.0, &store).unwrap();
@@ -80,7 +80,7 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
     let job = tokio::spawn(async move {
         job_db
             .run(Class::Scanner, move |s| -> Result<(), ScannerError> {
-                let result = commit(s, network, &block, &[scanned], 1100);
+                let result = commit(s, network, &block, &[scanned], UnixTime::from_secs(1100));
                 let _ = finished.send(result);
                 Ok(())
             })
@@ -114,7 +114,9 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
                 .unwrap();
         }
         4 => {
-            store.open_reorg_job(network, 3, 1050).unwrap();
+            store
+                .open_reorg_job(network, 3, UnixTime::from_secs(1050))
+                .unwrap();
         }
         5 => {
             store
@@ -128,7 +130,7 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
         _ => {}
     }
     release.release();
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), completed)
+    let result = tokio::time::timeout(Duration::from_secs(10), completed)
         .await
         .unwrap()
         .unwrap()

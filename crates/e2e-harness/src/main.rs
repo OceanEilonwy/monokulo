@@ -59,6 +59,7 @@ use serde_json::json;
 use tokio::sync::Mutex as AsyncMutex;
 use tower::ServiceExt as _;
 
+use clock::Clock;
 use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router as build_engine_router, AppState as EngineAppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, WalletHandles};
@@ -290,6 +291,7 @@ async fn main() {
         db: engine::store::Database::inline(Arc::clone(&store)),
         rate_limits: Arc::new(ApiRateLimits::new(1_000_000, Some(1_000_000))),
         activity_stream: engine::activity::StreamTuning::DEFAULT,
+        clock: Clock::System,
         log_store: None,
         engine_token: Arc::new(
             credentials::auth::RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN).hash(),
@@ -440,6 +442,7 @@ async fn main() {
                 {
                     let _guard = network_lock.lock().await;
                     if let Err(e) = run_scan_tick(
+                        Clock::System,
                         &store,
                         key_custody.as_ref(),
                         daemon.as_ref(),
@@ -461,7 +464,7 @@ async fn main() {
     // ---- one real account, one real store connected to the engine above,
     // through the real HTTP flow (not constructed directly) - same wallet
     // fixture `tests/e2e_dashboard_stagenet.rs` uses. ----
-    let email = format!("pos-e2e-{}@example.com", clock::Clock::System.now());
+    let email = format!("pos-e2e-{}@example.com", Clock::System.now().as_secs());
     let password = "correct horse battery staple";
     let signup_response = cp_router
         .clone()

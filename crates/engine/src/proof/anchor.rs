@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use clock::UnixTime;
 use futures_util::future::join_all;
 
 use super::{NodeRef, ProofTuning};
@@ -72,7 +73,7 @@ pub async fn take(
     network: monero::Network,
     tuning: &ProofTuning,
     hasher: &Hasher,
-    now: i64,
+    now: UnixTime,
 ) -> Result<NewAnchor, AnchorProblem> {
     let total = nodes.len();
     let needed = total / 2 + 1;
@@ -190,17 +191,16 @@ fn id_of(hex_id: &str) -> Result<[u8; 32], AnchorProblem> {
         .ok_or_else(|| AnchorProblem::Inconsistent(format!("{hex_id:?} isn't a block id")))
 }
 
-/// The window's dates against the clock (`now`, unix seconds): the anchor
+/// The window's dates against the clock (`now`): the anchor
 /// between a quarter and four times `depth` blocks' time old, and the window
 /// spanning between a quarter and four times its blocks' time.
-fn check_dates(window: &[ProvenBlock], depth: u64, now: i64) -> Result<(), AnchorProblem> {
+fn check_dates(window: &[ProvenBlock], depth: u64, now: UnixTime) -> Result<(), AnchorProblem> {
     let target = engine_pow::DIFFICULTY_TARGET_SECS as u64;
     let (Some(first), Some(last)) = (window.first(), window.last()) else {
         return Err(AnchorProblem::Inconsistent("an empty window".to_owned()));
     };
-    let age = u64::try_from(now)
-        .unwrap_or(0)
-        .saturating_sub(last.timestamp);
+    let anchor_dated = UnixTime::from_secs(i64::try_from(last.timestamp).unwrap_or(i64::MAX));
+    let age = now.since(anchor_dated).as_secs();
     let expected_age = depth * target;
     if age < expected_age / 4 || age > expected_age * 4 {
         return Err(AnchorProblem::Inconsistent(format!(

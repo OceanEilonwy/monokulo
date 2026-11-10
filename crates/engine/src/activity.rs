@@ -13,7 +13,9 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use engine_protocol::activity::{Event, Recorded, StreamPosition};
 /// How far back the record reaches, and the most events it keeps whatever
@@ -150,6 +152,15 @@ impl std::fmt::Debug for Activity {
 }
 
 /// Milliseconds since the Unix epoch.
+///
+/// The one place the engine still reads the system's wall clock directly:
+/// the engine page replays its record to the millisecond, and a
+/// `clock::UnixTime` is whole seconds. It stamps this record only; nothing
+/// the engine decides depends on it.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the activity record is timed to the millisecond and a clock::UnixTime is whole seconds; the stamp is telemetry only"
+)]
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

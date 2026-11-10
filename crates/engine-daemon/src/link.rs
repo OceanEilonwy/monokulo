@@ -20,6 +20,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
+use clock::{Clock, UnixTime};
 use parking_lot::Mutex;
 
 /// How strongly a new sample moves an average.
@@ -102,9 +103,10 @@ pub fn timeout_for(expected: Duration) -> Duration {
 }
 
 /// One link's measurements. Cheap to share: every method takes `&self`.
-#[derive(Default)]
 pub struct Link {
     state: Mutex<State>,
+    /// What time the measurements are stamped with.
+    clock: Clock,
 }
 
 struct State {
@@ -155,23 +157,26 @@ fn ms(secs: f64) -> u64 {
 }
 
 impl Link {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(clock: Clock) -> Self {
+        Self {
+            state: Mutex::default(),
+            clock,
+        }
     }
 
     /// A small call answered in `elapsed`: a round-trip sample.
     pub fn record_small(&self, elapsed: Duration) {
-        self.record_small_at(elapsed, service_runtime::time::now_unix());
+        self.record_small_at(elapsed, self.clock.now());
     }
 
-    fn record_small_at(&self, elapsed: Duration, now_unix: i64) {
+    fn record_small_at(&self, elapsed: Duration, now: UnixTime) {
         let mut state = self.state.lock();
         state.rtt_secs = if state.measured {
             ewma(state.rtt_secs, elapsed.as_secs_f64())
         } else {
             elapsed.as_secs_f64()
         };
-        state.note_measured(now_unix);
+        state.note_measured(now);
     }
 
     /// A `get_blocks.bin` answer: `blocks` blocks in `bytes` bytes, the
@@ -183,13 +188,7 @@ impl Link {
         to_first_byte: Duration,
         transfer: Duration,
     ) {
-        self.record_blocks_at(
-            blocks,
-            bytes,
-            to_first_byte,
-            transfer,
-            service_runtime::time::now_unix(),
-        );
+        self.record_blocks_at(blocks, bytes, to_first_byte, transfer, self.clock.now());
     }
 
     fn record_blocks_at(
@@ -198,7 +197,7 @@ impl Link {
         bytes: usize,
         to_first_byte: Duration,
         transfer: Duration,
-        now_unix: i64,
+        now: UnixTime,
     ) {
         if blocks == 0 {
             return;
@@ -214,27 +213,25 @@ impl Link {
             state.rate_bytes_per_sec =
                 ewma(state.rate_bytes_per_sec, rate).max(MIN_RATE_BYTES_PER_SEC);
         }
-        state.note_measured(now_unix);
+        state.note_measured(now);
     }
 
     /// A call that ran out of time: the link is slower than estimated.
     pub fn record_timeout(&self) {
-        self.record_timeout_at(service_runtime::time::now_unix());
+        self.record_timeout_at(self.clock.now());
     }
 
-    fn record_timeout_at(&self, now_unix: i64) {
+    fn record_timeout_at(&self, now: UnixTime) {
         let mut state = self.state.lock();
         state.rate_bytes_per_sec = (state.rate_bytes_per_sec / 2.0).max(MIN_RATE_BYTES_PER_SEC);
-        state.in_minute(now_unix, |minute| minute.timeouts += 1);
+        state.in_minute(now, |minute| minute.timeouts += 1);
     }
 
     /// A call that failed for any other reason.
     pub fn record_failure(&self) {
-        self.state
-            .lock()
-            .in_minute(service_runtime::time::now_unix(), |minute| {
-                minute.failures += 1;
-            });
+        self.state.lock().in_minute(self.clock.now(), |minute| {
+            minute.failures += 1;
+        });
     }
 
     pub fn bytes_per_block(&self) -> f64 {
@@ -264,13 +261,16 @@ impl Link {
     }
 
     pub fn snapshot(&self) -> LinkSnapshot {
-        self.snapshot_at(service_runtime::time::now_unix())
+        self.snapshot_at(self.clock.now())
     }
 
-    fn snapshot_at(&self, now_unix: i64) -> LinkSnapshot {
+    fn snapshot_at(&self, now: UnixTime) -> LinkSnapshot {
         let state = self.state.lock();
-        let hour_ago = now_unix.saturating_sub(3600);
-        let recent = state.history.iter().filter(|m| m.at_unix > hour_ago);
+        let hour_ago = now.saturating_sub(Duration::from_secs(3600));
+        let recent = state
+            .history
+            .iter()
+            .filter(|m| UnixTime::from_secs(m.at_unix) > hour_ago);
         let (timeouts, failures) = recent
             .clone()
             .fold((0, 0), |(t, f), m| (t + m.timeouts, f + m.failures));
@@ -297,25 +297,27 @@ impl Link {
 }
 
 impl State {
-    fn note_measured(&mut self, now_unix: i64) {
+    fn note_measured(&mut self, now: UnixTime) {
         self.measured = true;
-        self.last_measured_unix = Some(now_unix);
+        self.last_measured_unix = Some(now.as_secs());
         let (rate, rtt, ttfb) = (
             self.rate_bytes_per_sec,
             self.rtt_secs,
             self.ttfb_per_block_secs,
         );
-        self.in_minute(now_unix, |minute| {
+        self.in_minute(now, |minute| {
             minute.rate_bytes_per_sec = rate;
             minute.rtt_secs = rtt;
             minute.ttfb_per_block_secs = ttfb;
         });
     }
 
-    /// Applies `f` to the history entry for the minute holding `now_unix`,
+    /// Applies `f` to the history entry for the minute holding `now`,
     /// started if new.
-    fn in_minute(&mut self, now_unix: i64, f: impl FnOnce(&mut Minute)) {
-        let at_unix = now_unix.saturating_sub(now_unix.rem_euclid(60));
+    fn in_minute(&mut self, now: UnixTime, f: impl FnOnce(&mut Minute)) {
+        // The minute's start, as the Unix seconds the history is kept in.
+        let secs = now.as_secs();
+        let at_unix = secs.saturating_sub(secs.rem_euclid(60));
         if self.history.back().is_none_or(|m| m.at_unix != at_unix) {
             self.history.push_back(Minute {
                 at_unix,
@@ -341,10 +343,14 @@ mod tests {
 
     const T0: i64 = 1_800_000_000;
 
+    fn at(secs: i64) -> UnixTime {
+        UnixTime::from_secs(secs)
+    }
+
     #[test]
     fn a_new_link_starts_slow_and_is_given_time() {
-        let link = Link::new();
-        let snapshot = link.snapshot_at(T0);
+        let link = Link::new(Clock::Fixed(at(T0)));
+        let snapshot = link.snapshot_at(at(T0));
         assert!(!snapshot.measured);
         assert_eq!(snapshot.rate_bytes_per_sec, 125_000);
         // 100 blocks of the 50 kB guess at 1 Mbit/s: 1 s + 5 s + 40 s,
@@ -356,10 +362,10 @@ mod tests {
 
     #[test]
     fn the_rate_comes_from_large_bodies_and_the_first_byte_from_the_nodes_work() {
-        let link = Link::new();
-        link.record_small_at(Duration::from_millis(100), T0);
+        let link = Link::new(Clock::Fixed(at(T0)));
+        link.record_small_at(Duration::from_millis(100), at(T0));
         assert_eq!(
-            link.snapshot_at(T0).rtt_ms,
+            link.snapshot_at(at(T0)).rtt_ms,
             100,
             "the first sample replaces the guess"
         );
@@ -370,10 +376,10 @@ mod tests {
                 10_000_000,
                 Duration::from_millis(600),
                 Duration::from_secs(2),
-                T0,
+                at(T0),
             );
         }
-        let snapshot = link.snapshot_at(T0);
+        let snapshot = link.snapshot_at(at(T0));
         assert!(snapshot.measured);
         assert!(
             (4_900_000..=5_000_000).contains(&snapshot.rate_bytes_per_sec),
@@ -392,20 +398,20 @@ mod tests {
             10_000,
             Duration::from_millis(100),
             Duration::from_secs(5),
-            T0,
+            at(T0),
         );
         assert!(link.cost().rate_bytes_per_sec > 4_000_000.0);
     }
 
     #[test]
     fn a_timeout_halves_the_rate_and_the_next_timeout_grows() {
-        let link = Link::new();
+        let link = Link::new(Clock::Fixed(at(T0)));
         let before = link.timeout_for_blocks(200);
-        link.record_timeout_at(T0);
-        assert_eq!(link.snapshot_at(T0).rate_bytes_per_sec, 62_500);
+        link.record_timeout_at(at(T0));
+        assert_eq!(link.snapshot_at(at(T0)).rate_bytes_per_sec, 62_500);
         assert!(link.timeout_for_blocks(200) > before);
         for _ in 0..100 {
-            link.record_timeout_at(T0);
+            link.record_timeout_at(at(T0));
         }
         // Clamped to the floor exactly (`max`), so compared bit for bit.
         assert_eq!(
@@ -418,16 +424,19 @@ mod tests {
             MAX_TIMEOUT,
             "and the timeout a ceiling"
         );
-        assert_eq!(link.snapshot_at(T0).timeouts_last_hour, 101);
+        assert_eq!(link.snapshot_at(at(T0)).timeouts_last_hour, 101);
     }
 
     #[test]
     fn history_keeps_an_hour_by_the_minute() {
-        let link = Link::new();
+        let link = Link::new(Clock::Fixed(at(T0)));
         for minute in 0..90 {
-            link.record_small_at(Duration::from_millis(100 + minute), T0 + minute as i64 * 60);
+            link.record_small_at(
+                Duration::from_millis(100 + minute),
+                at(T0 + minute as i64 * 60),
+            );
         }
-        let snapshot = link.snapshot_at(T0 + 89 * 60);
+        let snapshot = link.snapshot_at(at(T0 + 89 * 60));
         assert_eq!(snapshot.history.len(), 60);
         assert!(snapshot
             .history
@@ -437,7 +446,25 @@ mod tests {
         // Failures older than an hour drop out of the count.
         link.state
             .lock()
-            .in_minute(T0 + 89 * 60, |minute| minute.failures += 2);
-        assert_eq!(link.snapshot_at(T0 + 200 * 60).failures_last_hour, 0);
+            .in_minute(at(T0 + 89 * 60), |minute| minute.failures += 2);
+        assert_eq!(link.snapshot_at(at(T0 + 200 * 60)).failures_last_hour, 0);
+    }
+
+    /// The production recorders stamp a sample with the link's own clock.
+    #[test]
+    fn a_sample_is_stamped_with_the_links_clock() {
+        let (clock, hand) = Clock::manual(at(T0));
+        let link = Link::new(clock);
+        link.record_small(Duration::from_millis(100));
+        assert_eq!(link.snapshot().last_measured_unix, Some(T0));
+        hand.advance(Duration::from_secs(90));
+        link.record_timeout();
+        let snapshot = link.snapshot();
+        assert_eq!(snapshot.timeouts_last_hour, 1);
+        assert_eq!(
+            snapshot.last_measured_unix,
+            Some(T0),
+            "a timeout measures nothing"
+        );
     }
 }

@@ -3,6 +3,7 @@
 //! IDOR/auth properties `store.rs` already tests at the repository level, but end to
 //! end through real request parsing, auth extraction, and JSON (de)serialization.
 
+use clock::UnixTime;
 use std::collections::HashMap;
 use std::str::FromStr as _;
 use std::sync::Arc;
@@ -1148,12 +1149,18 @@ async fn the_admin_cancel_route_cancels_an_unpaid_order_of_the_tenant_behind_the
                 0,
                 crate::store::Piconero(amount),
                 "[]",
-                crate::now_unix(),
+                crate::node_test_support::TEST_NOW.as_secs(),
                 Some(10),
                 None,
             )
             .unwrap();
-        crate::scanner::recompute_and_notify(&store, &order, 100, crate::now_unix()).unwrap();
+        crate::scanner::recompute_and_notify(
+            &store,
+            &order,
+            100,
+            crate::node_test_support::TEST_NOW,
+        )
+        .unwrap();
     };
     let order = create(a.secret_token.clone()).await;
     let cancel = format!("/api/v1/admin/tenant/orders/{order}/cancel");
@@ -1313,7 +1320,13 @@ async fn the_admin_renew_route_renews_only_an_expired_order_nothing_reached() {
             )
             .unwrap();
         let order = engine_protocol::ids::OrderId::new(order.to_owned());
-        crate::scanner::recompute_and_notify(&store, &order, 100, crate::now_unix()).unwrap();
+        crate::scanner::recompute_and_notify(
+            &store,
+            &order,
+            100,
+            crate::node_test_support::TEST_NOW,
+        )
+        .unwrap();
     };
     let pay = |order: &str, amount: u64, txid: &str| {
         let store = store.lock();
@@ -1325,12 +1338,18 @@ async fn the_admin_renew_route_renews_only_an_expired_order_nothing_reached() {
                 0,
                 crate::store::Piconero(amount),
                 "[]",
-                crate::now_unix(),
+                crate::node_test_support::TEST_NOW.as_secs(),
                 Some(10),
                 None,
             )
             .unwrap();
-        crate::scanner::recompute_and_notify(&store, &order, 100, crate::now_unix()).unwrap();
+        crate::scanner::recompute_and_notify(
+            &store,
+            &order,
+            100,
+            crate::node_test_support::TEST_NOW,
+        )
+        .unwrap();
     };
     let made = create(a.secret_token.clone()).await;
     let order = made["order_id"].as_str().unwrap().to_owned();
@@ -1371,7 +1390,7 @@ async fn the_admin_renew_route_renews_only_an_expired_order_nothing_reached() {
         "a pending order isn't renewed"
     );
 
-    let ended = crate::now_unix() - 60;
+    let ended = crate::node_test_support::before(60).as_secs();
     expire(&order, ended);
     let expired = body_json(
         send(
@@ -1425,7 +1444,10 @@ async fn the_admin_renew_route_renews_only_an_expired_order_nothing_reached() {
     assert_eq!(renewed["address"], address.as_str());
     assert_eq!(renewed["xmr_amount_piconero"], 2_000);
     let new_expiry = renewed["expires_at"].as_i64().unwrap();
-    assert!(new_expiry > crate::now_unix(), "a fresh expiry");
+    assert!(
+        new_expiry > crate::node_test_support::TEST_NOW.as_secs(),
+        "a fresh expiry"
+    );
     let now = body_json(
         send(
             "GET",
@@ -1496,7 +1518,7 @@ async fn the_admin_renew_route_renews_only_an_expired_order_nothing_reached() {
     let partly = create(a.secret_token.clone()).await;
     let partly = partly["order_id"].as_str().unwrap().to_owned();
     pay(&partly, 1, "tx_partial");
-    let partly_ended = crate::now_unix() - 60;
+    let partly_ended = crate::node_test_support::before(60).as_secs();
     expire(&partly, partly_ended);
     let refused = send(
         "POST",
@@ -1510,7 +1532,7 @@ async fn the_admin_renew_route_renews_only_an_expired_order_nothing_reached() {
     // Past the window the scanner watches an expired order for: refused.
     let old = create(a.secret_token.clone()).await;
     let old = old["order_id"].as_str().unwrap().to_owned();
-    let long_ago = crate::now_unix() - 7 * 24 * 3600;
+    let long_ago = crate::node_test_support::before(7 * 24 * 3600).as_secs();
     expire(&old, long_ago);
     let refused = send(
         "POST",
@@ -1632,7 +1654,10 @@ async fn status_reports_resources_scaling_and_a_slow_block() {
     );
 
     // A minute in: not slow yet.
-    progress.lock().start_block(42, crate::now_unix() - 60);
+    progress.lock().start_block(
+        42,
+        UnixTime::from_secs(crate::node_test_support::before(60).as_secs()),
+    );
     let status = get_status_json(router.clone()).await;
     assert_eq!(
         status["networks"][0]["scaling"]["slow"],
@@ -1641,7 +1666,10 @@ async fn status_reports_resources_scaling_and_a_slow_block() {
 
     // Past two minutes on the same block: slow.
     progress.lock().in_progress = None;
-    progress.lock().start_block(42, crate::now_unix() - 130);
+    progress.lock().start_block(
+        42,
+        UnixTime::from_secs(crate::node_test_support::before(130).as_secs()),
+    );
     progress.lock().fetched_block(42, 400_000_000);
     let status = get_status_json(router).await;
     let slow = &status["networks"][0]["scaling"]["slow"];
@@ -1719,7 +1747,7 @@ async fn status_endpoint_shows_the_real_configured_network_and_node_with_its_liv
 /// configured network at all.
 #[tokio::test]
 async fn status_endpoint_reflects_each_scan_tick_and_node_state() {
-    let now = crate::now_unix();
+    let now = crate::node_test_support::TEST_NOW.as_secs();
     for (tick_at, tenants, result, ok, stale, error) in [
         (now, 3, Ok(()), true, false, None),
         (
@@ -2593,7 +2621,10 @@ async fn every_store_route_refuses_every_credential_but_the_store_s_own_secret()
     store.lock().rotate_tenant_secret(&rotated_id).unwrap();
     let deleted = create_tenant(&router, 3).await;
     let deleted_id = tenant_row(&store, &deleted).id;
-    store.lock().disable_tenant(&deleted_id, 1).unwrap();
+    store
+        .lock()
+        .disable_tenant(&deleted_id, UnixTime::from_secs(1))
+        .unwrap();
 
     let store_routes: Vec<(String, String)> = build_router_routes()
         .into_iter()
@@ -2952,7 +2983,7 @@ async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
                     &order_id,
                     OrderEventKind::Status(OrderStatus::Unconfirmed),
                     &[],
-                    100,
+                    UnixTime::from_secs(100),
                 )
                 .unwrap(),
             store
@@ -2960,7 +2991,7 @@ async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
                     &order_id,
                     OrderEventKind::Status(OrderStatus::Paid),
                     &[],
-                    200,
+                    UnixTime::from_secs(200),
                 )
                 .unwrap(),
         )
@@ -2993,7 +3024,12 @@ async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
         .db
         .lock()
         .in_transaction(|s| {
-            s.append_order_event(&order_id, OrderEventKind::DoubleSpendDetected, &[], 300)
+            s.append_order_event(
+                &order_id,
+                OrderEventKind::DoubleSpendDetected,
+                &[],
+                UnixTime::from_secs(300),
+            )
         })
         .unwrap();
     let (event, id, data) = next_logged_event(&mut body, &mut buffer).await;
@@ -3033,7 +3069,7 @@ async fn the_order_event_stream_says_when_a_reader_missed_events() {
                     &order_id,
                     OrderEventKind::Status(OrderStatus::Unconfirmed),
                     &[],
-                    at,
+                    UnixTime::from_secs(at),
                 )
                 .unwrap();
         }
@@ -3042,7 +3078,7 @@ async fn the_order_event_stream_says_when_a_reader_missed_events() {
                 &order_id,
                 OrderEventKind::Status(OrderStatus::Paid),
                 &[],
-                5000,
+                UnixTime::from_secs(5000),
             )
             .unwrap();
         assert_eq!(store.prune_order_events_before(1000).unwrap(), 2);
@@ -3191,7 +3227,7 @@ async fn listing_orders_can_page_search_and_list_every_open_order() {
                 0,
                 crate::store::Piconero(1_000),
                 "[]",
-                crate::now_unix(),
+                crate::node_test_support::TEST_NOW.as_secs(),
                 Some(10),
                 None,
             )
@@ -3200,7 +3236,7 @@ async fn listing_orders_can_page_search_and_list_every_open_order() {
             &store,
             &engine_protocol::ids::OrderId::new(ids[1].clone()),
             100,
-            crate::now_unix(),
+            crate::node_test_support::TEST_NOW,
         )
         .unwrap();
     }
@@ -4331,11 +4367,13 @@ fn a_disabled_store_can_not_be_moved() {
                 confirmations_required: None,
                 order_expiry_seconds: None,
             },
-            1,
+            UnixTime::from_secs(1),
         )
         .unwrap()
         .tenant;
-    store.disable_tenant(&tenant.id, 2).unwrap();
+    store
+        .disable_tenant(&tenant.id, UnixTime::from_secs(2))
+        .unwrap();
     assert!(matches!(
         store.update_tenant_key_custody(&tenant.id, &tenant.wallet_id, CustodyBackend::Snp, &[2]),
         Err(crate::store::StoreError::NotFound)
@@ -4368,7 +4406,7 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
         false,
         "info",
         std::io::sink,
-        clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
+        clock::Clock::Fixed(UnixTime::from_secs(1_800_000_000)),
     );
     let log_store = telemetry.open_store(&dir.join("engine.logs.db")).unwrap();
     let trace_id = {
@@ -4828,7 +4866,9 @@ async fn forgetting_a_proof_anchor_keeps_checking_on() {
 
     {
         let store = store.lock();
-        store.enable_proof(Network::Mainnet, 1).unwrap();
+        store
+            .enable_proof(Network::Mainnet, UnixTime::from_secs(1))
+            .unwrap();
         let block = |height: u64| engine_pow::ProvenBlock {
             height,
             id: [height as u8; 32],
@@ -4844,7 +4884,7 @@ async fn forgetting_a_proof_anchor_keeps_checking_on() {
                     window: (1..=3).map(block).collect(),
                     seeds: vec![],
                 },
-                2,
+                UnixTime::from_secs(2),
             )
             .unwrap();
     }
@@ -5303,7 +5343,11 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
         );
         // Each row's scan window: its own orders.
         let windows = s
-            .scan_windows(&[row.id.clone(), watcher.id.clone()], crate::now_unix(), 0)
+            .scan_windows(
+                &[row.id.clone(), watcher.id.clone()],
+                crate::node_test_support::TEST_NOW,
+                0,
+            )
             .unwrap();
         assert_eq!(windows[&row.id], vec![1]);
         assert_eq!(windows[&watcher.id], vec![1]);
@@ -5320,7 +5364,7 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
         let s = store.lock();
         let before_id =
             engine_protocol::ids::OrderId::new(before["order_id"].as_str().unwrap().to_owned());
-        let now = crate::now_unix();
+        let now = crate::node_test_support::TEST_NOW;
         s.execute_raw_for_test(&format!(
             "INSERT INTO scanned_blocks (network, height, block_hash)
                  SELECT network, 10, 'h10' FROM tenants WHERE id = '{row}';
@@ -5329,14 +5373,14 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
              UPDATE orders SET expires_at_utc = {past} WHERE id = '{before_id}';",
             row = row.id,
             watcher = watcher.id,
-            past = now - 10,
+            past = crate::node_test_support::before(10).as_secs(),
         ))
         .unwrap();
         let (_, status) = s.recompute_order_status(&before_id, 10, now).unwrap();
         assert_eq!(status, OrderStatus::Pending);
         s.execute_raw_for_test(&format!(
             "UPDATE orders SET expires_at_utc = {} WHERE id = '{before_id}'",
-            now + 3600
+            crate::node_test_support::after(3600).as_secs()
         ))
         .unwrap();
     }
@@ -5401,13 +5445,13 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
         key_images_json: "[]".into(),
         output_keys: HashMap::new(),
     };
-    let seen_after_the_change = crate::now_unix() + 1;
+    let seen_after_the_change = crate::node_test_support::after(1).as_secs();
     let locked = store.lock();
     let with_old_keys = crate::scanner::record_scan_match(
         &locked,
         &row.id,
         &found(old_wallet.as_str()),
-        seen_after_the_change,
+        UnixTime::from_secs(seen_after_the_change),
         None,
     )
     .unwrap();
@@ -5420,7 +5464,7 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
         &locked,
         &row.id,
         &found(row.wallet_id.as_str()),
-        seen_after_the_change,
+        UnixTime::from_secs(seen_after_the_change),
         None,
     )
     .unwrap();
@@ -5452,7 +5496,7 @@ async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_a_netwo
                 primary_address: "5stagenet".into(),
                 network: Network::Stagenet,
             },
-            crate::now_unix(),
+            crate::node_test_support::TEST_NOW,
         )
         .unwrap();
     // This instance has no stagenet node: the store can't move there.
@@ -5572,7 +5616,10 @@ async fn a_wallet_change_to_another_network_moves_the_store_and_leaves_its_order
                 WHEN '{old_order}' THEN 7 ELSE 5 END"
         ))
         .unwrap();
-    let totals = store.lock().order_totals(&row.id, 0).unwrap();
+    let totals = store
+        .lock()
+        .order_totals(&row.id, UnixTime::from_secs(0))
+        .unwrap();
     assert_eq!(totals.received_piconero.0, 5);
     assert_eq!(totals.orders_since, 1);
 }
@@ -5713,7 +5760,7 @@ async fn a_store_changing_back_and_forth_keeps_one_scan_row_per_wallet_it_left()
             &std::iter::once(row.id.clone())
                 .chain(watchers.iter().map(|w| w.id.clone()))
                 .collect::<Vec<_>>(),
-            crate::now_unix(),
+            crate::node_test_support::TEST_NOW,
             0,
         )
         .unwrap();

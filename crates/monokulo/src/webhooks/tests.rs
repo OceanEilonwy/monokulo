@@ -991,7 +991,7 @@ async fn the_subscriber_skips_events_the_engine_no_longer_has() {
                     engine_protocol::order_status::OrderStatus::Unconfirmed,
                 ),
                 &[],
-                shop.state.clock.now().as_secs(),
+                shop.state.clock.now(),
             )
             .unwrap();
         store

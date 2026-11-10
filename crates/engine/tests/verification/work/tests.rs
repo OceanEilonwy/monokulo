@@ -140,13 +140,13 @@ async fn a_rescanned_branch_anchor_pruned_before_detection_is_forgotten() {
         daemon.push_block(&format!("h{height}"), vec![]);
     }
     store
-        .open_reorg_job(monero::Network::Mainnet, 3, 1000)
+        .open_reorg_job(monero::Network::Mainnet, 3, UnixTime::from_secs(1000))
         .unwrap();
     store
         .extend_reorg_branch(monero::Network::Mainnet, 3, "h3")
         .unwrap();
     while store
-        .collect_reorg_candidates(monero::Network::Mainnet, 64, 1000)
+        .collect_reorg_candidates(monero::Network::Mainnet, 64, UnixTime::from_secs(1000))
         .unwrap()
         != crate::store::ReorgPhase::Process
     {}
@@ -165,7 +165,13 @@ async fn a_rescanned_branch_anchor_pruned_before_detection_is_forgotten() {
         .unwrap();
     let store = store.into_shared();
     let db = Db::over_shared(Arc::clone(&store));
-    let chain = chain::Chain::new(&db, &daemon, monero::Network::Mainnet, 20, 1000);
+    let chain = chain::Chain::new(
+        &db,
+        &daemon,
+        monero::Network::Mainnet,
+        20,
+        UnixTime::from_secs(1000),
+    );
     assert_eq!(chain.detect(30).await.unwrap(), None);
     assert_eq!(
         store.lock().reorg_branch(monero::Network::Mainnet).unwrap(),
@@ -180,15 +186,20 @@ async fn a_rescanned_branch_anchor_pruned_before_detection_is_forgotten() {
 async fn upkeep_prunes_order_events_older_than_the_retention() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-    let now = crate::now_unix();
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
+    let now = crate::node_test_support::TEST_NOW;
     let retention = crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS;
     let old = store
         .append_order_event(
             &order,
             OrderEventKind::Status(OrderStatus::Unconfirmed),
             &[],
-            now - retention - 60,
+            now.saturating_sub(crate::duration_secs(retention + 60)),
         )
         .unwrap();
     let kept = store
@@ -196,7 +207,7 @@ async fn upkeep_prunes_order_events_older_than_the_retention() {
             &order,
             OrderEventKind::Status(OrderStatus::Paid),
             &[],
-            now - retention + 3600,
+            now.saturating_sub(crate::duration_secs(retention - 3600)),
         )
         .unwrap();
     let store = store.into_shared();
@@ -204,7 +215,7 @@ async fn upkeep_prunes_order_events_older_than_the_retention() {
     daemon.push_block("h1", vec![]);
     let tenants = live_tenants(&store, [(tenant, handle)]);
     run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(
             &Db::over_shared(Arc::clone(&store)),
             &custody,
@@ -245,13 +256,18 @@ async fn upkeep_prunes_order_events_older_than_the_retention() {
 async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let daemon = FakeDaemonClient::new();
     daemon.push_block("h1", vec![]);
     daemon.push_block("h2", vec![]);
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     run_round(
         &state,
         &inputs(
@@ -329,7 +345,13 @@ async fn reorg_detection_costs_one_lookup_when_the_chain_agrees_and_log_depth_wh
     }
     let daemon = CountingDaemon::new(&fake);
     let db = Db::over_shared(Arc::clone(&store));
-    let chain = chain::Chain::new(&db, &daemon, monero::Network::Mainnet, 20, 1000);
+    let chain = chain::Chain::new(
+        &db,
+        &daemon,
+        monero::Network::Mainnet,
+        20,
+        UnixTime::from_secs(1000),
+    );
     assert_eq!(chain.detect(60).await.unwrap(), None);
     assert_eq!(daemon.take_hash_lookups(), 1);
 
@@ -375,7 +397,12 @@ async fn reorg_detection_costs_one_lookup_when_the_chain_agrees_and_log_depth_wh
 async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     let (store, path) = file_store();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let fake = FakeDaemonClient::new();
     for h in 1..=60 {
         let txs = if h == 30 { vec![fixture_tx()] } else { vec![] };
@@ -402,9 +429,13 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         .unwrap();
     // Plenty of other payments above the fork, more than one unit handles.
     for i in 0..40u8 {
-        let other = fixture_tenant(&store, &custody, crate::now_unix() + 3600)
-            .await
-            .2;
+        let other = fixture_tenant(
+            &store,
+            &custody,
+            crate::node_test_support::after(3600).as_secs(),
+        )
+        .await
+        .2;
         store
             .record_payment_match(
                 &engine_protocol::ids::OrderId::new(other.to_string()),
@@ -425,7 +456,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     let store = store.into_shared();
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
 
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = worker(&store, &path);
     run_round(
         &state,
@@ -467,7 +498,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     drop(store);
     let store = Store::open_file(&path).unwrap().into_shared();
     let db = worker(&store, &path);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     for _ in 0..20 {
         run_round(
             &state,
@@ -517,10 +548,18 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
 async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (failing, failing_handle, _) =
-        fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-    let (healthy, healthy_handle, _) =
-        fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (failing, failing_handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
+    let (healthy, healthy_handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let daemon = FakeDaemonClient::new();
     daemon.push_block("h1", vec![]);
@@ -532,7 +571,7 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
             (healthy.clone(), healthy_handle),
         ],
     );
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     run_round(
         &state,
         &inputs(
@@ -617,14 +656,19 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
 async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restarts() {
     let (store, path) = file_store();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let daemon = FakeDaemonClient::new();
     daemon.push_block("h1", vec![]);
     daemon.push_block("h2", vec![]);
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(
             &Db::over_shared(Arc::clone(&store)),
             &custody,
@@ -649,7 +693,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     while cursor_of(&store, tenant.as_str()).unwrap() == before {
         rounds += 1;
         assert!(rounds < 100, "never finished the block");
-        let state = ScanState::default();
+        let state = crate::node_test_support::scan_state();
         let db = worker(&store, &path);
         run_round(
             &state,
@@ -731,9 +775,18 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
 async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (lagging, lagging_handle, _) =
-        fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-    let (live, live_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (lagging, lagging_handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
+    let (live, live_handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let daemon = FakeDaemonClient::new();
     daemon.push_block("h1", vec![]);
@@ -745,7 +798,7 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
             (live.clone(), live_handle),
         ],
     );
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     run_round(
         &state,
         &inputs(
@@ -877,10 +930,25 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool() {
     let (_guard, logs) = crate::test_log::capture();
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let now = crate::now_unix();
-    let (tenant, handle, open_order) = fixture_tenant(&store, &custody, now + 3600).await;
-    let (_, _, overdue_order) = fixture_tenant(&store, &custody, now - 10).await;
-    let (_, _, candidate_order) = fixture_tenant(&store, &custody, now + 3600).await;
+    let now = crate::node_test_support::TEST_NOW;
+    let (tenant, handle, open_order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
+    let (_, _, overdue_order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::before(10).as_secs(),
+    )
+    .await;
+    let (_, _, candidate_order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let fake = FakeDaemonClient::new();
     for h in 1..=10 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
@@ -900,7 +968,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool() {
             0,
             crate::store::Piconero(1),
             "[\"ki\"]",
-            now,
+            now.as_secs(),
             Some(9),
             None,
         )
@@ -918,7 +986,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool() {
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
 
     let report = run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(
             &Db::over_shared(Arc::clone(&store)),
             &custody,
@@ -992,13 +1060,18 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool() {
 async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.push_block("a2", vec![]);
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let round = |budget| {
         let (store, fake, tenants, state, custody) = (&store, &fake, &tenants, &state, &custody);
         async move {
@@ -1170,7 +1243,12 @@ impl MoneroDaemonClient for ReorgsAfterFetch<'_> {
 async fn a_reorged_payment_the_node_cannot_find_never_settles_its_order() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
@@ -1220,8 +1298,18 @@ async fn a_reorged_payment_the_node_cannot_find_never_settles_its_order() {
 async fn a_store_far_behind_does_not_hold_every_catch_up_turn() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (far, far_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-    let (near, near_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (far, far_handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
+    let (near, near_handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let fake = FakeDaemonClient::new();
     for h in 1..=400 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
@@ -1244,7 +1332,7 @@ async fn a_store_far_behind_does_not_hold_every_catch_up_turn() {
         &store,
         [(far.clone(), far_handle), (near.clone(), near_handle)],
     );
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     for _ in 0..2 {
         run_round(
             &state,
@@ -1295,7 +1383,12 @@ async fn frontier_turn_fixture(
     }
     let mut tenants = Vec::new();
     for cursor in cursors {
-        let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (tenant, handle, _) = fixture_tenant(
+            &store,
+            &custody,
+            crate::node_test_support::after(3600).as_secs(),
+        )
+        .await;
         store
             .execute_raw_for_test(&format!(
                 "UPDATE tenants SET scanned_through_height = {cursor} WHERE id = '{tenant}'"
@@ -1340,7 +1433,7 @@ fn high_water(store: &SharedStore) -> u64 {
 #[tokio::test]
 async fn catch_up_takes_the_turn_of_a_frontier_with_nobody_to_scan() {
     let (store, custody, fake, tenants) = frontier_turn_fixture(&[5]).await;
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     for round in 1..=20u64 {
         one_unit_round(&state, &store, &custody, &fake, &tenants).await;
         assert_eq!(
@@ -1362,7 +1455,7 @@ async fn catch_up_takes_the_turn_of_a_frontier_with_nobody_to_scan() {
 async fn turns_alternate_while_the_frontier_has_a_store_to_scan() {
     let (store, custody, fake, tenants) = frontier_turn_fixture(&[5, 10]).await;
     let (lagging, live) = (&tenants[0].0, &tenants[1].0);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     for round in 1..=10u64 {
         one_unit_round(&state, &store, &custody, &fake, &tenants).await;
         assert_eq!(
@@ -1388,7 +1481,7 @@ async fn an_empty_frontier_keeps_its_turn_when_catch_up_cannot_move() {
         let (store, custody, fake, tenants) = frontier_turn_fixture(&[5]).await;
         custody.fail(tenants[0].1.handle);
         let registered_tenants = if registered { &*tenants } else { &[] };
-        let state = ScanState::default();
+        let state = crate::node_test_support::scan_state();
         for round in 1..=10u64 {
             one_unit_round(&state, &store, &custody, &fake, registered_tenants).await;
             assert_eq!(
@@ -1413,7 +1506,12 @@ async fn an_empty_frontier_keeps_its_turn_when_catch_up_cannot_move() {
 async fn a_tip_replaced_after_it_was_fetched_leaves_no_phantom_payment() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
@@ -1467,7 +1565,12 @@ async fn a_tip_replaced_after_it_was_fetched_leaves_no_phantom_payment() {
 async fn a_group_with_nobody_to_scan_fetches_nothing() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (unregistered, _, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (unregistered, _, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let fake = FakeDaemonClient::new();
     for h in 1..=20 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
@@ -1504,7 +1607,7 @@ async fn run_round_on(
     tenants: &[(crate::store::TenantId, LiveWallet)],
 ) {
     run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(
             &Db::over_shared(Arc::clone(store)),
             custody,
@@ -1597,9 +1700,13 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
             .unwrap();
     }
     for i in 0..20u8 {
-        let order = fixture_tenant(&store, &custody, crate::now_unix() + 3600)
-            .await
-            .2;
+        let order = fixture_tenant(
+            &store,
+            &custody,
+            crate::node_test_support::after(3600).as_secs(),
+        )
+        .await
+        .2;
         store
             .record_payment_match(
                 &engine_protocol::ids::OrderId::new(order.to_string()),
@@ -1614,11 +1721,15 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
             .unwrap();
     }
     store
-        .open_reorg_job(monero::Network::Mainnet, 9, crate::now_unix())
+        .open_reorg_job(
+            monero::Network::Mainnet,
+            9,
+            crate::node_test_support::TEST_NOW,
+        )
         .unwrap();
     let store = store.into_shared();
     let daemon = Lookups::new(&fake);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let report = run_round(
         &state,
         &inputs(&Db::over_shared(Arc::clone(&store)), &custody, &daemon, &[]),
@@ -1642,9 +1753,18 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
 async fn one_failing_recompute_does_not_hold_up_the_others() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let now = crate::now_unix();
-    let (_, _, poisoned) = fixture_tenant(&store, &custody, now - 10).await;
-    let (_, _, healthy) = fixture_tenant(&store, &custody, now - 10).await;
+    let (_, _, poisoned) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::before(10).as_secs(),
+    )
+    .await;
+    let (_, _, healthy) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::before(10).as_secs(),
+    )
+    .await;
     let fake = FakeDaemonClient::new();
     for h in 1..=3 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
@@ -1662,7 +1782,7 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
         ))
         .unwrap();
     let store = store.into_shared();
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     let round = async || {
         run_round(
@@ -1726,7 +1846,12 @@ async fn backoff_forgets_keys_that_stopped_failing() {
 async fn a_failed_mempool_body_fetch_retries_every_id_without_starving_other_slices() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
@@ -1743,7 +1868,7 @@ async fn a_failed_mempool_body_fetch_retries_every_id_without_starving_other_sli
     let daemon = Lookups::new(&fake);
     daemon.fail_bodies.store(true, Ordering::Relaxed);
     let tenants = live_tenants(&store, [(tenant, handle)]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
@@ -1855,7 +1980,12 @@ impl MoneroDaemonClient for SlowBlocks<'_> {
 async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
     let store = Store::open_in_memory().unwrap();
     let custody = crate::scanner::tests::SlowKeyCustody::default();
-    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
@@ -1883,7 +2013,7 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
     };
     let started = Instant::now();
     run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs,
         ScanTuning::DEFAULT.round_budget,
     )
@@ -1911,13 +2041,18 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
 async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.set_mempool(vec![fixture_tx()]);
     let appended = store.lock().subscribe_order_events();
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let db = Db::over_shared(Arc::clone(&store));
     let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
@@ -2007,7 +2142,12 @@ async fn the_fast_path_defers_what_its_budget_does_not_cover() {
     let custody = FlakyKeyCustody::default();
     let mut tenants = Vec::new();
     for _ in 0..64 {
-        let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (tenant, handle, _) = fixture_tenant(
+            &store,
+            &custody,
+            crate::node_test_support::after(3600).as_secs(),
+        )
+        .await;
         let live = LiveWallet::of_store(&store, &tenant, handle);
         tenants.push((tenant, live));
     }
@@ -2015,7 +2155,7 @@ async fn the_fast_path_defers_what_its_budget_does_not_cover() {
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.set_mempool((0..100u8).map(unrelated_tx).collect());
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     let first = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
         .await
@@ -2034,7 +2174,12 @@ async fn the_fast_path_defers_what_its_budget_does_not_cover() {
 async fn the_fast_path_reports_an_unreadable_pool() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, _order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, _order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.set_online(false);
@@ -2042,7 +2187,7 @@ async fn the_fast_path_reports_an_unreadable_pool() {
     let tenants = live_tenants(&store, [(tenant, handle)]);
     assert_eq!(
         fast_pass(
-            &ScanState::default(),
+            &crate::node_test_support::scan_state(),
             &inputs(&db, &custody, &fake, &tenants)
         )
         .await,
@@ -2060,7 +2205,11 @@ async fn the_fast_path_leaves_the_node_alone_while_no_store_has_an_order_in_scop
     fake.set_online(false);
     let db = Db::over_shared(Arc::clone(&store));
     assert_eq!(
-        fast_pass(&ScanState::default(), &inputs(&db, &custody, &fake, &[])).await,
+        fast_pass(
+            &crate::node_test_support::scan_state(),
+            &inputs(&db, &custody, &fake, &[])
+        )
+        .await,
         Some(FastReport::default())
     );
 }
@@ -2091,8 +2240,12 @@ impl Story {
     async fn new() -> Self {
         let store = Store::open_in_memory().unwrap();
         let custody = Arc::new(FlakyKeyCustody::default());
-        let (tenant, handle, order) =
-            fixture_tenant(&store, &*custody, crate::now_unix() + 3600).await;
+        let (tenant, handle, order) = fixture_tenant(
+            &store,
+            &*custody,
+            crate::node_test_support::after(3600).as_secs(),
+        )
+        .await;
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
@@ -2103,7 +2256,7 @@ impl Story {
             daemon,
             tenants,
             order,
-            state: ScanState::default(),
+            state: crate::node_test_support::scan_state(),
         }
     }
 
@@ -2532,14 +2685,19 @@ impl MoneroDaemonClient for HashLookupsFail<'_> {
 async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     for i in 0..4 {
         fake.push_block(&format!("a{i}"), vec![]);
     }
     let tenants = live_tenants(&store, [(tenant, handle)]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
@@ -2705,7 +2863,12 @@ async fn backlog(
 ) {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let fake = FakeDaemonClient::new();
     for h in 1..=tip {
         fake.push_block(&format!("h{h}"), vec![]);
@@ -2730,7 +2893,7 @@ async fn blocks_fetched_ahead_are_scanned_in_later_rounds_without_being_sent_aga
     let daemon = CountingDaemon::new(&fake);
     let db = Db::over_shared(Arc::clone(&store));
     let inputs = inputs(&db, &custody, &daemon, &tenants);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let mut rounds = 0;
     while lowest_cursor(&store) < 100 {
         run_round(&state, &inputs, Duration::ZERO).await;
@@ -2761,7 +2924,7 @@ async fn blocks_are_kept_only_for_the_node_they_came_from() {
     let daemon = CountingDaemon::new(&fake);
     let db = Db::over_shared(Arc::clone(&store));
     let inputs = inputs(&db, &custody, &daemon, &tenants);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     run_round(&state, &inputs, Duration::ZERO).await;
     let held = state.blocks.carried_cache().0;
     let next = lowest_cursor(&store) + 1;
@@ -2791,7 +2954,7 @@ async fn nothing_is_kept_across_a_rewind() {
     let daemon = CountingDaemon::new(&fake);
     let db = Db::over_shared(Arc::clone(&store));
     let inputs = inputs(&db, &custody, &daemon, &tenants);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     while lowest_cursor(&store) < 100 {
         run_round(&state, &inputs, Duration::from_secs(5)).await;
     }
@@ -2830,7 +2993,7 @@ async fn a_round_without_the_chain_height_reports_it_and_scans_the_pool() {
     fake.set_online(false);
     let db = Db::over_shared(Arc::clone(&store));
     let report = run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(&db, &custody, &fake, &[]),
         ScanTuning::DEFAULT.round_budget,
     )
@@ -2851,7 +3014,7 @@ async fn a_round_without_the_chain_height_reports_it_and_scans_the_pool() {
         logs.text()
     );
     run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(&db, &custody, &fake, &[]),
         ScanTuning::DEFAULT.round_budget,
     )
@@ -2916,7 +3079,7 @@ async fn open_reorg_with(
 ) -> (SharedStore, FakeDaemonClient, Vec<crate::store::OrderId>) {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let now = crate::now_unix();
+    let now = crate::node_test_support::TEST_NOW;
     let fake = FakeDaemonClient::new();
     for h in 1..=10 {
         let height = fake.push_block(&format!("a{h}"), vec![]);
@@ -2926,7 +3089,12 @@ async fn open_reorg_with(
     }
     let mut orders = Vec::new();
     for (txid, height) in payments {
-        let (_, _, order) = fixture_tenant(&store, &custody, now + 3600).await;
+        let (_, _, order) = fixture_tenant(
+            &store,
+            &custody,
+            crate::node_test_support::after(3600).as_secs(),
+        )
+        .await;
         store
             .record_payment_match(
                 &order,
@@ -2934,7 +3102,7 @@ async fn open_reorg_with(
                 0,
                 crate::store::Piconero(1),
                 "[\"ki\"]",
-                now,
+                now.as_secs(),
                 Some(*height as i64),
                 None,
             )
@@ -2996,11 +3164,11 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
         txid: stuck,
     };
     let db = Db::over_shared(Arc::clone(&store));
-    let mut now = crate::now_unix();
+    let mut now = crate::node_test_support::TEST_NOW;
     let mut failed = 0;
     loop {
         // Far enough on for any retry delay to have passed.
-        now += 1000;
+        now = now.saturating_add(Duration::from_secs(1000));
         let chain = chain::Chain::new(&db, &daemon, monero::Network::Mainnet, 20, now);
         match chain
             .advance_job(
@@ -3072,7 +3240,7 @@ async fn a_candidate_deleted_mid_page_is_skipped() {
         &daemon,
         monero::Network::Mainnet,
         20,
-        crate::now_unix(),
+        crate::node_test_support::TEST_NOW,
     );
     let steps = run_job(&chain).await;
     assert_eq!(
@@ -3104,7 +3272,7 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
             &engine_protocol::ids::OrderId::new(orders[0].to_string()),
             &txid,
             0,
-            crate::now_unix(),
+            crate::node_test_support::TEST_NOW,
         )
         .unwrap();
     // Mined again, one block later, on the new chain.
@@ -3129,7 +3297,7 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
         &daemon,
         monero::Network::Mainnet,
         20,
-        crate::now_unix(),
+        crate::node_test_support::TEST_NOW,
     );
     run_job(&chain).await;
     let payment = &store
@@ -3148,7 +3316,13 @@ async fn a_reorg_page_with_no_time_left_does_one_candidate() {
     let (store, fake, _) = open_reorg_with(&[(&txid, 9), (&other, 9)]).await;
     fake.reorg_from(9, vec![("b9", vec![tx]), ("b10", vec![])]);
     let db = Db::over_shared(Arc::clone(&store));
-    let chain = chain::Chain::new(&db, &fake, monero::Network::Mainnet, 20, crate::now_unix());
+    let chain = chain::Chain::new(
+        &db,
+        &fake,
+        monero::Network::Mainnet,
+        20,
+        crate::node_test_support::TEST_NOW,
+    );
     let mut skip = HashSet::new();
     let far = Instant::now() + ScanTuning::DEFAULT.round_budget;
     assert!(matches!(
@@ -3280,8 +3454,12 @@ async fn seeded_network(
     let mut handles = Vec::new();
     let mut orders = Vec::new();
     for _ in 0..tenants {
-        let (tenant, handle, order) =
-            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (tenant, handle, order) = fixture_tenant(
+            &store,
+            &custody,
+            crate::node_test_support::after(3600).as_secs(),
+        )
+        .await;
         let live = LiveWallet::of_store(&store, &tenant, handle);
         handles.push((tenant, live));
         orders.push(order);
@@ -3289,7 +3467,7 @@ async fn seeded_network(
     let store = store.into_shared();
     let db = Db::over_shared(Arc::clone(&store));
     run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(&db, &custody, &fake, &handles),
         ScanTuning::DEFAULT.round_budget,
     )
@@ -3325,7 +3503,7 @@ async fn a_payment_deep_in_a_big_block_is_found_in_one_go_and_a_unit_at_a_time()
         txs.push(fixture_tx());
         txs.push(unrelated_tx(99));
         fake.push_block("big", txs);
-        let state = ScanState::default();
+        let state = crate::node_test_support::scan_state();
         let db = Db::over_shared(Arc::clone(&store));
         let mut rounds = 0;
         while cursor_of(&store, tenants[0].0.as_str()) != Some(21) {
@@ -3364,7 +3542,7 @@ async fn a_payment_whose_amount_cannot_be_read_does_not_stop_the_store_at_its_bl
     rct.out_pk[1] = rct.out_pk[0];
     fake.push_block("unreadable", vec![unrelated_tx(1), unreadable]);
     fake.push_block("paid", vec![fixture_tx()]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
 
     for _ in 0..3 {
@@ -3403,7 +3581,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     let mut txs = vec![fixture_tx()];
     txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8 + 8).map(|i| unrelated_tx(100 + i)));
     fake.push_block("big", txs);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
@@ -3490,7 +3668,7 @@ async fn a_group_larger_than_a_page_moves_together() {
             .collect::<rusqlite::Result<_>>()
             .unwrap()
     };
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     let mut rounds = 0;
     while cursors() == [20].into() {
@@ -3534,7 +3712,7 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
     let mut txs = vec![fixture_tx()];
     txs.extend((0..4u8).map(|i| unrelated_tx(100 + i)));
     fake.push_block("big", txs);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
@@ -3609,7 +3787,7 @@ async fn catching_up_onto_a_replaced_recorded_block_waits() {
     daemon.fail_hashes = true;
     let db = Db::over_shared(Arc::clone(&store));
     let report = run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(&db, &custody, &daemon, &tenants),
         ScanTuning::DEFAULT.round_budget,
     )
@@ -3650,7 +3828,7 @@ async fn a_recorded_chain_changed_mid_scan_stops_the_commit() {
         });
         let db = Db::over_shared(Arc::clone(&store));
         run_round(
-            &ScanState::default(),
+            &crate::node_test_support::scan_state(),
             &inputs(&db, &custody, &fake, &tenants),
             ScanTuning::DEFAULT.round_budget,
         )
@@ -3684,7 +3862,7 @@ async fn catching_up_below_the_recorded_history_records_nothing_for_the_network(
     let db = Db::over_shared(Arc::clone(&store));
     for _ in 0..3 {
         run_round(
-            &ScanState::default(),
+            &crate::node_test_support::scan_state(),
             &inputs(&db, &custody, &fake, &tenants),
             ScanTuning::DEFAULT.round_budget,
         )
@@ -3722,7 +3900,7 @@ async fn a_node_that_returns_no_block_is_waited_out() {
     daemon.empty_blocks = true;
     let db = Db::over_shared(Arc::clone(&store));
     let report = run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(&db, &custody, &daemon, &tenants),
         ScanTuning::DEFAULT.round_budget,
     )
@@ -3755,7 +3933,7 @@ async fn a_store_whose_orders_all_closed_before_the_gap_moves_straight_on() {
         ))
         .unwrap();
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
@@ -3791,7 +3969,7 @@ async fn pool_transactions_gone_before_their_bodies_came_are_moved_past() {
     daemon.no_bodies = true;
     let db = Db::over_shared(Arc::clone(&store));
     let report = run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(&db, &custody, &daemon, &tenants),
         ScanTuning::DEFAULT.round_budget,
     )
@@ -3811,7 +3989,7 @@ async fn a_fast_pass_that_cannot_load_windows_tries_again_next_pass() {
     let (_guard, logs) = crate::test_log::capture();
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
     fake.set_mempool(vec![fixture_tx()]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     store.lock().fail_nth_access(Some(0));
     let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
@@ -3848,7 +4026,11 @@ async fn a_fast_pass_with_no_store_in_scope_does_nothing() {
     fake.set_mempool(vec![fixture_tx()]);
     let db = Db::over_shared(Arc::clone(&store));
     assert_eq!(
-        fast_pass(&ScanState::default(), &inputs(&db, &custody, &fake, &[])).await,
+        fast_pass(
+            &crate::node_test_support::scan_state(),
+            &inputs(&db, &custody, &fake, &[])
+        )
+        .await,
         Some(FastReport::default())
     );
 }
@@ -3858,7 +4040,7 @@ async fn a_fast_pass_with_no_store_in_scope_does_nothing() {
 #[tokio::test]
 async fn the_fast_path_uses_the_last_rounds_chain_height() {
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
@@ -3934,7 +4116,7 @@ async fn a_failing_store_is_tried_once_per_pass_then_waits() {
     let handle = tenants[0].1.handle;
     custody.fail(handle);
     fake.set_mempool(vec![unrelated_tx(1), unrelated_tx(2)]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
         .await
@@ -4008,7 +4190,7 @@ async fn every_store_is_scanned_when_there_are_more_than_a_page() {
 
     // The fast path, in one pass.
     let report = fast_pass(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(&db, &custody, &fake, &tenants),
     )
     .await
@@ -4020,7 +4202,7 @@ async fn every_store_is_scanned_when_there_are_more_than_a_page() {
         .unwrap();
 
     // The rotation, a slice a round.
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     for _ in 0..12 {
         run_round(
             &state,
@@ -4071,7 +4253,7 @@ fn unconfirmed(store: &SharedStore, order: &crate::store::OrderId, txid: &str) {
             0,
             crate::store::Piconero(1),
             "[\"ki\"]",
-            crate::now_unix(),
+            crate::node_test_support::TEST_NOW.as_secs(),
             None,
             None,
         )
@@ -4104,7 +4286,7 @@ async fn a_vanished_check_the_node_fails_or_stalls_is_retried() {
         let before = position();
         let db = Db::over_shared(Arc::clone(&store));
         let report = run_round(
-            &ScanState::default(),
+            &crate::node_test_support::scan_state(),
             &inputs(&db, &custody, &daemon, &tenants),
             ScanTuning::DEFAULT.round_budget,
         )
@@ -4140,7 +4322,7 @@ async fn vanished_payments_are_checked_one_a_round_with_no_time_to_spare() {
         .map(|(id, _)| id)
         .collect();
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let position = || {
         store
             .lock()
@@ -4199,7 +4381,7 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
         &fake,
         &HashSet::new(),
         height,
-        crate::now_unix(),
+        crate::node_test_support::TEST_NOW,
         candidates,
         &crate::scanner::VanishedHints::default(),
     )
@@ -4232,7 +4414,7 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
 /// restores.
 fn voided_payments(store: &SharedStore, order: &crate::store::OrderId, count: u8) {
     let s = store.lock();
-    let now = crate::now_unix();
+    let now = crate::node_test_support::TEST_NOW;
     for i in 0..count {
         let txid = format!("{i:02x}").repeat(32);
         let image = format!("{:02x}", 0x80 + i).repeat(32);
@@ -4242,7 +4424,7 @@ fn voided_payments(store: &SharedStore, order: &crate::store::OrderId, count: u8
             0,
             crate::store::Piconero(1),
             &format!("[\"{image}\"]"),
-            now,
+            now.as_secs(),
             Some(15),
             None,
         )
@@ -4284,7 +4466,7 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
     voided_payments(&store, &orders[0], 18);
     void_recheck_due(&store);
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let voided = || {
         store
             .lock()
@@ -4335,7 +4517,7 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
             &engine_protocol::ids::OrderId::new(orders[0].to_string()),
             &"00".repeat(32),
             0,
-            crate::now_unix(),
+            crate::node_test_support::TEST_NOW,
         )
         .unwrap();
         s.set_scheduler_position::<crate::store::position::VoidRecheckPassStarted>(
@@ -4404,7 +4586,7 @@ async fn recheck_a_void(
         .into_shared();
     let fake = fake.snapshot();
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let seen = store.lock().fail_nth_access(fault);
     run_round(
         &state,
@@ -4449,7 +4631,7 @@ async fn recheck_a_void(
 async fn more_recomputes_owed_than_a_page_are_all_done() {
     let (store, custody, fake, tenants, _) = seeded_network(1, 20).await;
     let tenant = tenants[0].0.clone();
-    let now = crate::now_unix();
+    let now = crate::node_test_support::TEST_NOW;
     let mut orders = Vec::new();
     {
         let s = store.lock();
@@ -4467,8 +4649,8 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
                     address: format!("addr{i}"),
                     xmr_amount_piconero: crate::store::Piconero(1),
                     description: None,
-                    created_at: now,
-                    expires_at: now + 3600,
+                    created_at: now.as_secs(),
+                    expires_at: crate::node_test_support::after(3600).as_secs(),
                 })
                 .unwrap();
             s.record_payment_match(
@@ -4477,7 +4659,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
                 0,
                 crate::store::Piconero(1),
                 "[]",
-                now,
+                now.as_secs(),
                 None,
                 None,
             )
@@ -4486,7 +4668,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
         }
     }
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     for _ in 0..3 {
         run_round(
             &state,
@@ -4519,7 +4701,7 @@ async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_ag
     custody.fail(failing);
     fake.push_block("b21", vec![unrelated_tx(1), fixture_tx(), unrelated_tx(2)]);
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
@@ -4592,7 +4774,7 @@ async fn a_cursor_moved_mid_scan_keeps_what_moved_it() {
     });
     let db = Db::over_shared(Arc::clone(&store));
     run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(&db, &custody, &fake, &tenants),
         ScanTuning::DEFAULT.round_budget,
     )
@@ -4672,7 +4854,7 @@ impl CheckpointedBlock {
         txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8).map(|i| unrelated_tx(100 + i)));
         fake.push_block("big", txs);
         let db = Db::over_shared(Arc::clone(&store));
-        let state = ScanState::default();
+        let state = crate::node_test_support::scan_state();
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
@@ -4803,7 +4985,7 @@ async fn work_a_reorg_job_with_a_fault(
     let fake = fake.snapshot();
     let custody = FlakyKeyCustody::default();
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let seen = store.lock().fail_nth_access(fault);
     run_round(
         &state,
@@ -4863,7 +5045,11 @@ async fn a_reorg_job_with_every_candidate_waiting_waits() {
     for _ in 0..16 {
         let now_in = store
             .lock()
-            .collect_reorg_candidates(monero::Network::Mainnet, 64, crate::now_unix())
+            .collect_reorg_candidates(
+                monero::Network::Mainnet,
+                64,
+                crate::node_test_support::TEST_NOW,
+            )
             .unwrap();
         if now_in == crate::store::ReorgPhase::Process {
             phase = Some(now_in);
@@ -4880,12 +5066,16 @@ async fn a_reorg_job_with_every_candidate_waiting_waits() {
     for _ in 0..6 {
         store
             .lock()
-            .defer_reorg_candidate(monero::Network::Mainnet, id, crate::now_unix())
+            .defer_reorg_candidate(
+                monero::Network::Mainnet,
+                id,
+                crate::node_test_support::TEST_NOW,
+            )
             .unwrap();
     }
     let custody = FlakyKeyCustody::default();
     let report = run_round(
-        &ScanState::default(),
+        &crate::node_test_support::scan_state(),
         &inputs(&db, &custody, &fake, &[]),
         ScanTuning::DEFAULT.round_budget,
     )
@@ -4904,7 +5094,7 @@ async fn a_reorg_job_with_every_candidate_waiting_waits() {
 async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
     let (store, custody, fake, tenants, _) = seeded_network(1, 20).await;
     let tenant = tenants[0].0.clone();
-    let now = crate::now_unix();
+    let now = crate::node_test_support::TEST_NOW;
     {
         let s = store.lock();
         for i in 0..200 {
@@ -4921,8 +5111,8 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
                     address: format!("due{i}"),
                     xmr_amount_piconero: crate::store::Piconero(1),
                     description: None,
-                    created_at: now,
-                    expires_at: now + 3600,
+                    created_at: now.as_secs(),
+                    expires_at: crate::node_test_support::after(3600).as_secs(),
                 })
                 .unwrap();
             if i < 10 {
@@ -4932,7 +5122,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
                     0,
                     crate::store::Piconero(1),
                     "[]",
-                    now,
+                    now.as_secs(),
                     None,
                     None,
                 )
@@ -4943,7 +5133,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
             .unwrap();
     }
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
@@ -5171,14 +5361,19 @@ impl MoneroDaemonClient for ThinLink<'_> {
 async fn a_slow_link_halves_its_requests_until_they_arrive_and_the_scan_completes() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.push_block("a2", vec![]);
     let node = ThinLink::new(&fake, 4);
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     let _ = run_round(
         &state,
@@ -5242,12 +5437,17 @@ async fn a_slow_link_halves_its_requests_until_they_arrive_and_the_scan_complete
 async fn a_block_request_gets_the_time_its_link_needs() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, _) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     let mut node = ThinLink::new(&fake, 500);
     let _ = run_round(
@@ -5321,7 +5521,7 @@ async fn a_network_with_nothing_to_watch_costs_one_small_request_a_round() {
     }
     let node = Asked::new(&fake);
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
 
     // The first round starts the network just below the tip and records
     // the tip's block: from its header.
@@ -5390,7 +5590,7 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     }
     let node = Asked::new(&fake);
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     for _ in 0..2 {
         run_round(
             &state,
@@ -5404,8 +5604,12 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     assert_eq!(node.take().last(), Some(&"get_tip"));
 
     // The store and its order arrive; its payment is in the pool.
-    let (tenant, handle, order) =
-        fixture_tenant_shared(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant_shared(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     fake.set_mempool(vec![fixture_tx()]);
     run_round(
@@ -5455,7 +5659,12 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
 async fn nothing_is_fetched_for_a_store_whose_keys_are_not_registered() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     for h in 1..=3 {
@@ -5463,7 +5672,7 @@ async fn nothing_is_fetched_for_a_store_whose_keys_are_not_registered() {
     }
     let node = Asked::new(&fake);
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     run_round(
         &state,
         &inputs(&db, &custody, &node, &[]),
@@ -5526,7 +5735,7 @@ fn unconfirmed_with_image(
             output,
             crate::store::Piconero(1),
             &format!("[\"{image}\"]"),
-            crate::now_unix(),
+            crate::node_test_support::TEST_NOW.as_secs(),
             None,
             None,
         )
@@ -5548,7 +5757,7 @@ async fn a_page_of_vanished_payments_costs_two_round_trips_and_the_stuck_ones_ba
     }
     let node = Asked::new(&fake);
     let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let lookups = |asked: &[&'static str]| -> Vec<&'static str> {
         asked
             .iter()
@@ -5767,7 +5976,7 @@ async fn a_200_mb_block_is_scanned_in_pages_and_its_payment_found() {
     let after = fake.push_block("after", vec![unrelated_tx(7)]);
     let node = PagedNode::new(&fake);
     node.too_large.store(height, Ordering::Relaxed);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     // A 256 MB budget: answers of up to 32 MiB, so ten transactions of
     // about 3.3 MB a page.
@@ -5861,7 +6070,7 @@ async fn a_failed_page_keeps_the_pages_before_it() {
     let node = PagedNode::new(&fake);
     node.too_large.store(height, Ordering::Relaxed);
     node.failing_page.store(2, Ordering::Relaxed);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     let inputs = RoundInputs {
         scan_chunk_memory_budget_mb: 256,
@@ -6106,7 +6315,7 @@ async fn a_snapshot_after_the_paid_story_shows_where_it_ended() {
                 monero::Network::Mainnet,
                 Vec::new(),
                 16,
-                crate::now_unix(),
+                crate::node_test_support::TEST_NOW,
             )
             .await
             .unwrap();
@@ -6127,7 +6336,7 @@ async fn a_snapshot_after_the_paid_story_shows_where_it_ended() {
         monero::Network::Mainnet,
         nodes.clone(),
         16,
-        crate::now_unix(),
+        crate::node_test_support::TEST_NOW,
     )
     .await
     .unwrap();
@@ -6158,7 +6367,12 @@ async fn a_snapshot_after_the_paid_story_shows_where_it_ended() {
 async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(
+        &store,
+        &custody,
+        crate::node_test_support::after(3600).as_secs(),
+    )
+    .await;
     let order = engine_protocol::ids::OrderId::new(order.to_string());
     let fake = FakeDaemonClient::new();
     for h in 1..=60 {
@@ -6197,7 +6411,9 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
             Some("k"),
         )
         .unwrap();
-    store.recompute_order_status(&order, 60, 1000).unwrap();
+    store
+        .recompute_order_status(&order, 60, UnixTime::from_secs(1000))
+        .unwrap();
     let superseded = |store: &Store| {
         store
             .get_all_payments(&order)
@@ -6218,7 +6434,7 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
     );
     let store = store.into_shared();
     let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
-    let state = ScanState::default();
+    let state = crate::node_test_support::scan_state();
     let db = Db::over_shared(Arc::clone(&store));
     for _ in 0..20 {
         run_round(

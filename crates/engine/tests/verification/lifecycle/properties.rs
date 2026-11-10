@@ -159,9 +159,10 @@ proptest! {
                 custody:crate::http::Custody { snp:None,backends:Arc::clone(&custody),wallet_handles:Arc::clone(&wallet_handles) },
                 networks:crate::http::Networks { daemons:daemons.clone(),scanner_status:Arc::clone(&status) },
                 activity_stream:crate::activity::StreamTuning::DEFAULT,
+                clock:crate::node_test_support::clock(),
             };
             let router = crate::http::build_router(state,1<<20);
-            let manager = tokio::spawn(manage_network_loops(Db::over_shared(Arc::clone(&store)),custody,daemons.clone(),wallet_handles,Arc::clone(&status),settings,RunningNetworks::default()));
+            let manager = tokio::spawn(manage_network_loops(Db::over_shared(Arc::clone(&store)),custody,daemons.clone(),wallet_handles,Arc::clone(&status),settings,RunningNetworks::default(),crate::node_test_support::clock()));
             let networks = [Network::Mainnet,Network::Stagenet,Network::Testnet];
             let mut previous = 0u8;
             for (mask,fallback) in actions.into_iter().chain([(0,false)]) {

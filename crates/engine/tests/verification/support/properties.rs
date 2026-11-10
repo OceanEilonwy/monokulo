@@ -3,6 +3,17 @@ use crate::key_custody::*;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// Real wall time, for waits bounded in real time while tokio's clock is held
+/// paused ([`hold_virtual_clock`]): a deadline on tokio's `Instant` would
+/// never come there.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "these waits are bounded in real time while tokio's clock is paused, which tokio's Instant can't be"
+)]
+pub(crate) fn real_now() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
 pub(crate) fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -188,13 +199,13 @@ pub(crate) fn custody_arc(custody: &Arc<GateCustody>) -> Arc<dyn KeyCustody> {
 pub(crate) struct CrashChild(pub(crate) Option<std::process::Child>);
 impl CrashChild {
     pub(crate) async fn rendezvous(&mut self, path: &str, point: &str) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = real_now() + std::time::Duration::from_secs(10);
         loop {
             if std::fs::read_to_string(format!("{path}.ready")).is_ok_and(|ready| ready == point) {
                 return;
             }
             let finished = self.0.as_mut().unwrap().try_wait().unwrap().is_some();
-            if finished || std::time::Instant::now() >= deadline {
+            if finished || real_now() >= deadline {
                 let output = self.finish();
                 panic!(
                     "child never reached {point}: {}",

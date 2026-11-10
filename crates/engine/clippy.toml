@@ -8,3 +8,12 @@ allow-print-in-tests = true
 allow-dbg-in-tests = true
 # `#[derive(FromRef)]` names its parameter `input`; the fields name the state.
 allow-renamed-params-for = ["..", "axum_core::extract::from_ref::FromRef"]
+# Time is read from a `clock::Clock` passed in, so a test can say what time
+# it is (crates/clock). Monotonic time is `tokio::time::Instant`, which a
+# paused tokio test controls. This file replaces the workspace's
+# `clippy.toml` for this crate, so the same refusals are repeated here.
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "read the time from a clock::Clock passed in (crates/clock)" },
+    { path = "std::time::Instant::now", reason = "use tokio::time::Instant, which paused test time controls" },
+    { path = "service_runtime::time::now_unix", reason = "read the time from a clock::Clock passed in (crates/clock)" },
+]

@@ -1,5 +1,6 @@
 //! Independent aggregate oracle shared by status properties and fuzzing.
 use super::{derive_status, OrderStatus, PaymentView, StatusInputs};
+use clock::UnixTime;
 pub(super) fn total(payments: &[PaymentView]) -> u64 {
     // A wider sum is independent of production's saturating fold. The vector
     // bound keeps this safely within u128, including 32 maximal amounts.
@@ -54,8 +55,8 @@ pub(crate) fn explore(data: &[u8]) {
     let inputs = StatusInputs {
         xmr_amount_piconero: crate::store::Piconero(read(0).max(1)),
         confirmations_required: read(8),
-        now: read(16) as i64,
-        expires_at: read(24) as i64,
+        now: UnixTime::from_secs(read(16) as i64),
+        expires_at: UnixTime::from_secs(read(24) as i64),
     };
     let mut payments: Vec<_> = data
         .get(32..)

@@ -97,7 +97,7 @@ impl World {
         }
     }
     async fn round(&mut self, fault: Option<usize>) {
-        self.h.now += RETRY_TIME.as_secs() as i64;
+        self.h.now = self.h.now.saturating_add(RETRY_TIME);
         tokio::time::advance(RETRY_TIME).await;
         let fault_trace = fault.map(|at| self.h.store().lock().fail_nth_access(Some(at)));
         let pinned = self.client.pin();
@@ -237,10 +237,9 @@ async fn malformed_history(corruption: u8, amount: u64, restart: bool, rounds: u
             node.fake.set_block_weight(3, 200_000_000);
         }
         let progress = crate::scaling::new_progress();
-        progress.lock().want_headers_first(
-            crate::now_unix(),
-            crate::scaling::HeadersFirstReason::LargeBlock,
-        );
+        progress
+            .lock()
+            .want_headers_first(w.h.now, crate::scaling::HeadersFirstReason::LargeBlock);
         w.h.state = Harness::state()
             .with_progress(progress)
             .with_tuning(ScanTuning {
@@ -431,7 +430,7 @@ async fn integration_round(
     follower: &mut crate::proof::Follower,
     fault: Option<usize>,
 ) {
-    w.h.now += 61;
+    w.h.now = w.h.now.saturating_add(Duration::from_secs(61));
     follower
         .round(w.h.db.as_ref().unwrap(), &w.client, true, w.h.now)
         .await;
@@ -511,7 +510,7 @@ fn reconcile_across_forks_and_restarts(
         tokio::time::pause();
         let mut w = World::new(count, amount, required).await;
         tokio::time::resume();
-        w.h.now = crate::proof::tests::TEST_NOW;
+        w.h.now = clock::UnixTime::from_secs(crate::proof::tests::TEST_NOW);
         let base = crate::proof::tests::base_chain_with(pow);
         let mut chain = base.clone();
         let rules = crate::proof::tests::tuning();
@@ -1771,7 +1770,7 @@ mod properties {
                 .conn_for_test()
                 .execute("UPDATE tenants SET scanned_through_height = 2", [])
                 .unwrap();
-            w.h.state = ScanState::default()
+            w.h.state = crate::node_test_support::scan_state()
                 .with_tuning(ScanTuning {
                     group_page: page,
                     blocks_per_unit: units,

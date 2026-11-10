@@ -64,5 +64,8 @@ pub mod work;
 #[cfg(feature = "zmq")]
 mod zmtp;
 
-/// Seconds since the Unix epoch: the one clock both services share.
-pub use service_runtime::time::now_unix;
+/// A length of time stored as whole seconds (a setting, a column) as a
+/// `Duration`; a negative one is no time at all.
+pub(crate) fn duration_secs(seconds: i64) -> std::time::Duration {
+    std::time::Duration::from_secs(u64::try_from(seconds).unwrap_or(0))
+}

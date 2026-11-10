@@ -1488,6 +1488,7 @@ mod tests {
             Ok(test_slot_config()),
             Arc::new(TestGuest::new([1; 32], TestIdentity::default())),
             Arc::new(crate::key_custody::StoreWraps(store)),
+            clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
         ))
     }
 
@@ -1517,6 +1518,7 @@ mod tests {
             Ok(test_slot_config()),
             Arc::new(TestGuest::new([1; 32], TestIdentity::default())),
             Arc::new(crate::key_custody::StoreWraps(Arc::clone(&store))),
+            clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
         ));
         let reloadable =
             CustodyReloadable::new(Arc::new(CustodyRouter::plain()), Some(Arc::clone(&slot)));
@@ -1599,6 +1601,7 @@ mod tests {
             defaults_of::<SnpBootConfig>().snp_config(),
             Arc::new(snp_attest::guest::SevGuest::new("/nonexistent/sev-guest")),
             Arc::new(crate::key_custody::StoreWraps(store)),
+            clock::Clock::Fixed(clock::UnixTime::from_secs(1_800_000_000)),
         ));
         let router = Arc::new(CustodyRouter::plain());
         let reloadable = CustodyReloadable::new(Arc::clone(&router), Some(slot));

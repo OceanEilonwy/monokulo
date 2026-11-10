@@ -36,6 +36,7 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
+use clock::{Clock, UnixTime};
 use serde_json::json;
 
 use rate_limit::RateLimiter;
@@ -87,16 +88,14 @@ impl ApiRateLimits {
 
     /// Whether a call on the instance's budget is allowed at `now`, having
     /// counted it. Always, while the instance limit is off.
-    fn allows_instance(&self, now: i64) -> bool {
-        !self.instance_on.load(Ordering::Relaxed)
-            || self.instance.check((), clock::UnixTime::from_secs(now))
+    fn allows_instance(&self, now: UnixTime) -> bool {
+        !self.instance_on.load(Ordering::Relaxed) || self.instance.check((), now)
     }
 
     /// Whether a request of the store `id` is allowed at `now`, having
     /// counted it against that store's budget.
-    fn allows_store(&self, id: &TenantId, now: i64) -> bool {
-        self.store
-            .check(id.clone(), clock::UnixTime::from_secs(now))
+    fn allows_store(&self, id: &TenantId, now: UnixTime) -> bool {
+        self.store.check(id.clone(), now)
     }
 }
 
@@ -112,10 +111,11 @@ fn too_many_requests() -> Response {
 /// instance's budget. Its headers aren't looked at.
 pub async fn instance_rate_limit_middleware(
     State(limits): State<Arc<ApiRateLimits>>,
+    State(clock): State<Clock>,
     req: Request,
     next: Next,
 ) -> Response {
-    if !limits.allows_instance(super::now_unix()) {
+    if !limits.allows_instance(clock.now()) {
         return too_many_requests();
     }
     next.run(req).await
@@ -131,7 +131,7 @@ pub async fn store_rate_limit_middleware(
     req: Request,
     next: Next,
 ) -> Response {
-    let now = super::now_unix();
+    let now = state.clock.now();
     let (mut parts, body) = req.into_parts();
     match AuthedTenant::authenticate(&parts.headers, &state).await {
         Ok(authed) => {

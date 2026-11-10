@@ -10,8 +10,8 @@ use std::time::Duration;
 fn stopped_and_backwards_clocks_cannot_grow_telemetry_without_bound() {
     let mut p = ScanProgress::default();
     for i in 0..MAX_SAMPLES * 2 {
-        p.spent(-(i as i64), 1.0, 1.0, 1);
-        p.discarded(1, -(i as i64));
+        p.spent(UnixTime::from_secs(-(i as i64)), 1.0, 1.0, 1);
+        p.discarded(1, UnixTime::from_secs(-(i as i64)));
     }
     assert_eq!(p.time.len(), MAX_SAMPLES);
     assert_eq!(p.discarded_recent.len(), MAX_SAMPLES);
@@ -21,14 +21,17 @@ fn stopped_and_backwards_clocks_cannot_grow_telemetry_without_bound() {
 fn maximum_timeout_and_wall_clock_boundaries_do_not_panic() {
     assert_eq!(engine_daemon::link::timeout_for(Duration::MAX), MAX_TIMEOUT);
     let mut p = ScanProgress::default();
-    p.start_block(1, i64::MIN);
-    p.finish_block(1, i64::MAX);
-    p.want_headers_first(i64::MAX, HeadersFirstReason::FailedRequest);
-    p.discarded(u64::MAX, i64::MIN);
-    p.discarded(u64::MAX, i64::MAX);
+    p.start_block(1, UnixTime::from_secs(i64::MIN));
+    p.finish_block(1, UnixTime::from_secs(i64::MAX));
+    p.want_headers_first(
+        UnixTime::from_secs(i64::MAX),
+        HeadersFirstReason::FailedRequest,
+    );
+    p.discarded(u64::MAX, UnixTime::from_secs(i64::MIN));
+    p.discarded(u64::MAX, UnixTime::from_secs(i64::MAX));
     assert_eq!(p.discarded_cache_bytes, u64::MAX);
-    let _ = p.report(i64::MIN);
-    let _ = p.report(i64::MAX);
+    let _ = p.report(UnixTime::from_secs(i64::MIN));
+    let _ = p.report(UnixTime::from_secs(i64::MAX));
 }
 
 fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_runner::Config {
@@ -50,7 +53,7 @@ mod properties {
         #![proptest_config(persisted_config(config()))]
         #[test]
         fn timeout_bounds_hold_for_extreme_measurements(secs in any::<u64>(), blocks in any::<u64>(), bytes in any::<u64>()) {
-            let link = Link::new();
+            let link = Link::new(crate::node_test_support::clock());
             link.record_small(Duration::from_secs(secs));
             link.record_blocks(blocks, bytes as usize, Duration::from_secs(secs), Duration::from_nanos(1));
             let timeout = link.timeout_for_blocks(blocks);
@@ -91,15 +94,15 @@ mod properties {
             let mut progress = ScanProgress::default();
             let mut total = 0u64;
             for (now, bytes, scans) in events {
-                progress.start_block(scans, now);
+                progress.start_block(scans, UnixTime::from_secs(now));
                 progress.fetched_block(scans, bytes);
-                progress.finish_block(scans, now);
-                progress.spent(now, 0.5, 1.0, scans);
-                progress.discarded(bytes, now);
-                progress.cache_bytes(bytes, now);
-                progress.want_headers_first(now, HeadersFirstReason::FailedRequest);
+                progress.finish_block(scans, UnixTime::from_secs(now));
+                progress.spent(UnixTime::from_secs(now), 0.5, 1.0, scans);
+                progress.discarded(bytes, UnixTime::from_secs(now));
+                progress.cache_bytes(bytes, UnixTime::from_secs(now));
+                progress.want_headers_first(UnixTime::from_secs(now), HeadersFirstReason::FailedRequest);
                 total = total.saturating_add(bytes);
-                let report = progress.report(now);
+                let report = progress.report(UnixTime::from_secs(now));
                 prop_assert_eq!(progress.discarded_cache_bytes, total);
                 prop_assert!(progress.recent.len() <= RECENT_BLOCKS);
                 prop_assert!(progress.time.len() <= MAX_SAMPLES);
