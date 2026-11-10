@@ -82,9 +82,22 @@ pub enum Notification {
         payment_id: PaymentId,
         merchant_id: MerchantId,
         location_id: LocationId,
+        /// When Square says things happened, for the log to set beside
+        /// when the webhook came: how late Square's delivery was.
+        times: SquareTimes,
     },
     /// Anything else: dropped.
     Ignored,
+}
+
+/// When Square says a completed payment's event happened, RFC 3339 as
+/// Square wrote it: the payment made and last changed, and the event
+/// itself. Logged only, never parsed or trusted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SquareTimes {
+    pub payment_created_at: Option<String>,
+    pub payment_updated_at: Option<String>,
+    pub event_created_at: Option<String>,
 }
 
 /// The event's type, the only field read of every webhook.
@@ -109,6 +122,7 @@ enum EventType {
 #[derive(Deserialize)]
 struct PaymentEvent {
     merchant_id: MerchantId,
+    created_at: Option<String>,
     data: PaymentData,
 }
 
@@ -127,6 +141,8 @@ struct Payment {
     id: PaymentId,
     location_id: LocationId,
     status: PaymentStatus,
+    created_at: Option<String>,
+    updated_at: Option<String>,
     /// Whether the payment has been refunded at all: what is there is
     /// skipped unread.
     refunded_money: Option<IgnoredAny>,
@@ -158,6 +174,11 @@ pub fn read_notification(body: &[u8]) -> Result<Notification, BodyError> {
             payment_id: payment.id,
             merchant_id: event.merchant_id,
             location_id: payment.location_id,
+            times: SquareTimes {
+                payment_created_at: payment.created_at,
+                payment_updated_at: payment.updated_at,
+                event_created_at: event.created_at,
+            },
         },
         (PaymentStatus::Completed, Some(_)) | (PaymentStatus::Other, _) => Notification::Ignored,
     })
@@ -364,6 +385,8 @@ mod tests {
                     "card_details": {"card": {"last_4": "1111", "card_brand": "VISA"}},
                     "location_id": location,
                     "status": status,
+                    "created_at": "2026-11-10T08:00:00.123Z",
+                    "updated_at": "2026-11-10T08:00:02.456Z",
                 }},
             },
         })
@@ -380,6 +403,11 @@ mod tests {
                         .unwrap(),
                     merchant_id: MerchantId::try_from("6SSW7HV8K2ST5".to_owned()).unwrap(),
                     location_id: LocationId::try_from("S8GWD5R9QB376".to_owned()).unwrap(),
+                    times: SquareTimes {
+                        payment_created_at: Some("2026-11-10T08:00:00.123Z".to_owned()),
+                        payment_updated_at: Some("2026-11-10T08:00:02.456Z".to_owned()),
+                        event_created_at: Some("2026-10-27T10:00:00.000Z".to_owned()),
+                    },
                 }),
                 "{kind}"
             );

@@ -317,12 +317,25 @@ async fn square_webhook(
             payment_id,
             merchant_id,
             location_id,
-        }) => shared.dings.ring(Ring {
-            integration,
-            payment_id,
-            merchant_id,
-            location_id,
-        }),
+            times,
+        }) => {
+            // Beside this line's own time, how late Square delivered: the
+            // payment's completion (its updated_at) to now is Square's lag,
+            // which no till can shorten.
+            tracing::info!(
+                environment = integration.environment(),
+                payment.created_at = times.payment_created_at.as_deref().unwrap_or("-"),
+                payment.updated_at = times.payment_updated_at.as_deref().unwrap_or("-"),
+                event.created_at = times.event_created_at.as_deref().unwrap_or("-"),
+                "a completed payment's webhook came"
+            );
+            shared.dings.ring(Ring {
+                integration,
+                payment_id,
+                merchant_id,
+                location_id,
+            })
+        }
         Ok(Notification::Ignored) => {}
         // Square's own, so answered as taken: refusing it would only have
         // Square send it again.
