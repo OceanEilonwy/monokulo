@@ -436,6 +436,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
+name = "clock"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -523,6 +530,7 @@ name = "credentials"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "clock",
  "hex",
  "hmac",
  "rand 0.10.3",
@@ -822,6 +830,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "clock",
  "credentials",
  "engine-daemon",
  "engine-pow",
@@ -863,6 +872,7 @@ name = "engine-daemon"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "clock",
  "engine-pow",
  "engine-protocol",
  "futures-util",
@@ -875,7 +885,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "service-runtime",
  "telemetry",
  "thiserror 2.0.21",
  "tokio",
@@ -897,6 +906,7 @@ dependencies = [
 name = "engine-pow"
 version = "0.1.0"
 dependencies = [
+ "clock",
  "hex",
  "monero",
  "randomx-rs",
@@ -1562,6 +1572,7 @@ name = "key-custody"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "clock",
  "engine-protocol",
  "getrandom 0.4.3",
  "hex",
@@ -2352,6 +2363,7 @@ dependencies = [
 name = "rate-limit"
 version = "0.1.0"
 dependencies = [
+ "clock",
  "parking_lot",
 ]
 
@@ -2775,6 +2787,7 @@ dependencies = [
 name = "service-runtime"
 version = "0.1.0"
 dependencies = [
+ "clock",
  "parking_lot",
  "serde",
  "sysinfo",
@@ -2888,6 +2901,7 @@ checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 name = "snp-attest"
 version = "0.1.0"
 dependencies = [
+ "clock",
  "p384",
  "rsa",
  "sha2 0.10.9",
@@ -3053,6 +3067,7 @@ name = "telemetry"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "clock",
  "live-settings",
  "opentelemetry",
  "opentelemetry-proto",
