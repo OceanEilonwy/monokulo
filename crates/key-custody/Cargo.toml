@@ -40,6 +40,8 @@ wasm = ["dep:short-id"]
 
 [dependencies]
 # Transport: what `key-custody-cli` and the browser need too.
+# What time it is, passed in (`transport::verify_bundle`).
+clock = { path = "../clock" }
 getrandom = "0.4"
 hex = "0.4.3"
 hpke = { version = "0.14.1", default-features = false, features = ["alloc", "x25519", "aes", "getrandom"] }

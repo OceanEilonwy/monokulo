@@ -87,7 +87,7 @@ struct Input {
     min_guest_svn: u32,
     #[serde(default)]
     min_tcb: String,
-    now: i64,
+    now: clock::UnixTime,
 }
 
 impl Drop for Input {

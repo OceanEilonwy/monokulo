@@ -6,6 +6,10 @@ use serde_json::Value;
 
 use super::*;
 
+/// What time the telemetry under test thinks it is.
+const NOW_SECS: u64 = 1_800_000_000;
+const NOW: UnixTime = UnixTime::from_secs(1_800_000_000);
+
 /// Everything the subscriber wrote, shared with the test.
 #[derive(Clone, Default)]
 pub(crate) struct Capture(Arc<Mutex<Vec<u8>>>);
@@ -43,7 +47,14 @@ pub(crate) fn subscriber(
 ) -> (Arc<Telemetry>, Capture, tracing::subscriber::DefaultGuard) {
     let capture = Capture::default();
     let writer = capture.clone();
-    let (telemetry, subscriber) = build("engine", format, false, level, move || writer.clone());
+    let (telemetry, subscriber) = build(
+        "engine",
+        format,
+        false,
+        level,
+        move || writer.clone(),
+        Clock::Fixed(NOW),
+    );
     let guard = tracing::subscriber::set_default(subscriber);
     (Arc::new(telemetry), capture, guard)
 }
@@ -196,7 +207,7 @@ fn a_filter_that_does_not_parse_leaves_the_old_one_in_place() {
 #[tokio::test(start_paused = true)]
 async fn development_mode_logs_debug_until_its_time_then_turns_itself_off() {
     let (telemetry, capture, _guard) = subscriber(Format::Json, "info");
-    let until = now_unix() + 600;
+    let until = NOW_SECS + 600;
     telemetry.apply(&LogConfig {
         level: "info".into(),
         dev_mode_until: until,
@@ -227,12 +238,12 @@ async fn a_later_apply_cancels_the_earlier_expiry() {
     let (telemetry, _capture, _guard) = subscriber(Format::Json, "info");
     telemetry.apply(&LogConfig {
         level: "info".into(),
-        dev_mode_until: now_unix() + 60,
+        dev_mode_until: NOW_SECS + 60,
         ..LogConfig::default()
     });
     telemetry.apply(&LogConfig {
         level: "info".into(),
-        dev_mode_until: now_unix() + 3600,
+        dev_mode_until: NOW_SECS + 3600,
         ..LogConfig::default()
     });
     tokio::time::sleep(Duration::from_secs(61)).await;
@@ -597,9 +608,14 @@ mod otlp_export {
 fn a_hosted_services_lines_are_named_after_it() {
     let capture = Capture::default();
     let writer = capture.clone();
-    let (telemetry, subscriber) = build("monokulo", Format::Json, false, "info", move || {
-        writer.clone()
-    });
+    let (telemetry, subscriber) = build(
+        "monokulo",
+        Format::Json,
+        false,
+        "info",
+        move || writer.clone(),
+        Clock::Fixed(NOW),
+    );
     telemetry.host("engine", &["engine"], "engine-");
     let dispatch = tracing::Dispatch::new(subscriber);
     tracing::dispatcher::with_default(&dispatch, || {

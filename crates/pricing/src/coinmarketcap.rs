@@ -48,6 +48,7 @@
 //! for the same reasons (see its doc comment).
 
 use crate::exchange_rate::{piconero_per_unit_from_price, ExchangeRateError};
+use clock::Clock;
 
 /// CoinMarketCap's own id for Monero (`GET /v1/cryptocurrency/map?symbol=XMR`
 /// also lists an unrelated "Monero AI" token under the same symbol).
@@ -192,6 +193,8 @@ pub struct CoinMarketCapRateProvider {
     key_problem: parking_lot::Mutex<Option<String>>,
     client: reqwest_middleware::ClientWithMiddleware,
     rates: crate::exchange_rate::RateCache,
+    /// What time it is, for a `Retry-After` date.
+    clock: Clock,
 }
 
 impl CoinMarketCapRateProvider {
@@ -206,7 +209,14 @@ impl CoinMarketCapRateProvider {
             key_problem: parking_lot::Mutex::new(None),
             client: crate::exchange_rate::rates_client(),
             rates: crate::exchange_rate::RateCache::default(),
+            clock: Clock::System,
         }
+    }
+
+    /// This provider reading the time from `clock`.
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// This provider asking with `key` (keyed base and header), or
@@ -264,7 +274,7 @@ impl CoinMarketCapRateProvider {
                 return Err(ExchangeRateError::KeyRejected { status, message });
             }
         }
-        let response = crate::exchange_rate::checked(response)?;
+        let response = crate::exchange_rate::checked(response, self.clock.now())?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         if self.api_key.is_some() {
             *self.key_problem.lock() = None;
@@ -885,7 +895,7 @@ mod tests {
         // for its 429 is to back off exponentially (1, 2, 4, 8 s); a
         // `Retry-After`, when it sends one, is waited out in full.
         let mut backoff = std::time::Duration::from_secs(1);
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
         for attempt in 1..=TRIES {
             let error = match provider.piconero_per_unit_cached("USD", TTL).await {
                 Ok(rate) => {

@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use tokio::time::Instant;
 
 use opentelemetry::trace::{SpanId, Status};
 use opentelemetry_sdk::trace::{SpanData, SpanProcessor};
@@ -83,6 +85,13 @@ CREATE TABLE IF NOT EXISTS spans (
 CREATE INDEX IF NOT EXISTS spans_start ON spans (start_ts);
 "#;
 
+// Log lines are stamped with the real time by the logger itself, which sits
+// under every crate and has no clock handed to it, so the retention cutoff
+// is measured on that same real clock.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "log timestamps are real time, and the logger has no clock passed to it"
+)]
 fn now_nanos() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

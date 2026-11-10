@@ -244,7 +244,7 @@ fn rows_values_and_time_have_limits() {
     assert_eq!(result.rows.len(), 3);
     assert!(result.cut);
 
-    let started = Instant::now();
+    let started = super::real_now();
     assert_eq!(
         run(
             &conn,

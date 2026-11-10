@@ -108,14 +108,17 @@ impl ExchangeRateError {
 /// [`ExchangeRateError::Unavailable`] with the provider's `Retry-After`
 /// (seconds or an HTTP date); any other failure status is a `Request`
 /// error.
-pub(crate) fn checked(response: reqwest::Response) -> Result<reqwest::Response, ExchangeRateError> {
+pub(crate) fn checked(
+    response: reqwest::Response,
+    now: UnixTime,
+) -> Result<reqwest::Response, ExchangeRateError> {
     let status = response.status();
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
         let retry_after = response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
-            .and_then(parse_retry_after);
+            .and_then(|value| parse_retry_after(value, now));
         return Err(ExchangeRateError::Unavailable {
             status: status.as_u16(),
             retry_after,
@@ -125,17 +128,15 @@ pub(crate) fn checked(response: reqwest::Response) -> Result<reqwest::Response, 
 }
 
 /// A `Retry-After` value: delay seconds, or an HTTP date (a date already
-/// past is no wait at all).
-fn parse_retry_after(value: &str) -> Option<std::time::Duration> {
+/// past is no wait at all), judged from `now`.
+fn parse_retry_after(value: &str, now: UnixTime) -> Option<std::time::Duration> {
     let value = value.trim();
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(std::time::Duration::from_secs(seconds));
     }
     let when = httpdate::parse_http_date(value).ok()?;
-    Some(
-        when.duration_since(std::time::SystemTime::now())
-            .unwrap_or_default(),
-    )
+    let when = when.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(now.until(UnixTime::EPOCH.saturating_add(when)))
 }
 
 /// The client every rate provider fetches with. It has no response cache:
@@ -348,6 +349,8 @@ pub struct CoingeckoRateProvider {
     base_url: String,
     client: reqwest_middleware::ClientWithMiddleware,
     rates: RateCache,
+    /// What time it is, for a `Retry-After` date.
+    clock: Clock,
     /// The full list Coingecko itself reports supporting, plus when it was
     /// last fetched - its own independent cache entry/TTL, refreshed lazily
     /// by `supported_currencies_cached`, never eagerly.
@@ -376,8 +379,15 @@ impl CoingeckoRateProvider {
             // message's wording).
             client: rates_client(),
             rates: RateCache::default(),
+            clock: Clock::System,
             supported_currencies: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// This provider reading the time from `clock`.
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Fetches the current XMR price in exactly one currency. `Ok(None)`
@@ -394,7 +404,7 @@ impl CoingeckoRateProvider {
             "{}/api/v3/simple/price?ids=monero&vs_currencies={vs_currency}",
             self.base_url
         );
-        let response = checked(self.client.get(&url).send().await?)?;
+        let response = checked(self.client.get(&url).send().await?, self.clock.now())?;
         let body: serde_json::Value = read_json(response).await?;
         let monero = body
             .get("monero")
@@ -465,7 +475,7 @@ impl CoingeckoRateProvider {
         if stale {
             let url = format!("{}/api/v3/simple/supported_vs_currencies", self.base_url);
             let fetched = async {
-                let response = checked(self.client.get(&url).send().await?)?;
+                let response = checked(self.client.get(&url).send().await?, self.clock.now())?;
                 read_json::<Vec<String>>(response).await
             }
             .await;
@@ -503,6 +513,7 @@ pub use crate::xmr_amount::{
     MAX_AMOUNT_DECIMALS, MAX_ORDER_PICONERO,
 };
 use crate::xmr_amount::{parse_scaled, AMOUNT_SCALE};
+use clock::{Clock, UnixTime};
 
 /// A cached rate kept through misses (a provider that stops quoting a
 /// currency for a while, or is down or rate limited) is served at most this many `max_age`s after it
@@ -1137,7 +1148,8 @@ mod tests {
                     [(
                         "retry-after",
                         httpdate::fmt_http_date(
-                            std::time::SystemTime::now() + std::time::Duration::from_secs(120),
+                            std::time::UNIX_EPOCH
+                                + std::time::Duration::from_secs(1_800_000_000 + 120),
                         ),
                     )],
                     "down",
@@ -1147,7 +1159,9 @@ mod tests {
                 _ => axum::http::StatusCode::NOT_FOUND.into_response(),
             })
             .await;
-            let provider = CoingeckoRateProvider::new(url);
+            // The provider's clock is pinned, so the date's wait is exact.
+            let provider = CoingeckoRateProvider::new(url)
+                .with_clock(Clock::Fixed(UnixTime::from_secs(1_800_000_000)));
             let lookup = || provider.piconero_per_unit_cached("USD", std::time::Duration::ZERO);
 
             let err = lookup().await.unwrap_err();
@@ -1162,12 +1176,7 @@ mod tests {
                 matches!(err, ExchangeRateError::Unavailable { status: 503, .. }),
                 "got {err:?}"
             );
-            let wait = err.retry_after().unwrap();
-            assert!(
-                wait > std::time::Duration::from_secs(100)
-                    && wait <= std::time::Duration::from_secs(120),
-                "{wait:?}"
-            );
+            assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(120)));
 
             let err = lookup().await.unwrap_err();
             assert!(

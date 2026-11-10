@@ -50,6 +50,8 @@
 
 use std::collections::HashMap;
 
+use clock::Clock;
+
 use crate::exchange_rate::{piconero_per_unit_from_price, ExchangeRateError};
 
 /// RetoSwap's network id on `haveno.markets`.
@@ -90,6 +92,8 @@ impl HavenoPolicy {
 pub struct HavenoRateProvider {
     base_url: String,
     client: reqwest_middleware::ClientWithMiddleware,
+    /// What time it is, for a `Retry-After` date.
+    clock: Clock,
     cache: std::sync::Arc<tokio::sync::Mutex<Cache>>,
 }
 
@@ -122,8 +126,15 @@ impl HavenoRateProvider {
         HavenoRateProvider {
             base_url: base_url.into(),
             client: crate::exchange_rate::rates_client(),
+            clock: Clock::System,
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(Cache::default())),
         }
+    }
+
+    /// This provider reading the time from `clock`.
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     async fn fetch_tickers(&self) -> Result<HashMap<String, Book>, ExchangeRateError> {
@@ -131,7 +142,8 @@ impl HavenoRateProvider {
             "{}/api/v1/tickers?network={NETWORK}&time_period=24h",
             self.base_url
         );
-        let response = crate::exchange_rate::checked(self.client.get(&url).send().await?)?;
+        let response =
+            crate::exchange_rate::checked(self.client.get(&url).send().await?, self.clock.now())?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         let tickers = body.as_object().ok_or_else(|| {
             ExchangeRateError::UnexpectedResponse(format!(
@@ -181,7 +193,8 @@ impl HavenoRateProvider {
             "{}/api/v1/depth/XMR_{currency_upper}?network={NETWORK}",
             self.base_url
         );
-        let response = crate::exchange_rate::checked(self.client.get(&url).send().await?)?;
+        let response =
+            crate::exchange_rate::checked(self.client.get(&url).send().await?, self.clock.now())?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         let side = |name: &str| -> Result<(u64, f64), ExchangeRateError> {
             let levels = body

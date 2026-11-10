@@ -29,6 +29,7 @@
 //! served, so there it protects against everything except monokulo itself
 //! being compromised when the page loads.
 
+use clock::UnixTime;
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use snp_attest::report::{self, AttestationReport, Product};
@@ -408,10 +409,10 @@ pub fn check_report(
     report: &AttestationReport,
     evidence: &Evidence,
     anchor: &Anchor,
-    now_unix: i64,
+    now: UnixTime,
 ) -> Result<(), TransportError> {
     let checked = match anchor {
-        Anchor::Amd => verify::verify_evidence(product, report, evidence, now_unix).map(|_| ()),
+        Anchor::Amd => verify::verify_evidence(product, report, evidence, now).map(|_| ()),
         Anchor::Vcek(key) => verify::verify_report_signed_by(report, key),
     };
     checked.map_err(|e| TransportError::Attestation(e.to_string()))
@@ -470,7 +471,7 @@ fn verify_attestation(
     from: &Attestation,
     policy: &TrustPolicy,
     anchor: &Anchor,
-    now_unix: i64,
+    now: UnixTime,
 ) -> Result<AttestationReport, TransportError> {
     let product = parse_product(&from.product)?;
     let raw = hex_bytes("report", &from.report)?;
@@ -481,7 +482,7 @@ fn verify_attestation(
         vcek_der: hex_bytes("VCEK", &from.vcek)?,
         crl_der: hex_bytes("revocation list", &from.crl)?,
     };
-    check_report(product, &report, &evidence, anchor, now_unix)?;
+    check_report(product, &report, &evidence, anchor, now)?;
     check_identity(product, &report, policy)?;
     Ok(report)
 }
@@ -492,11 +493,11 @@ pub fn verify_handoff_answer(
     answer: &HandoffAnswer,
     policy: &TrustPolicy,
     anchor: &Anchor,
-    now_unix: i64,
+    now: UnixTime,
     successor_key: &[u8; 32],
 ) -> Result<(), TransportError> {
     check_version(answer.v)?;
-    let report = verify_attestation(&answer.from, policy, anchor, now_unix)?;
+    let report = verify_attestation(&answer.from, policy, anchor, now)?;
     if report.report_data == handoff_answer_report_data(successor_key, &answer.envelope) {
         Ok(())
     } else {
@@ -509,10 +510,10 @@ pub fn verify_bundle(
     bundle: &Bundle,
     policy: &TrustPolicy,
     anchor: &Anchor,
-    now_unix: i64,
+    now: UnixTime,
 ) -> Result<Verified, TransportError> {
     check_version(bundle.v)?;
-    if bundle.expires_at <= now_unix {
+    if bundle.expires_at <= now.as_secs() {
         return Err(TransportError::Expired);
     }
     let from = Attestation {
@@ -522,7 +523,7 @@ pub fn verify_bundle(
         vcek: bundle.vcek.clone(),
         crl: bundle.crl.clone(),
     };
-    let report = verify_attestation(&from, policy, anchor, now_unix)?;
+    let report = verify_attestation(&from, policy, anchor, now)?;
     let public_key: [u8; 32] = hex_field("public key", &bundle.public_key)?;
     if report.report_data != report_data_for(&public_key) {
         return Err(TransportError::KeyNotInReport);
@@ -636,8 +637,9 @@ impl ReceiverKey {
 mod tests {
     use super::*;
     use snp_attest::guest::{GuestDevice as _, TestGuest, TestIdentity};
+    use std::time::Duration;
 
-    const NOW: i64 = 1_790_899_200;
+    const NOW: UnixTime = UnixTime::from_secs(1_790_899_200);
 
     fn policy(guest: &TestGuest) -> TrustPolicy {
         TrustPolicy {
@@ -667,7 +669,7 @@ mod tests {
             challenge: hex::encode([7u8; 32]),
             action,
             store: store.map(str::to_owned),
-            expires_at: NOW + 600,
+            expires_at: NOW.saturating_add(Duration::from_secs(600)).as_secs(),
         }
     }
 
@@ -743,7 +745,7 @@ mod tests {
         assert_eq!(
             refusal(
                 &Bundle {
-                    expires_at: NOW,
+                    expires_at: NOW.as_secs(),
                     ..good.clone()
                 },
                 &trusted,

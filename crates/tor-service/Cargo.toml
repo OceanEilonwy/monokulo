@@ -27,7 +27,7 @@ axum = "0.8.9"
 outbound = { path = "../outbound" }
 parking_lot = "0.12.5"
 # The clock Tor's status is stamped with.
-service-runtime = { path = "../service-runtime" }
+clock = { path = "../clock" }
 # Onion address checksums (`onion`).
 sha3 = "0.10.9"
 # `onion_uri` values (`onion::validate_onion_uri`).
