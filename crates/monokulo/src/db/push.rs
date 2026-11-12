@@ -807,7 +807,9 @@ impl Db {
             }
             let payload = match target.kind {
                 TargetKind::Encrypted { .. } => encrypted
-                    .get_or_insert_with(|| notification(sale, &queueing.link_base))
+                    .get_or_insert_with(|| {
+                        notification(sale, &queueing.link_base, queueing.order.as_ref())
+                    })
                     .clone(),
                 TargetKind::LiveActivity {
                     include_payment_uri,

@@ -126,7 +126,7 @@ impl Origin {
     }
 
     /// The app that made it, if one did.
-    fn app(&self) -> Option<&crate::db::AppConnection> {
+    pub(crate) fn app(&self) -> Option<&crate::db::AppConnection> {
         match self {
             Origin::Api(api) => match &api.credential {
                 Credential::App(app) => Some(app),
@@ -416,6 +416,16 @@ pub async fn make(
     // unrecorded order.
     let (id, recorded_order) = (row.id.clone(), order_record(&order));
     let queueing = crate::push::Queueing::now(&state.settings);
+    // An app's order's `sale.waiting` push carries the order as reading it
+    // answers now.
+    let made_now = crate::api::v1::order::of_new(
+        &row.id,
+        &order,
+        origin.app().map(|app| app.device_name.clone()),
+        state.onion_uri().as_deref(),
+    );
+    let made_now = crate::push::payload::order_json(&made_now, &queueing.link_base);
+    let queueing = queueing.with_order(Some(made_now));
     let now = state.clock.now();
     let recorded = state
         .db
@@ -440,6 +450,12 @@ pub async fn make(
                     &row.tenant_public_key,
                     crate::apps::SaleEvent::waiting(&app_order),
                 );
+                // The engine says nothing of an order it just made: the
+                // store's order streams hear of it here.
+                state
+                    .engine
+                    .client
+                    .order_changed(&row.id, &app_order.order_id);
             }
             if pushes > 0 {
                 state.push.wake();
@@ -654,6 +670,10 @@ pub async fn renew(
     if let Err(e) = recorded {
         tracing::warn!(order.id = %order_id, error = %e, "a renewed order's local records could not be updated");
     }
+    // Its new quote, for the store's order streams, whether or not the
+    // engine's own change hint got there first: one that finds the order
+    // as it last sent it sends nothing.
+    state.engine.client.order_changed(&store.id, order_id);
     Ok(Renewed::Now)
 }
 

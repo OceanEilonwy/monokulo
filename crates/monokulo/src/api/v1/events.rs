@@ -14,25 +14,26 @@ api::resource!(
     "/api/v1/events",
     rel = "events",
     kind = stream,
-    doc = "The store's sale events, as server-sent events: one stream for the orders its connected apps make.\n\nIt starts with `ready`; then each change to such an order is an `event:` named after it (`sale.waiting`, `sale.paid`, `sale.expired`, ...) with the sale as its JSON data, linking its order (`mk:order`). `lagged` means some were missed: read the orders again. A comment arrives every 25 seconds while nothing happens. The stream ends once its key stops working: a connected app disconnected, or the store's secret key replaced."
+    doc = "Deprecated: follow `mk:orders-events` instead, whose events carry the order itself, confirmations included. Kept for apps already installed.\n\nThe store's sale events, as server-sent events: one stream for the orders its connected apps make.\n\nIt starts with `ready`; then each change to such an order is an `event:` named after it (`sale.waiting`, `sale.paid`, `sale.expired`, ...) with the sale as its JSON data, linking its order (`mk:order`). `lagged` means some were missed: read the orders again. A comment arrives every 25 seconds while nothing happens. The stream ends once its key stops working: a connected app disconnected, or the store's secret key replaced."
 );
 
 /// The comment an open stream sends while nothing happens, inside common
 /// proxy idle timeouts.
-const KEEP_ALIVE: Duration = Duration::from_secs(25);
+pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(25);
 
 /// The stream is open: what follows is new.
 #[api::object]
-struct Ready {
+pub(crate) struct Ready {
     /// When it opened, in Unix seconds.
-    at: i64,
+    pub(crate) at: i64,
 }
 
 /// Some events were missed: the stream fell behind. Read the orders again.
 #[api::object]
-struct Lagged {
-    /// How many.
-    missed: u64,
+pub(crate) struct Lagged {
+    /// How many; 0 when that isn't known (Monokulo's own view of the
+    /// store's changes opened again: on `mk:orders-events` only).
+    pub(crate) missed: u64,
 }
 
 /// A change to an order one of the store's apps made. Also what an
@@ -133,7 +134,8 @@ fn event(name: &str, data: &impl serde::Serialize) -> Event {
         .data(serde_json::to_string(data).unwrap_or_default())
 }
 
-/// Follow the store's sale events as server-sent events.
+/// Follow the store's sale events as server-sent events (deprecated: follow
+/// `mk:orders-events`).
 #[get(server)]
 async fn get(
     caller: Caller,

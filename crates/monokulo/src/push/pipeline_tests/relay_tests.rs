@@ -271,6 +271,7 @@ async fn a_paid_sale_reaches_apns_through_the_relay_and_decrypts_on_the_device_o
     let subscriber = tokio::spawn(crate::webhooks::subscriber::run_subscriber(
         state.db.clone(),
         state.engine.client.clone(),
+        state.store_keys(),
         state.webhooks.clone(),
         state.push.clone(),
         state.apps.clone(),

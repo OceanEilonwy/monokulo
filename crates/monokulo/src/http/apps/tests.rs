@@ -1322,3 +1322,184 @@ fn an_apps_push_line_says_how_long_ago_its_last_push_and_failure_were() {
     );
     assert_eq!(super::push_line(None, &clock), PushLine::NoTargets);
 }
+
+/// The store's order stream (`mk:orders-events`): the entry links it; it is
+/// routed beside one order's (`/api/v1/orders/{order_id}`), for the store's
+/// secret key and its apps' keys only; it carries each order the store's
+/// apps make as reading it answers, once per change, a new confirmation
+/// included, never an order of no app or of another store, and nothing for
+/// a change that leaves the order as it was; it says `lagged` when changes
+/// may have been missed; and it ends when the app is disconnected.
+#[tokio::test]
+async fn the_order_stream_carries_each_order_of_the_stores_apps_as_it_changes() {
+    let (state, engine) = state_with_engine(&format!("public_uri = \"{PUBLIC_URI}\"\n")).await;
+    let router = build_router(state.clone());
+    let (id, cookie) = store(&router).await;
+    let (token, _) = code(&router, &id, &cookie, "Front counter").await;
+    let creds = body_json(redeem(&router, connect_body(&token)).await).await;
+    let key = creds["app_key"].as_str().unwrap().to_owned();
+    let (_, entry) = read(&router, "/api/v1", &key).await;
+    assert_eq!(
+        entry["_links"]["mk:orders-events"]["href"],
+        "/api/v1/orders/events"
+    );
+    let row = state
+        .db
+        .lock()
+        .get_store_connection_by_id(&crate::db::ConnectionId::new(id.clone()))
+        .unwrap()
+        .unwrap();
+    let sk = crate::http::decrypt_sk(&state.encryption_key, &row)
+        .unwrap()
+        .expose()
+        .to_owned();
+    let session = cookie.strip_prefix("session=").unwrap();
+    let other = store_with_keys(&router, &state, session, "", "XMR").await;
+
+    // Keys: none, and a public key, are refused.
+    let open = |key: Option<&str>| {
+        router
+            .clone()
+            .oneshot(api_request("GET", "/api/v1/orders/events", key, None))
+    };
+    assert_eq!(open(None).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        open(Some(&other.public_key)).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    let by_store = open(Some(&sk)).await.unwrap();
+    assert_eq!(by_store.status(), StatusCode::OK);
+    assert_eq!(
+        by_store.headers()["content-type"].to_str().unwrap(),
+        "text/event-stream"
+    );
+    drop(by_store);
+    // Beside it, an order id is still an order's: one the store hasn't got.
+    let (status, problem) = read(
+        &router,
+        "/api/v1/orders/order_00000000000000000000000000000000",
+        &key,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(problem["status"], 404);
+
+    let stream = open(Some(&key)).await.unwrap();
+    assert_eq!(stream.status(), StatusCode::OK);
+    let mut body = stream.into_body();
+    let mut buffer = String::new();
+    assert_eq!(next_event(&mut body, &mut buffer).await.0, "ready");
+
+    // Orders no app of this store made: the store's own, and another
+    // store's. Neither is ever sent.
+    let order_id = |made: serde_json::Value| made["order_id"].as_str().unwrap().to_owned();
+    let own = order_id(body_json(router.clone().oneshot(order(&sk, "web:1")).await.unwrap()).await);
+    let theirs = order_id(
+        body_json(
+            router
+                .clone()
+                .oneshot(order(&other.secret_key, "web:2"))
+                .await
+                .unwrap(),
+        )
+        .await,
+    );
+
+    // The app's order: sent as reading it answers, waiting.
+    let made = body_json(router.clone().oneshot(order(&key, "sq:abc")).await.unwrap()).await;
+    let ours = order_id(made.clone());
+    let (name, sent) = next_event(&mut body, &mut buffer).await;
+    assert_eq!(name, "order");
+    let (_, read_now) = read(&router, &format!("/api/v1/orders/{ours}"), &key).await;
+    assert_eq!(sent, read_now, "the same JSON as reading it");
+    assert_eq!(sent["status"], "pending");
+    assert_eq!(
+        sent["device_name"], "Front counter",
+        "the device that made it"
+    );
+    assert_eq!(sent["amount_received_piconero"], 0);
+    assert_eq!(sent["confirmations"], 0);
+    let required = sent["confirmations_required"].as_u64().unwrap();
+    assert!(
+        required >= 2,
+        "a confirmation at a time needs some to count: {required}"
+    );
+
+    engine.mark_order_paid(&own).unwrap();
+    engine.mark_order_paid(&theirs).unwrap();
+    // A change that leaves the order as it was sends nothing.
+    state
+        .engine
+        .client
+        .order_changed(&row.id, &crate::db::OrderId::new(ours.clone()));
+
+    // Paid, in a block: one event per confirmation as blocks arrive.
+    let amount = pricing::xmr_amount::Piconero(made["xmr_amount_piconero"].as_u64().unwrap());
+    engine.record_order_payment(&ours, amount, Some(1)).unwrap();
+    let (name, sent) = next_event(&mut body, &mut buffer).await;
+    assert_eq!(name, "order");
+    assert_eq!(sent["order_id"], ours.as_str());
+    assert_eq!(sent["status"], "confirming");
+    assert_eq!(sent["confirmations"], 1);
+    assert_eq!(
+        sent["amount_received_piconero"],
+        made["xmr_amount_piconero"]
+    );
+    for confirmations in 2..required {
+        engine
+            .set_order_confirmations(&ours, confirmations)
+            .unwrap();
+        let (name, sent) = next_event(&mut body, &mut buffer).await;
+        assert_eq!(name, "order");
+        assert_eq!(sent["status"], "confirming");
+        assert_eq!(sent["confirmations"], confirmations);
+    }
+    engine.set_order_confirmations(&ours, required).unwrap();
+    let (_, sent) = next_event(&mut body, &mut buffer).await;
+    assert_eq!(sent["status"], "paid");
+    assert_eq!(sent["confirmations"], required);
+    assert_eq!(sent["is_final"], true);
+
+    // Another of the app's orders, its payment spent twice: it says when.
+    let second =
+        order_id(body_json(router.clone().oneshot(order(&key, "sq:def")).await.unwrap()).await);
+    let (_, sent) = next_event(&mut body, &mut buffer).await;
+    assert_eq!(
+        (sent["order_id"].as_str(), &sent["status"]),
+        (Some(second.as_str()), &serde_json::json!("pending"))
+    );
+    assert!(sent.get("double_spend_detected_at").is_none(), "{sent}");
+    engine.record_order_payment(&second, amount, None).unwrap();
+    let (_, sent) = next_event(&mut body, &mut buffer).await;
+    assert_eq!(sent["status"], "unconfirmed");
+    engine.mark_order_double_spent(&second).unwrap();
+    let (_, sent) = next_event(&mut body, &mut buffer).await;
+    assert_eq!(sent["order_id"], second.as_str());
+    assert!(sent["double_spend_detected_at"].is_i64(), "{sent}");
+
+    // Changes may have been missed: `lagged`.
+    state.engine.client.live_changes_missed(&row.id);
+    let (name, lagged) = next_event(&mut body, &mut buffer).await;
+    assert_eq!(name, "lagged");
+    assert_eq!(lagged["missed"], 0);
+
+    // Disconnected: the stream ends.
+    let (_, app) = read(&router, "/api/v1/app", &key).await;
+    let app_id = app["app_id"].as_str().unwrap();
+    router
+        .clone()
+        .oneshot(form_post(
+            &format!("/stores/{id}/settings/apps/{app_id}/disconnect"),
+            Some(&cookie),
+            &[],
+        ))
+        .await
+        .unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(frame) = body.frame().await {
+            frame.unwrap();
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the disconnected app's stream should end");
+}

@@ -185,11 +185,13 @@ each problem it may answer, by status, with an example of each.
 
 ## Event streams
 
-`mk:events` (the store's sales, for a secret or app key) and
-`mk:order-events` (one order) are server-sent events
-(`text/event-stream`): each event an `event:` line with its name and a
-`data:` line, mostly JSON, and a comment now and then while nothing
-happens. A sale event links its order, so you follow the link rather than
+`mk:orders-events` (the orders the store's apps make, each as the order
+itself, for a secret or app key), `mk:order-events` (one order) and
+`mk:events` (the store's sales; deprecated for `mk:orders-events`) are
+server-sent events (`text/event-stream`): each event an `event:` line with
+its name and a `data:` line, mostly JSON, and a comment now and then while
+nothing happens. An `order` event is the order, the same JSON as reading
+it. A sale event links its order, so you follow the link rather than
 build the order's URL:
 
 ```json
@@ -205,8 +207,9 @@ build the order's URL:
 }
 ```
 
-Each stream's page ([`mk:events`](../rels/events/),
-[`mk:order-events`](../rels/order-events/)) lists its events and their
+Each stream's page ([`mk:orders-events`](../rels/orders-events/),
+[`mk:order-events`](../rels/order-events/),
+[`mk:events`](../rels/events/)) lists its events and their
 data; the OpenAPI document has them as `x-events` on the
 `text/event-stream` answer (OpenAPI 3.1 has no schema for a stream's
 events), with a recorded stream as its example.

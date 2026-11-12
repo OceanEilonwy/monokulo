@@ -195,6 +195,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
     let subscriber = tokio::spawn(crate::webhooks::subscriber::run_subscriber(
         state.db.clone(),
         state.engine.client.clone(),
+        state.store_keys(),
         state.webhooks.clone(),
         state.push.clone(),
         state.apps.clone(),

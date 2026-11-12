@@ -157,10 +157,45 @@ there, or none, but never treat a `404` as a reason to.
 
 ## 4. Follow them
 
+Follow the entry's `mk:orders-events`:
+
 ```
-GET https://www.monokulo.com/api/v1/events
+GET https://www.monokulo.com/api/v1/orders/events
 Authorization: Bearer {app_key}
 ```
+
+Server-sent events for every order the store's apps make, each as the order
+itself: `ready` first, then an `order` event each time one of them changes,
+whose data is the same JSON as reading the order (`GET` its `self`), read as
+it's sent:
+
+```json
+{ "order_id": "order_9f3c…", "status": "confirming", "is_final": false,
+  "address": "8…", "xmr_amount_piconero": 141900000000,
+  "amount_received_piconero": 141900000000, "amount": "24.50", "currency": "USD",
+  "merchant_order_id": "#1042", "device_name": "Front counter",
+  "confirmations": 3, "confirmations_required": 10,
+  "created_at": 1761310200, "expires_at": 1761312000,
+  "_links": { "self": { "href": "/api/v1/orders/order_9f3c…" }, … } }
+```
+
+An order is sent when an app makes it, when a payment reaches it, with each
+new confirmation while it's `confirming` (one event a block), when it's paid,
+expires or is renewed, and never again while it stays the same.
+`device_name` is the device that made it; `double_spend_detected_at` is
+there once a payment to it was found spent twice: hand nothing over unless
+it's `paid` and `is_final` after that. Orders made
+by the store's own server, or another store's, never come. A comment arrives
+every 25 s. After `lagged`, or a reconnect, read the orders you're showing
+again (each one's `self`): some changes may have been missed. The stream
+takes the store's secret key or an app's key, and ends once that key stops
+working.
+
+### The older sale events (deprecated)
+
+`mk:events` (`GET /api/v1/events`) still works for apps already installed,
+but new apps follow `mk:orders-events`: a sale event carries the sale, not
+the order, so an app has to read the order again for its confirmations.
 
 Server-sent events for every order the store's apps make: `ready` first,
 then `sale.waiting`, `sale.seen`, `sale.confirming`, `sale.paid`,
@@ -291,8 +326,10 @@ Targets of the store with the same `endpoint` are one subscription, and
 are pushed once per event, as the one of them last registered that wants
 it: register again whenever your app gets new subscription keys.
 
-An `encrypted` target gets the event's JSON, as the stream sends it, with
-the `api_version` webhooks carry, encrypted to the subscription's keys
+An `encrypted` target gets the sale event's JSON, as `mk:events` sends it,
+with the `api_version` webhooks carry and `order`, the order itself as
+reading it answered when the push was queued (the data of
+`mk:orders-events`), encrypted to the subscription's keys
 (`Content-Encoding: aes128gcm`, RFC 8291). Decrypt it with the
 subscription's private key and `auth`, which never leave the device:
 
@@ -301,8 +338,16 @@ subscription's private key and `auth`, which never leave the device:
   "currency": "USD", "address": "8…", "xmr_amount_piconero": 141900000000,
   "merchant_order_id": "#1042", "expires_at": 1761312000,
   "device_name": "Front counter", "at": 1761310260,
-  "_links": { "mk:order": { "href": "/api/v1/orders/order_9f3c…" }, "curies": […] } }
+  "_links": { "mk:order": { "href": "/api/v1/orders/order_9f3c…" }, "curies": […] },
+  "order": { "order_id": "order_9f3c…", "status": "paid", "confirmations": 10,
+             "confirmations_required": 10, … } }
 ```
+
+`order` is left out when the order couldn't be read as the push was
+queued, or would make the push too large to reach a device through a push
+relay (about 2900 bytes before encryption: an order with a long
+`description` and `merchant_order_id`): read it from its `mk:order` link
+then.
 
 A `live-activity` target gets the state an iOS Live Activity shows, plain
 JSON (`Content-Type: application/json`), through the relay. It never holds

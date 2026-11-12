@@ -29,7 +29,7 @@ use std::time::Duration;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::{Stream, StreamExt as _};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::engine_client::{EngineClient, OrderDetailResponse};
@@ -50,7 +50,61 @@ pub struct LiveHub {
 
 struct StoreWatch {
     orders: HashMap<crate::db::OrderId, OrderWatch>,
+    /// Every change to any of the store's orders, for its store-wide
+    /// watchers ([`StoreSubscription`]).
+    all: broadcast::Sender<StoreChange>,
+    /// How many store-wide watchers it has: the upstream stays open while
+    /// it has any, as it does while any order is watched.
+    all_watchers: usize,
+    /// Whether the upstream connection is open and has said it's ready:
+    /// from then on it misses nothing until it closes.
+    connected: watch::Sender<bool>,
     upstream: tokio::task::JoinHandle<()>,
+}
+
+/// What a store-wide watcher hears ([`StoreSubscription`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreChange {
+    /// This order changed: read it again.
+    Order(crate::db::OrderId),
+    /// Changes may have been missed (the engine's stream opened again, or
+    /// fell behind): any order may have changed.
+    All,
+}
+
+/// Store-wide changes a slow watcher may fall behind by before it hears
+/// it fell behind (`RecvError::Lagged`).
+const STORE_CHANGE_CAPACITY: usize = 256;
+
+/// A live handle on every order of one store: each change the engine
+/// reports for any of them ([`StoreChange`]). Dropping it releases the
+/// store's upstream connection with the last watcher.
+pub struct StoreSubscription {
+    hub: Arc<LiveHub>,
+    connection_id: crate::db::ConnectionId,
+    pub(crate) changes: broadcast::Receiver<StoreChange>,
+    connected: watch::Receiver<bool>,
+}
+
+impl StoreSubscription {
+    /// Waits, at most `patience`, for the store's upstream connection to
+    /// be open and ready, then forgets what was heard before: from here on
+    /// a change that may have been missed is one this watcher missed.
+    /// Whether it was ready in time (when it wasn't, the next time it
+    /// opens says [`StoreChange::All`]).
+    pub async fn ready(&mut self, patience: Duration) -> bool {
+        let ready = tokio::time::timeout(patience, self.connected.wait_for(|open| *open))
+            .await
+            .is_ok_and(|open| open.is_ok());
+        self.changes = self.changes.resubscribe();
+        ready
+    }
+}
+
+impl Drop for StoreSubscription {
+    fn drop(&mut self) {
+        self.hub.release_store(&self.connection_id);
+    }
 }
 
 struct OrderWatch {
@@ -140,17 +194,7 @@ impl LiveHub {
         order_id: &crate::db::OrderId,
     ) -> OrderSubscription {
         let mut stores = self.stores.lock();
-        let store = stores
-            .entry(connection_id.clone())
-            .or_insert_with(|| StoreWatch {
-                orders: HashMap::new(),
-                upstream: tokio::spawn(run_upstream(
-                    Arc::downgrade(self),
-                    engine.clone(),
-                    keys.clone(),
-                    connection_id.clone(),
-                )),
-            });
+        let store = self.store_watch(&mut stores, engine, keys, connection_id);
         let order = store
             .orders
             .entry(order_id.clone())
@@ -172,6 +216,50 @@ impl LiveHub {
         }
     }
 
+    /// Every change to any of the store's orders, from now on: one upstream
+    /// connection per store, shared with the watchers of single orders.
+    pub fn subscribe_store(
+        self: &Arc<Self>,
+        engine: &EngineClient,
+        keys: &crate::http::store_key::StoreKeys,
+        connection_id: &crate::db::ConnectionId,
+    ) -> StoreSubscription {
+        let mut stores = self.stores.lock();
+        let store = self.store_watch(&mut stores, engine, keys, connection_id);
+        store.all_watchers += 1;
+        StoreSubscription {
+            hub: self.clone(),
+            connection_id: connection_id.clone(),
+            changes: store.all.subscribe(),
+            connected: store.connected.subscribe(),
+        }
+    }
+
+    /// The store's watch, made (with its upstream connection) if nobody
+    /// watches it yet.
+    fn store_watch<'a>(
+        self: &Arc<Self>,
+        stores: &'a mut HashMap<crate::db::ConnectionId, StoreWatch>,
+        engine: &EngineClient,
+        keys: &crate::http::store_key::StoreKeys,
+        connection_id: &crate::db::ConnectionId,
+    ) -> &'a mut StoreWatch {
+        stores
+            .entry(connection_id.clone())
+            .or_insert_with(|| StoreWatch {
+                orders: HashMap::new(),
+                all: broadcast::channel(STORE_CHANGE_CAPACITY).0,
+                all_watchers: 0,
+                connected: watch::channel(false).0,
+                upstream: tokio::spawn(run_upstream(
+                    Arc::downgrade(self),
+                    engine.clone(),
+                    keys.clone(),
+                    connection_id.clone(),
+                )),
+            })
+    }
+
     fn release(&self, connection_id: &crate::db::ConnectionId, order_id: &crate::db::OrderId) {
         let mut stores = self.stores.lock();
         let Some(store) = stores.get_mut(connection_id) else {
@@ -183,14 +271,41 @@ impl LiveHub {
                 store.orders.remove(order_id);
             }
         }
-        if store.orders.is_empty() {
+        Self::close_if_unwatched(&mut stores, connection_id);
+    }
+
+    fn release_store(&self, connection_id: &crate::db::ConnectionId) {
+        let mut stores = self.stores.lock();
+        let Some(store) = stores.get_mut(connection_id) else {
+            return;
+        };
+        store.all_watchers -= 1;
+        Self::close_if_unwatched(&mut stores, connection_id);
+    }
+
+    /// Closes the store's upstream connection once nobody watches it.
+    fn close_if_unwatched(
+        stores: &mut HashMap<crate::db::ConnectionId, StoreWatch>,
+        connection_id: &crate::db::ConnectionId,
+    ) {
+        let unwatched = stores
+            .get(connection_id)
+            .is_some_and(|store| store.orders.is_empty() && store.all_watchers == 0);
+        if unwatched {
             if let Some(store) = stores.remove(connection_id) {
                 store.upstream.abort();
             }
         }
     }
 
-    fn wake(&self, connection_id: &crate::db::ConnectionId, order_id: Option<&crate::db::OrderId>) {
+    /// Wakes whoever watches `order_id` (or, with `None`, every order) of
+    /// the store: monokulo's own changes the engine doesn't report, such as
+    /// an app's order just made.
+    pub fn wake(
+        &self,
+        connection_id: &crate::db::ConnectionId,
+        order_id: Option<&crate::db::OrderId>,
+    ) {
         let stores = self.stores.lock();
         let Some(store) = stores.get(connection_id) else {
             return;
@@ -199,6 +314,18 @@ impl LiveHub {
             if order_id.is_none_or(|wanted| wanted == id) {
                 order.changed.send_modify(|n| *n = n.wrapping_add(1));
             }
+        }
+        // No store-wide watcher is fine: nobody is listening.
+        let _ = store.all.send(match order_id {
+            Some(id) => StoreChange::Order(id.clone()),
+            None => StoreChange::All,
+        });
+    }
+
+    /// Notes whether the store's upstream connection is open and ready.
+    fn set_connected(&self, connection_id: &crate::db::ConnectionId, open: bool) {
+        if let Some(store) = self.stores.lock().get(connection_id) {
+            store.connected.send_replace(open);
         }
     }
 
@@ -364,6 +491,10 @@ async fn run_upstream(
                         "ready" | "resync" => {
                             delay = Duration::from_secs(1);
                             hub.wake(&connection_id, None);
+                            // After the wake: a store-wide watcher waiting
+                            // for this opens after it, and isn't told of a
+                            // loss it didn't have.
+                            hub.set_connected(&connection_id, true);
                         }
                         "order" => {
                             let order_id = serde_json::from_str::<serde_json::Value>(&data)
@@ -385,6 +516,7 @@ async fn run_upstream(
         // Disconnected, or never connected: changes may have been missed in
         // the meantime, so every watcher re-reads now and again on each retry.
         let Some(strong) = hub.upgrade() else { return };
+        strong.set_connected(&connection_id, false);
         strong.wake(&connection_id, None);
         drop(strong);
         tokio::time::sleep(delay).await;

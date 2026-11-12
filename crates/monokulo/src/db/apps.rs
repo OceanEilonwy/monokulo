@@ -395,6 +395,28 @@ impl Db {
         Ok(())
     }
 
+    /// The device that made each of `order_ids` of `store_id` that one of
+    /// its apps made, by order.
+    pub fn app_order_devices(
+        &self,
+        store_id: &ConnectionId,
+        order_ids: &[OrderId],
+    ) -> Result<std::collections::HashMap<OrderId, String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT device_name FROM app_orders WHERE order_id = ?1 AND store_id = ?2",
+        )?;
+        let mut devices = std::collections::HashMap::new();
+        for order_id in order_ids {
+            if let Some(device) = stmt
+                .query_row(params![order_id, store_id], |row| row.get::<_, String>(0))
+                .optional()?
+            {
+                devices.insert(order_id.clone(), device);
+            }
+        }
+        Ok(devices)
+    }
+
     /// The app order `order_id`, if an app made it.
     pub fn app_order(&self, order_id: &OrderId) -> Result<Option<AppOrder>> {
         self.conn

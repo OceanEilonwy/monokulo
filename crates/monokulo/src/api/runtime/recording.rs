@@ -327,37 +327,61 @@ fn plugin_connect_code(state: &AppState, id: &str) -> String {
 /// Reads the server-sent events of `response` until `until` of them have
 /// come: each `{"event", "data"}`, its data JSON where it is.
 async fn read_events(response: Response, until: usize) -> Value {
-    let mut body = response.into_body();
-    let mut text = String::new();
-    let mut events = Vec::new();
-    while events.len() < until {
-        let frame = tokio::time::timeout(Duration::from_secs(10), body.frame())
-            .await
-            .expect("the stream sends its events in time")
-            .expect("the stream is still open")
-            .expect("the stream can be read");
-        let Ok(data) = frame.into_data() else {
-            continue;
+    let mut events = Events::of(response);
+    events.read(until).await;
+    events.read
+}
+
+/// A stream's events as they're read ([`read_events`]), for a recording
+/// that reads some before it makes what the rest are about.
+struct Events {
+    body: Body,
+    text: String,
+    read: Value,
+}
+
+impl Events {
+    fn of(response: Response) -> Events {
+        Events {
+            body: response.into_body(),
+            text: String::new(),
+            read: Value::Array(Vec::new()),
+        }
+    }
+
+    /// Reads on until `until` events have come in all.
+    async fn read(&mut self, until: usize) {
+        let Value::Array(events) = &mut self.read else {
+            unreachable!("an array")
         };
-        text.push_str(std::str::from_utf8(&data).unwrap());
-        while let Some(end) = text.find("\n\n") {
-            let block: String = text.drain(..end + 2).collect();
-            let (mut name, mut data) = (None, String::new());
-            for line in block.lines() {
-                if let Some(value) = line.strip_prefix("event:") {
-                    name = Some(value.trim().to_owned());
-                } else if let Some(value) = line.strip_prefix("data:") {
-                    data.push_str(value.trim_start());
+        while events.len() < until {
+            let frame = tokio::time::timeout(Duration::from_secs(10), self.body.frame())
+                .await
+                .expect("the stream sends its events in time")
+                .expect("the stream is still open")
+                .expect("the stream can be read");
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            self.text.push_str(std::str::from_utf8(&data).unwrap());
+            while let Some(end) = self.text.find("\n\n") {
+                let block: String = self.text.drain(..end + 2).collect();
+                let (mut name, mut data) = (None, String::new());
+                for line in block.lines() {
+                    if let Some(value) = line.strip_prefix("event:") {
+                        name = Some(value.trim().to_owned());
+                    } else if let Some(value) = line.strip_prefix("data:") {
+                        data.push_str(value.trim_start());
+                    }
                 }
-            }
-            // A comment (the keep-alive) has neither.
-            if let Some(name) = name {
-                let data = serde_json::from_str(&data).unwrap_or(Value::String(data));
-                events.push(json!({"event": name, "data": data}));
+                // A comment (the keep-alive) has neither.
+                if let Some(name) = name {
+                    let data = serde_json::from_str(&data).unwrap_or(Value::String(data));
+                    events.push(json!({"event": name, "data": data}));
+                }
             }
         }
     }
-    Value::Array(events)
 }
 
 /// A Monokulo on a real engine with a store, its keys and a connected app,
@@ -1260,6 +1284,7 @@ async fn record_route_problems(
     assert_eq!(open.status(), StatusCode::OK);
     for uri in [
         "/api/v1/events".to_owned(),
+        "/api/v1/orders/events".to_owned(),
         format!("/api/v1/orders/{order_id}/events"),
     ] {
         let answer = one_stream
@@ -1578,6 +1603,18 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     });
     let stream = call(&router, "GET", "/api/v1/events".into(), Some(&ak), None).await;
     assert_eq!(stream.status(), StatusCode::OK);
+    let order_stream = call(
+        &router,
+        "GET",
+        "/api/v1/orders/events".into(),
+        Some(&ak),
+        None,
+    )
+    .await;
+    assert_eq!(order_stream.status(), StatusCode::OK);
+    // Its `ready` first: what changes after it, it sends.
+    let mut order_stream = Events::of(order_stream);
+    order_stream.read(1).await;
     let mut made = Vec::new();
     for key in [ak.as_str(), sk] {
         let answer = call(
@@ -1604,6 +1641,19 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         method: "GET".into(),
         route: super::super::v1::events::Path::TEMPLATE.into(),
         path: "/api/v1/events".into(),
+        key: Some("ak".into()),
+        onion: false,
+        request: None,
+        status: 200,
+        response: Some(events),
+    });
+    // The same order on the store's order stream: the order itself.
+    order_stream.read(2).await;
+    let events = order_stream.read;
+    recorder.push(Exchange {
+        method: "GET".into(),
+        route: super::super::v1::orders_events::Path::TEMPLATE.into(),
+        path: "/api/v1/orders/events".into(),
         key: Some("ak".into()),
         onion: false,
         request: None,
@@ -1716,6 +1766,16 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     // The rest of each key's answers: the store's sales with its secret
     // key, its orders with the app's, the order's changes with each key.
     drop(call(&router, "GET", "/api/v1/events".into(), Some(sk), None).await);
+    drop(
+        call(
+            &router,
+            "GET",
+            "/api/v1/orders/events".into(),
+            Some(sk),
+            None,
+        )
+        .await,
+    );
     call(&router, "GET", "/api/v1/orders".into(), Some(&ak), None).await;
     for (key, kind) in [(pk, "pk"), (ak.as_str(), "ak")] {
         record_order_events(&router, &recorder, &order_id, key, kind).await;

@@ -560,6 +560,37 @@ impl EngineClient {
             .subscribe(self, keys, connection_id, order_id)
     }
 
+    /// Every change to any of `connection_id`'s orders, through the same
+    /// shared engine connection as [`Self::subscribe_order`]
+    /// (`GET /api/v1/orders/events`).
+    pub fn subscribe_store(
+        &self,
+        keys: &crate::http::store_key::StoreKeys,
+        connection_id: &crate::db::ConnectionId,
+    ) -> crate::live::StoreSubscription {
+        self.target()
+            .live
+            .clone()
+            .subscribe_store(self, keys, connection_id)
+    }
+
+    /// Tells whoever watches `order_id` of `connection_id` that it changed
+    /// where the engine doesn't say so: an app's order just made.
+    pub fn order_changed(
+        &self,
+        connection_id: &crate::db::ConnectionId,
+        order_id: &engine_protocol::ids::OrderId,
+    ) {
+        self.target().live.wake(connection_id, Some(order_id));
+    }
+
+    #[cfg(test)]
+    /// As if the shared engine connection opened again: changes to any of
+    /// `connection_id`'s orders may have been missed.
+    pub fn live_changes_missed(&self, connection_id: &crate::db::ConnectionId) {
+        self.target().live.wake(connection_id, None);
+    }
+
     #[cfg(test)]
     /// How many stores currently hold an open engine event stream.
     pub fn live_upstream_count(&self) -> usize {

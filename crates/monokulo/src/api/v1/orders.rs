@@ -42,9 +42,14 @@ async fn list(orders: Orders, page: Page) -> api::Result<Body> {
         store.id.clone(),
         views.iter().map(|o| o.order_id.clone()).collect::<Vec<_>>(),
     );
-    let metadata = state
+    let (metadata, devices) = state
         .db
-        .read(move |db| db.order_currency_metadata_for(&id, &ids))
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.order_currency_metadata_for(&id, &ids)?,
+                db.app_order_devices(&id, &ids)?,
+            ))
+        })
         .await
         .unwrap_or_default();
     // An order without its own snapshot uses the store's present
@@ -74,7 +79,15 @@ async fn list(orders: Orders, page: Page) -> api::Result<Body> {
                 let required = metadata
                     .and_then(|m| m.confirmations_required_applied)
                     .unwrap_or(fallback);
-                order::of(&store.id, view, metadata, required, onion.as_deref())
+                let device = devices.get(&view.order_id).cloned();
+                order::of(
+                    &store.id,
+                    view,
+                    metadata,
+                    device,
+                    required,
+                    onion.as_deref(),
+                )
             })
             .collect(),
         next: full.then(|| {
@@ -154,6 +167,7 @@ async fn create(
         credential: caller.0.credential,
         client: client.0,
     }));
+    let device_name = origin.app().map(|app| app.device_name.clone());
     let made = crate::orders::make(&state, &orders.store, origin, request)
         .await
         .map_err(|e| e.problem())?;
@@ -178,34 +192,7 @@ async fn create(
             .flatten(),
         false => None,
     };
-    let body = now.unwrap_or_else(|| {
-        let view = crate::engine_client::OrderView {
-            order_id: order.order_id.clone(),
-            merchant_order_id: order.merchant_order_id.clone(),
-            description: order.description.clone(),
-            address: order.address.clone(),
-            xmr_amount_piconero: order.xmr_amount_piconero,
-            amount_received_piconero: pricing::xmr_amount::Piconero::ZERO,
-            status: engine_protocol::order_status::OrderStatus::Pending,
-            confirmations: 0,
-            double_spend_detected_at: None,
-            cancelled_at: None,
-            refund_address: None,
-            created_at: order.created_at,
-            expires_at: order.expires_at,
-            updated_at: order.created_at,
-            first_scanned_height: None,
-            last_scanned_height: None,
-            currently_scanning: false,
-        };
-        let store = &orders.store.id;
-        order::of(
-            store,
-            &view,
-            Some(&order.metadata(store)),
-            order.price.confirmations_required,
-            onion.as_deref(),
-        )
-    });
+    let body = now
+        .unwrap_or_else(|| order::of_new(&orders.store.id, &order, device_name, onion.as_deref()));
     Ok(Created(body))
 }

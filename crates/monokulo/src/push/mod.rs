@@ -57,6 +57,10 @@ pub struct Queueing {
     /// Where an `encrypted` push's links start: the path of this
     /// Monokulo's web address, as an app on it reads the event stream.
     pub link_base: String,
+    /// The order the sale event is about, as an `encrypted` push carries
+    /// it (`payload::order_json`): read just before it's queued; `None`
+    /// when it couldn't be.
+    pub order: Option<serde_json::Value>,
 }
 
 impl Queueing {
@@ -69,7 +73,13 @@ impl Queueing {
                 .and_then(|uri| url::Url::parse(&uri).ok())
                 .map(|uri| uri.path().trim_end_matches('/').to_owned())
                 .unwrap_or_default(),
+            order: None,
         }
+    }
+
+    /// The same, with the order its sale event is about.
+    pub fn with_order(self, order: Option<serde_json::Value>) -> Self {
+        Queueing { order, ..self }
     }
 }
 

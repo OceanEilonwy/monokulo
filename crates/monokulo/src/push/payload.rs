@@ -4,9 +4,10 @@
 //!
 //! - `encrypted`: the sale as the store's event stream carries it
 //!   (`api::v1::events`), with the body version webhooks carry
-//!   (`api_version`), so an app reads a push and an event the same way. It
-//!   is encrypted to the device, so the push service and any relay see
-//!   nothing of it.
+//!   (`api_version`), and the order itself as reading it answers
+//!   (`order`, the data of `mk:orders-events`), so an app reads a push and
+//!   an event the same way. It is encrypted to the device, so the push
+//!   service and any relay see nothing of it.
 //! - `live-activity`: [`LiveActivityState`], the content state an iOS Live
 //!   Activity shows, sent in the clear through the relay to APNs (iOS
 //!   applies it with no code of the app's to decrypt it). So it carries
@@ -22,30 +23,80 @@ use crate::push::PushTargetKind;
 use pricing::xmr_amount::format_xmr_trimmed;
 
 /// An `encrypted` target's push: the sale event, at the body version
-/// webhooks are at.
+/// webhooks are at, with the order as it was read when the push was
+/// queued.
 #[derive(Serialize)]
-struct Notification {
+struct Notification<'a> {
     api_version: u8,
     #[serde(flatten)]
     sale: Sale,
+    /// The order, the same JSON as reading it; left out when it couldn't
+    /// be read, or would make the push too large to send.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    order: Option<&'a serde_json::Value>,
 }
 
-/// The `encrypted` payload of `sale`, its order's link on `link_base` (the
-/// web address's path, as an app on the web address reads the stream).
-pub fn notification(sale: &SaleEvent, link_base: &str) -> String {
-    // Written as an app's key would read it: the links an app may follow.
-    let context = auth::Context {
+/// How an app's key reads what a push says: its links on `link_base`.
+fn as_app(link_base: &str) -> auth::Context {
+    auth::Context {
         key: Some(Key::Ak),
         base: link_base.to_owned(),
         if_none_match: None,
-    };
-    auth::as_caller(context, || {
-        serde_json::to_string(&Notification {
-            api_version: crate::webhooks::body::API_VERSION,
-            sale: Sale::of(sale),
-        })
-        .unwrap_or_else(|_| unreachable!("a sale serializes"))
+    }
+}
+
+/// `order` as an `encrypted` push carries it: as an app's key reads it,
+/// its links on `link_base`.
+pub(crate) fn order_json(
+    order: &crate::api::v1::order::Body,
+    link_base: &str,
+) -> serde_json::Value {
+    auth::as_caller(as_app(link_base), || {
+        serde_json::to_value(order).unwrap_or_else(|_| unreachable!("an order serializes"))
     })
+}
+
+/// The most plaintext an `encrypted` push may carry and still reach a
+/// device through a push relay (`docs/decisions/push.md` 112): its
+/// ciphertext (the plaintext, an 86-byte header, a delimiter and a 16-byte
+/// tag) goes to APNs or FCM as base64 inside a JSON envelope, and the 4096
+/// bytes they take leave about 3015 of ciphertext for APNs's alert
+/// envelope (3065 for FCM's data), so 2912 of plaintext. A push sent
+/// straight to a Web Push service may carry more ([`::push::MAX_PLAINTEXT`]),
+/// but Monokulo doesn't know which way a target's pushes go.
+pub const RELAYED_PLAINTEXT: usize = 2900;
+
+/// The `encrypted` payload of `sale`, its order's link on `link_base` (the
+/// web address's path, as an app on the web address reads the stream),
+/// with `order` ([`order_json`]) when it was read. An order that would take
+/// the push past what a relayed push may carry ([`RELAYED_PLAINTEXT`]) is
+/// left out, and said so in the log: the app reads it from its link.
+pub fn notification(
+    sale: &SaleEvent,
+    link_base: &str,
+    order: Option<&serde_json::Value>,
+) -> String {
+    let write = |order| {
+        auth::as_caller(as_app(link_base), || {
+            serde_json::to_string(&Notification {
+                api_version: crate::webhooks::body::API_VERSION,
+                sale: Sale::of(sale),
+                order,
+            })
+            .unwrap_or_else(|_| unreachable!("a sale serializes"))
+        })
+    };
+    let written = write(order);
+    if order.is_some() && written.len() > RELAYED_PLAINTEXT {
+        tracing::warn!(
+            order.id = %sale.order_id,
+            push.bytes = written.len(),
+            push.max = RELAYED_PLAINTEXT,
+            "an order is too large for its push, which goes without it"
+        );
+        return write(None);
+    }
+    written
 }
 
 /// What a Live Activity shows of a sale (monokular docs/design.md §6).
@@ -205,7 +256,7 @@ mod tests {
     #[test]
     fn a_notification_is_the_streams_sale_with_its_version() {
         let json: serde_json::Value =
-            serde_json::from_str(&notification(&sale(SaleKind::Paid), "/monokulo")).unwrap();
+            serde_json::from_str(&notification(&sale(SaleKind::Paid), "/monokulo", None)).unwrap();
         assert_eq!(json["api_version"], crate::webhooks::body::API_VERSION);
         assert_eq!(json["event"], "sale.paid");
         assert_eq!(json["order_id"], "order_1");
@@ -322,13 +373,116 @@ mod tests {
         }
     }
 
+    /// `sale`'s order as reading it answers, `status` and paid in full, its
+    /// longest texts as long as an app may make them when `largest`; its
+    /// onion checkout on the longest onion address.
+    fn order_of(sale: &SaleEvent, status: &str, largest: bool) -> serde_json::Value {
+        use crate::api::runtime::scalars::MAX_MERCHANT_REF_CHARS;
+        let id = crate::db::OrderId::new(sale.order_id.clone());
+        let store = crate::db::ConnectionId::new("conn_1".to_owned());
+        let view = crate::engine_client::OrderView {
+            order_id: id.clone(),
+            merchant_order_id: sale.merchant_order_id.clone(),
+            description: largest.then(|| "\u{1}".repeat(crate::stores::MAX_DESCRIPTION_CHARS)),
+            address: sale.address.clone(),
+            xmr_amount_piconero: sale.xmr_amount_piconero,
+            amount_received_piconero: sale.xmr_amount_piconero,
+            status: serde_json::from_value(serde_json::json!(status)).unwrap(),
+            confirmations: if largest { u64::MAX } else { 10 },
+            double_spend_detected_at: None,
+            cancelled_at: largest.then_some(i64::MAX),
+            refund_address: None,
+            created_at: sale.at,
+            expires_at: sale.expires_at,
+            updated_at: sale.at,
+            first_scanned_height: None,
+            last_scanned_height: None,
+            currently_scanning: false,
+        };
+        assert!(sale
+            .merchant_order_id
+            .as_ref()
+            .is_none_or(|m| m.chars().count() <= MAX_MERCHANT_REF_CHARS));
+        let metadata = crate::db::OrderCurrencyMetadataRow {
+            connection_id: store.clone(),
+            order_id: id,
+            currency: sale.currency.clone(),
+            amount: sale.amount.clone(),
+            piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(1),
+            provider: "coingecko".into(),
+            created_at: sale.at,
+            store_base_currency: None,
+            base_currency_piconero_per_unit: None,
+            confirmations_required_applied: Some(10),
+            created_with_key: true,
+            show_merchant_order_id: true,
+        };
+        let onion = format!("http://{}.onion", "a".repeat(56));
+        let body = crate::api::v1::order::of(
+            &store,
+            &view,
+            Some(&metadata),
+            Some(sale.device_name.clone()),
+            if largest { u64::MAX } else { 10 },
+            Some(&onion),
+        );
+        order_json(&body, "/a/long/reverse/proxy/prefix/monokulo")
+    }
+
+    /// An `encrypted` push carries the order, as reading it answers. A
+    /// till's sale, with its order, fits even through a relay
+    /// ([`RELAYED_PLAINTEXT`]); the largest sale an app can make, with the
+    /// largest order, doesn't fit one push at all (more than
+    /// [`::push::MAX_PLAINTEXT`]), so it goes without the order, which the
+    /// app reads from its link, rather than never going at all.
+    #[test]
+    fn a_push_carries_the_order_unless_it_would_be_too_large() {
+        let link_base = "/a/long/reverse/proxy/prefix/monokulo";
+        let till = sale(SaleKind::Paid);
+        let order = order_of(&till, "paid", false);
+        let pushed = notification(&till, link_base, Some(&order));
+        let read: serde_json::Value = serde_json::from_str(&pushed).unwrap();
+        assert_eq!(read["order"], order);
+        assert_eq!(read["order"]["status"], "paid");
+        assert_eq!(read["event"], "sale.paid");
+        assert!(
+            pushed.len() < RELAYED_PLAINTEXT,
+            "a till's sale: {} bytes",
+            pushed.len()
+        );
+
+        let largest = largest_sale(SaleKind::Paid);
+        let order = order_of(&largest, "overpaid", true);
+        let alone = notification(&largest, link_base, None);
+        let with_order = serde_json::to_string(&order).unwrap().len() + alone.len();
+        assert!(
+            with_order > ::push::MAX_PLAINTEXT,
+            "the largest sale and order now fit ({with_order} bytes): carry the order always"
+        );
+        let pushed = notification(&largest, link_base, Some(&order));
+        assert_eq!(pushed, alone, "too large: the push goes without the order");
+        assert!(pushed.len() < RELAYED_PLAINTEXT);
+    }
+
+    /// [`RELAYED_PLAINTEXT`]'s arithmetic: its ciphertext, as base64, fits
+    /// APNs's alert envelope and FCM's data, each 4096 bytes at most.
+    #[test]
+    fn a_relayed_push_fits_apns_and_fcm() {
+        let ciphertext = RELAYED_PLAINTEXT + 86 + 1 + 16;
+        let base64 = ciphertext.div_ceil(3) * 4;
+        let apns =
+            r#"{"aps":{"alert":{"title":"New sale"},"mutable-content":1},"aes128gcm":""}"#.len();
+        assert!(apns + base64 <= 4096, "{}", apns + base64);
+        assert!("aes128gcm".len() + base64 <= 4096);
+    }
+
     /// The largest sale an app can make fits a push with room to spare, as
     /// either payload: one that didn't would be refused at every attempt.
     #[test]
     fn the_largest_sale_fits_a_push() {
         for kind in SaleKind::ALL {
             let sale = largest_sale(kind);
-            let encrypted = notification(&sale, "/a/long/reverse/proxy/prefix/monokulo");
+            let encrypted = notification(&sale, "/a/long/reverse/proxy/prefix/monokulo", None);
             assert!(
                 encrypted.len() < ::push::MAX_PLAINTEXT,
                 "{kind:?}: {} bytes",
