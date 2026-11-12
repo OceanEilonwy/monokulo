@@ -1304,7 +1304,8 @@ async fn old_pushes_are_pruned_after_push_keep_days() {
 /// RFC 8291 ciphertext, `Urgency: high`, a 32-character `Topic`, and a
 /// VAPID `Authorization` that verifies against this Monokulo's key for the
 /// endpoint's origin; the device decrypts it to the stream's sale with
-/// `api_version`. The target's last success is recorded.
+/// `api_version` and the order as it is, paid. The target's last success
+/// is recorded.
 #[tokio::test]
 async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
     let world = world().await;
@@ -1325,6 +1326,7 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
     let subscriber = tokio::spawn(crate::webhooks::subscriber::run_subscriber(
         state.db.clone(),
         state.engine.client.clone(),
+        state.store_keys(),
         state.webhooks.clone(),
         state.push.clone(),
         state.apps.clone(),
@@ -1370,6 +1372,22 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
     assert_eq!(sale["merchant_order_id"], "#1042");
     assert_eq!(
         sale["_links"]["mk:order"]["href"],
+        format!("/api/v1/orders/{order}")
+    );
+    // The order itself, as reading it answers once it's paid.
+    let paid = &sale["order"];
+    assert_eq!(paid["order_id"], order.as_str());
+    assert_eq!(paid["status"], "paid");
+    assert_eq!(paid["is_final"], true);
+    assert_eq!(
+        paid["amount_received_piconero"],
+        paid["xmr_amount_piconero"]
+    );
+    assert!(
+        paid["confirmations"].as_u64().unwrap() >= paid["confirmations_required"].as_u64().unwrap()
+    );
+    assert_eq!(
+        paid["_links"]["self"]["href"],
         format!("/api/v1/orders/{order}")
     );
     drop(received);

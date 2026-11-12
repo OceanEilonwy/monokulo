@@ -34,12 +34,13 @@ use ui::assets::icons;
 /// how a client meets them, the entry first and the handshakes and pages
 /// for people last. A tag the document has and this doesn't name follows
 /// them, under its own name.
-const TAGS: [(&str, &str); 16] = [
+const TAGS: [(&str, &str); 17] = [
     ("root", "Entry"),
     ("orders", "Orders"),
     ("order", "One order"),
     ("order-events", "Order events"),
-    ("events", "Sale events"),
+    ("orders-events", "Order stream"),
+    ("events", "Sale events (deprecated)"),
     ("store", "Store"),
     ("webhook-tests", "Webhook tests"),
     ("checkout-page", "Custom page"),

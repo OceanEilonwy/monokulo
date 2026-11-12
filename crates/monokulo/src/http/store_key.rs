@@ -206,6 +206,21 @@ impl AppState {
 }
 
 impl StoreKeys {
+    /// Keys read from `db`, decrypted with `encryption_key`, held against
+    /// `revocations`: the server's own (`AppState::revocations`), for
+    /// what runs beside the server (the order-event subscriber).
+    pub fn new(
+        db: crate::db::Database,
+        encryption_key: crate::crypto::AtRestKey,
+        revocations: std::sync::Arc<crate::revocation::Revocations>,
+    ) -> Self {
+        StoreKeys {
+            db,
+            encryption_key,
+            revocations,
+        }
+    }
+
     /// The store as it is now. `None` once it's gone; `Err` when it
     /// couldn't be read.
     pub(crate) async fn row(

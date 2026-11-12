@@ -271,6 +271,9 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     let webhooks = Arc::new(monokulo::webhooks::Webhooks::default());
     // Connected apps' event streams hear of their orders from the same log.
     let apps = Arc::new(monokulo::apps::AppEvents::default());
+    // Shared by the server and the subscriber, which reads an app's order
+    // for its pushes with the store's key.
+    let revocations: Arc<monokulo::revocation::Revocations> = Arc::default();
     {
         let (db, engine, webhooks, push, apps) = (
             db.clone(),
@@ -279,12 +282,18 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             push.clone(),
             apps.clone(),
         );
+        let keys = monokulo::http::store_key::StoreKeys::new(
+            db.clone(),
+            encryption_key.clone(),
+            revocations.clone(),
+        );
         let addresses = monokulo::webhooks::Addresses::new(monokulo_settings.clone(), tor.clone());
         let clock = clock.clone();
         service_runtime::supervise::supervise("order-event subscriber", move || {
             monokulo::webhooks::subscriber::run_subscriber(
                 db.clone(),
                 engine.clone(),
+                keys.clone(),
                 webhooks.clone(),
                 push.clone(),
                 apps.clone(),
@@ -344,7 +353,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         apps,
         push,
         relay: relay.clone(),
-        revocations: Default::default(),
+        revocations,
         stopping: stopping.clone(),
         clock,
         tor: tor.clone(),

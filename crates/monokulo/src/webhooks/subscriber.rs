@@ -27,6 +27,7 @@ use serde::Deserialize;
 use crate::apps::AppEvents;
 use crate::db::{Database, DbError, LoggedEvent};
 use crate::engine_client::EngineClient;
+use crate::http::store_key::StoreKeys;
 use crate::live::{SseEvent, SseParser};
 
 use pricing::xmr_amount::Piconero;
@@ -117,6 +118,7 @@ pub enum FollowError {
 pub async fn follow(
     db: &Database,
     engine: &EngineClient,
+    keys: &StoreKeys,
     webhooks: &super::Webhooks,
     push: &crate::push::Push,
     apps: &AppEvents,
@@ -143,12 +145,17 @@ pub async fn follow(
             Err(_) => return Err(FollowError::Quiet),
         };
         for event in parser.push(&chunk) {
-            handle(db, webhooks, push, apps, addresses, clock, &event).await?;
+            let orders = OrderReader { db, engine, keys };
+            handle(db, webhooks, push, apps, addresses, clock, &orders, &event).await?;
         }
     }
 }
 
 /// One event from the stream.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is one thing an event reaches or is read with; a struct of them would be one more name"
+)]
 async fn handle(
     db: &Database,
     webhooks: &super::Webhooks,
@@ -156,6 +163,7 @@ async fn handle(
     apps: &AppEvents,
     addresses: &super::Addresses,
     clock: &clock::Clock,
+    orders: &OrderReader<'_>,
     event: &SseEvent,
 ) -> Result<(), FollowError> {
     match event.event.as_str() {
@@ -188,6 +196,15 @@ async fn handle(
             let for_apps = apps.watched().then(|| logged.clone());
             let bases = addresses.now();
             let queueing = addresses.push_queueing();
+            // An app's order goes in its `encrypted` pushes as it is now.
+            let order = orders
+                .for_push(
+                    &logged.order_id,
+                    bases.onion.as_deref(),
+                    &queueing.link_base,
+                )
+                .await;
+            let queueing = queueing.with_order(order);
             let queued = db
                 .write(move |db| {
                     db.queue_order_event(&logged, now, &queueing, |store, metadata| {
@@ -243,6 +260,43 @@ async fn handle(
     Ok(())
 }
 
+/// What reads an order for its pushes, while the log is followed.
+struct OrderReader<'a> {
+    db: &'a Database,
+    engine: &'a EngineClient,
+    keys: &'a StoreKeys,
+}
+
+impl OrderReader<'_> {
+    /// `order_id`, when an app made it, as an `encrypted` push carries it
+    /// (`push::payload::order_json`), its onion checkout on `onion` and its
+    /// links on `link_base`. `None` for an order no app made, and for one
+    /// that couldn't be read: its pushes go without it, and the app reads
+    /// it from its link.
+    async fn for_push(
+        &self,
+        order_id: &crate::db::OrderId,
+        onion: Option<&str>,
+        link_base: &str,
+    ) -> Option<serde_json::Value> {
+        let id = order_id.clone();
+        let app_order = self.db.read(move |db| db.app_order(&id)).await.ok()??;
+        let body = crate::api::v1::order::read_outside_request(
+            self.db,
+            self.engine,
+            self.keys,
+            &app_order.store_id,
+            order_id,
+            onion,
+        )
+        .await;
+        if body.is_none() {
+            tracing::warn!(order.id = %order_id, "an app's order could not be read for its pushes, which go without it");
+        }
+        Some(crate::push::payload::order_json(&body?, link_base))
+    }
+}
+
 /// Tells the store's open app event streams about `logged`, when an app
 /// made its order. A failed lookup costs the streams this event, never the
 /// webhooks: they re-read the order when they reconnect.
@@ -268,9 +322,14 @@ async fn announce_to_apps(db: &Database, apps: &AppEvents, logged: LoggedEvent) 
     clippy::infinite_loop,
     reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is one thing an event reaches or is read with; a struct of them would be one more name"
+)]
 pub async fn run_subscriber(
     db: Database,
     engine: EngineClient,
+    keys: StoreKeys,
     webhooks: Arc<super::Webhooks>,
     push: Arc<crate::push::Push>,
     apps: Arc<AppEvents>,
@@ -283,6 +342,7 @@ pub async fn run_subscriber(
         let result = follow(
             &db,
             &engine,
+            &keys,
             &webhooks,
             &push,
             &apps,

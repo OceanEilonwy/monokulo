@@ -585,6 +585,28 @@ impl TestEngineHandle {
 }
 
 impl TestEngineHandle {
+    /// Moves the chain tip on so the payments [`Self::record_order_payment`]
+    /// put in a block (height 1000) have `confirmations`, as scan ticks
+    /// would block by block, and recomputes `order_id`'s status.
+    pub fn set_order_confirmations(
+        &self,
+        order_id: &str,
+        confirmations: u64,
+    ) -> Result<(), engine::store::StoreError> {
+        let store = self.store.lock();
+        engine::scanner::recompute_and_notify(
+            &store,
+            &engine::store::OrderId::new(order_id.to_string()),
+            1000 + confirmations.max(1) - 1,
+            self.clock.now(),
+        )
+        .map_err(|e| match e {
+            engine::scanner::ScannerError::Store(e) => e,
+            other => panic!("recomputing a test order's status failed: {other}"),
+        })
+        .map(|_changed| ())
+    }
+
     /// Flags a double spend of `order_id`'s payment, as the scanner does when
     /// a key image it recorded turns up spent elsewhere.
     pub fn mark_order_double_spent(&self, order_id: &str) -> Result<(), engine::store::StoreError> {

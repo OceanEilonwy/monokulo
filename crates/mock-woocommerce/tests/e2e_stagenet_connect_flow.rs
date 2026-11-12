@@ -129,6 +129,7 @@ async fn spawn_test_monokulo(engine: &engine_test_support::TestEngineHandle) -> 
     let subscriber = monokulo::webhooks::subscriber::run_subscriber(
         state.db.clone(),
         state.engine.client.clone(),
+        state.store_keys(),
         state.webhooks.clone(),
         state.push.clone(),
         state.apps.clone(),

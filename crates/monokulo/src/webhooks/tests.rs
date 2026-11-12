@@ -711,10 +711,12 @@ impl Shop {
         let clock = self.state.clock.clone();
         let addresses =
             crate::webhooks::Addresses::new(self.state.settings.clone(), self.state.tor.clone());
+        let keys = self.state.store_keys();
         tokio::spawn(async move {
             let _ = subscriber::follow(
                 &db,
                 &engine,
+                &keys,
                 &webhooks,
                 &crate::push::Push::for_tests(),
                 &Default::default(),
@@ -1274,10 +1276,12 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
     let clock = shop.state.clock.clone();
     let addresses =
         crate::webhooks::Addresses::new(shop.state.settings.clone(), shop.state.tor.clone());
+    let keys = shop.state.store_keys();
     let reader = tokio::spawn(async move {
         let _ = subscriber::follow(
             &db,
             &engine,
+            &keys,
             &webhooks,
             &crate::push::Push::for_tests(),
             &listening,

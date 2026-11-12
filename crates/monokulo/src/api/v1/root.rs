@@ -1,6 +1,6 @@
 use super::{
-    app, checkout_page, checkout_page_draft, events, logs, openapi, orders, push_targets, store,
-    webhook_tests,
+    app, checkout_page, checkout_page_draft, events, logs, openapi, orders, orders_events,
+    push_targets, store, webhook_tests,
 };
 use crate::api::{self, prelude::*};
 
@@ -8,8 +8,9 @@ api::resource!("/api/v1", rel = "root");
 
 /// The API's entry: where to go from here.
 ///
-/// Links to the store, its orders and its events (and, for a connected
-/// app, the app itself and where its pushes go), the forms the key may use
+/// Links to the store, its orders, the stream of its apps' orders
+/// (`mk:orders-events`; `mk:events`, the older sale events, is deprecated)
+/// (and, for a connected app, the app itself and where its pushes go), the forms the key may use
 /// (a shop's server also gets the ones for sending its warnings and errors,
 /// for sending one of the store's webhooks a test delivery and for saving a
 /// custom page, an app the one for registering a push target), and the API's
@@ -34,6 +35,7 @@ struct Body {
     onion_api: Option<OnionLink<Path>>,
     store: Link<store::Path>,
     orders: Link<orders::Path>,
+    orders_events: Link<orders_events::Path>,
     events: Link<events::Path>,
     app: Link<app::Path>,
     push_targets: Link<push_targets::Path>,
@@ -88,6 +90,7 @@ fn body(instance: &Instance) -> Body {
         onion_api: OnionLink::new(instance.0.onion_uri().as_deref(), Path {}),
         store: Link::new(store::Path {}),
         orders: Link::new(orders::Path {}),
+        orders_events: Link::new(orders_events::Path {}),
         events: Link::new(events::Path {}),
         app: Link::new(app::Path {}),
         push_targets: Link::new(push_targets::Path {}),

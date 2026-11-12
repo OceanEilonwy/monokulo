@@ -48,6 +48,9 @@ struct Body {
     currency: Option<String>,
     /// The shop's own reference for the order.
     merchant_order_id: Option<String>,
+    /// The device that made it, as the merchant named it, for an order one
+    /// of the store's connected apps made; left out for any other.
+    device_name: Option<String>,
     /// What the order is for, as the payer sees it.
     description: Option<String>,
     /// Whether the checkout shows the payer `merchant_order_id`.
@@ -64,6 +67,10 @@ struct Body {
     /// When it expires unpaid, in Unix seconds. A cancelled order's is
     /// when it was cancelled.
     expires_at: i64,
+    /// When a payment to it was found spent twice, in Unix seconds; left
+    /// out unless one was. Don't hand anything over for it unless it's
+    /// `paid` and `is_final` after that.
+    double_spend_detected_at: Option<i64>,
     /// When the merchant cancelled it, in Unix seconds; left out unless they
     /// did. A payment sent anyway is still recorded: in
     /// `amount_received_piconero` while the order stays `cancelled`, and,
@@ -90,12 +97,13 @@ struct Body {
 }
 
 /// `order`, of the store `store`, as the engine reports it, priced by
-/// `metadata`, with its onion checkout on `onion` (`AppState::onion_uri`)
-/// when there is one.
+/// `metadata`, made by the app on `device_name` when an app made it, with
+/// its onion checkout on `onion` (`AppState::onion_uri`) when there is one.
 pub(crate) fn of(
     store: &ConnectionId,
     order: &OrderView,
     metadata: Option<&OrderCurrencyMetadataRow>,
+    device_name: Option<String>,
     confirmations_required: u64,
     onion: Option<&str>,
 ) -> Body {
@@ -111,12 +119,14 @@ pub(crate) fn of(
         amount: metadata.map(|m| m.amount.clone()),
         currency: metadata.map(|m| m.currency.clone()),
         merchant_order_id: order.merchant_order_id.clone(),
+        device_name,
         description: order.description.clone(),
         show_merchant_order_id: metadata.is_none_or(|m| m.show_merchant_order_id),
         confirmations: order.confirmations,
         confirmations_required,
         created_at: order.created_at,
         expires_at: order.expires_at,
+        double_spend_detected_at: order.double_spend_detected_at,
         cancelled_at: order.cancelled_at,
         collection: Link::new(orders::Path {}),
         events: Link::new(order_events::Path {
@@ -131,6 +141,44 @@ pub(crate) fn of(
         }),
         onion_checkout: OnionLink::new(onion, checkout::Path { order_id }),
     }
+}
+
+/// `order`, just made for the store `store` (by the app on `device_name`,
+/// when an app made it), as reading it now answers: waiting, nothing
+/// received, no confirmations.
+pub(crate) fn of_new(
+    store: &ConnectionId,
+    order: &crate::orders::NewOrder,
+    device_name: Option<String>,
+    onion: Option<&str>,
+) -> Body {
+    let view = OrderView {
+        order_id: order.order_id.clone(),
+        merchant_order_id: order.merchant_order_id.clone(),
+        description: order.description.clone(),
+        address: order.address.clone(),
+        xmr_amount_piconero: order.xmr_amount_piconero,
+        amount_received_piconero: pricing::xmr_amount::Piconero::ZERO,
+        status: OrderStatus::Pending,
+        confirmations: 0,
+        double_spend_detected_at: None,
+        cancelled_at: None,
+        refund_address: None,
+        created_at: order.created_at,
+        expires_at: order.expires_at,
+        updated_at: order.created_at,
+        first_scanned_height: None,
+        last_scanned_height: None,
+        currently_scanning: false,
+    };
+    of(
+        store,
+        &view,
+        Some(&order.metadata(store)),
+        device_name,
+        order.price.confirmations_required,
+        onion,
+    )
 }
 
 /// The store's order `order_id`, as the engine has it now; `None` for an
@@ -163,19 +211,68 @@ pub(crate) async fn load(
         crate::http::resolve_confirmations_required(state, &orders.store.id, &orders.sk, order_id)
             .await;
     let (id, order) = (orders.store.id.clone(), order_id.clone());
-    let metadata = state
+    let (metadata, device_name) = state
         .db
-        .read(move |db| db.get_order_currency_metadata(&id, &order))
+        .read(move |db| {
+            let metadata = db.get_order_currency_metadata(&id, &order)?;
+            let device = db.app_order_devices(&id, std::slice::from_ref(&order))?;
+            Ok::<_, crate::db::DbError>((metadata, device.into_values().next()))
+        })
         .await
-        .ok()
-        .flatten();
+        .unwrap_or_default();
     Ok(Some(of(
         &orders.store.id,
         &detail.order,
         metadata.as_ref(),
+        device_name,
         confirmations_required,
         state.onion_uri().as_deref(),
     )))
+}
+
+/// The store's order `order_id`, read outside a request (a push queued as
+/// its sale event is read), as [`load`] reads it: with the store's key as
+/// `keys` reads it now, and its onion checkout on `onion`. `None` when the
+/// store or the order is gone, or it couldn't be read.
+pub(crate) async fn read_outside_request(
+    db: &crate::db::Database,
+    engine: &crate::engine_client::EngineClient,
+    keys: &crate::http::store_key::StoreKeys,
+    store_id: &ConnectionId,
+    order_id: &OrderId,
+    onion: Option<&str>,
+) -> Option<Body> {
+    let (_, sk) = keys.current(store_id).await.ok()??;
+    let detail = engine.get_order_detail(&sk, order_id).await.ok()?;
+    let (id, order) = (store_id.clone(), order_id.clone());
+    let (metadata, device_name) = db
+        .read(move |db| {
+            let metadata = db.get_order_currency_metadata(&id, &order)?;
+            let device = db.app_order_devices(&id, std::slice::from_ref(&order))?;
+            Ok::<_, crate::db::DbError>((metadata, device.into_values().next()))
+        })
+        .await
+        .unwrap_or_default();
+    // As `http::resolve_confirmations_required` decides it.
+    let confirmations_required = match metadata
+        .as_ref()
+        .and_then(|m| m.confirmations_required_applied)
+    {
+        Some(applied) => applied,
+        None => engine
+            .get_tenant(&sk)
+            .await
+            .map(|t| t.confirmations_required)
+            .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS),
+    };
+    Some(of(
+        store_id,
+        &detail.order,
+        metadata.as_ref(),
+        device_name,
+        confirmations_required,
+        onion,
+    ))
 }
 
 /// Read one of the store's orders.
