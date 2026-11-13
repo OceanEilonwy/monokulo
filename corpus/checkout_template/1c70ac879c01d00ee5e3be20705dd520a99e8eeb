@@ -1,0 +1,1 @@
+{s<section class="a">{{status}}{{if awaiting}}<p>{{amount}}}</p><br>s{{end}}</section>

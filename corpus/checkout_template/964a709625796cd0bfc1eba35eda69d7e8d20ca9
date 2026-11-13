@@ -1,0 +1,1 @@
+<section claSs="c">{s}{{if refund_locked}}{}}<p>{{fiat}}</p>{{end}}-{s}{{if refund_locked}}{}}<p>{{fiat}}</p>{{end}}</section>
