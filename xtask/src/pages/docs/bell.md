@@ -16,7 +16,7 @@ to the point of sale at most.
 This page is the Bell's API, as a till (or anyone writing one) uses it, and
 what each of its errors means, then [how to run one](#run-one). The choices
 behind it are in its
-[decision log](https://github.com/OceanEilonwy/monokulo/blob/main/docs/decisions/bell.md);
+[decision log](https://github.com/OceanEilonwy/monokulo-pay/blob/main/docs/decisions/bell.md);
 its code is `crates/monokulo-bell`, the `monokulo-bell` binary. An iPhone
 till, or an Android one with only Google's services, takes its dings through
 [the push relay](../push-relay/).

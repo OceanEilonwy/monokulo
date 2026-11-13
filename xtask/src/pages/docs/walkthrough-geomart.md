@@ -5,9 +5,9 @@ hexagons. It's one HTML file with a catalogue, a cart and a checkout page,
 and a fake API in the same file standing in for a shop's server. It has no
 way to pay. In six steps it will.
 
-**Source:** [`examples/geomart/index.html`](https://github.com/OceanEilonwy/monokulo/blob/main/examples/geomart/index.html)
+**Source:** [`examples/geomart/index.html`](https://github.com/OceanEilonwy/monokulo-pay/blob/main/examples/geomart/index.html)
 in the repo, and the finished shop beside it,
-[`examples/geomart/done.html`](https://github.com/OceanEilonwy/monokulo/blob/main/examples/geomart/done.html).
+[`examples/geomart/done.html`](https://github.com/OceanEilonwy/monokulo-pay/blob/main/examples/geomart/done.html).
 **Try it:** [before](../geomart/) and [after](../geomart/done.html), or open the
 files straight from disk.
 

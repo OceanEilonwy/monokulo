@@ -13,16 +13,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OceanEilonwy/monokulo/actions/workflows/release.yml"><img src="https://github.com/OceanEilonwy/monokulo/actions/workflows/release.yml/badge.svg?branch=main" alt="Release"></a>
+  <a href="https://github.com/OceanEilonwy/monokulo-pay/actions/workflows/release.yml"><img src="https://github.com/OceanEilonwy/monokulo-pay/actions/workflows/release.yml/badge.svg?branch=main" alt="Release"></a>
   <a href="https://docs.monokulo.com/testing/coverage.html"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fdocs.monokulo.com%2Ftesting%2Fbadge.json" alt="Coverage"></a>
-  <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><img src="https://img.shields.io/badge/download-latest--main-e05d00" alt="Download latest-main"></a>
+  <a href="https://github.com/OceanEilonwy/monokulo-pay/releases/tag/latest-main"><img src="https://img.shields.io/badge/download-latest--main-e05d00" alt="Download latest-main"></a>
   <a href="https://docs.monokulo.com/guide/"><img src="https://img.shields.io/badge/docs-docs.monokulo.com-0969da" alt="Docs"></a>
 </p>
 
 <p align="center">
   <a href="https://docs.monokulo.com/"><b>Website</b></a> ·
   <a href="https://docs.monokulo.com/install-computer/"><b>Install</b></a> ·
-  <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><b>Downloads</b></a> ·
+  <a href="https://github.com/OceanEilonwy/monokulo-pay/releases/tag/latest-main"><b>Downloads</b></a> ·
   <a href="https://docs.monokulo.com/introduction/"><b>Docs</b></a> ·
   <a href="https://docs.monokulo.com/testing/"><b>How it's tested</b></a> ·
   <a href="https://github.com/OceanEilonwy/monokulo-woocommerce"><b>WooCommerce</b></a>
@@ -40,14 +40,16 @@
 
 ## Get started
 
-**1. Download** the build for your computer from [latest-main](https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main) (Linux, macOS, Windows), or use the [OpenWrt package](https://docs.monokulo.com/install-router/) or Docker (the [Dockerfile](Dockerfile)).
+**1. Download** the build for your computer from [latest-main](https://github.com/OceanEilonwy/monokulo-pay/releases/tag/latest-main) (Linux, macOS, Windows), or use the [OpenWrt package](https://docs.monokulo.com/install-router/) or Docker (the [Dockerfile](Dockerfile)).
 
 **2. Start it** with an encryption key you keep:
 
 ```sh
 openssl rand -hex 32 > monokulo.key
-MONOKULO_ENCRYPTION_KEY="$(cat monokulo.key)" ./monokulo
+MONOKULO_ENCRYPTION_KEY="$(cat monokulo.key)" ./monokulo-pay
 ```
+
+The executable is `monokulo-pay` (`monokulo-pay.exe` on Windows). It was called `monokulo` before; the Docker image and the OpenWrt package keep `monokulo` as an alias for it for now, so existing scripts keep working.
 
 **3. Open <http://127.0.0.1:8081>**, create your admin account, then add a Monero node and your first store.
 

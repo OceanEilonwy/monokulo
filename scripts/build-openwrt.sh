@@ -120,12 +120,16 @@ rustup target add "$TARGET"
 	# default `zmq` feature: a node's ZMQ announcements wake the scan at
 	# once. The relay and the Bell are binaries of their own crates.
 	cargo build --release --locked --target "$TARGET" \
-		-p monokulo --bin monokulo \
+		-p monokulo --bin monokulo-pay \
 		-p push-relay --bin monokulo-push-relay \
 		-p monokulo-bell --bin monokulo-bell
 )
 for pkg in $PKGS; do
-	bin="target/$TARGET/release/$pkg"
+	# The monokulo package's executable is monokulo-pay; the others' are
+	# named as their packages.
+	exe=$pkg
+	[ "$pkg" = monokulo ] && exe=monokulo-pay
+	bin="target/$TARGET/release/$exe"
 	# x86_64's musl target links a static PIE, aarch64's a plain static
 	# executable: either runs on OpenWrt, a dynamic one doesn't.
 	if ! file "$bin" | grep -Eq 'statically linked|static-pie linked'; then
@@ -133,7 +137,7 @@ for pkg in $PKGS; do
 		file "$bin" >&2
 		exit 1
 	fi
-	install -m 0755 "$bin" "openwrt/$pkg/files/$pkg"
+	install -m 0755 "$bin" "openwrt/$pkg/files/$exe"
 done
 
 rm -rf dist

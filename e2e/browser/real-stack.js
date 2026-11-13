@@ -85,7 +85,7 @@ function cleanEnv() {
 const BUILD_ARGS = [
   'build', '--locked', '--features', 'monokulo/snp',
   '-p', 'engine', '--bin', 'monokulo-engine',
-  '-p', 'monokulo', '--bin', 'monokulo', '--example', 'coverage_fixture',
+  '-p', 'monokulo', '--bin', 'monokulo-pay', '--example', 'coverage_fixture',
   '-p', 'engine-test-support', '--bin', 'fake-monerod',
 ];
 
@@ -98,7 +98,7 @@ const BUILD_ARGS = [
 const XTASK_BUILD_ARGS = ['build', '--locked', '-p', 'xtask', '--bin', 'xtask'];
 
 // The binaries BUILD_ARGS and XTASK_BUILD_ARGS make, where cargo leaves them.
-const BINARIES = [BIN('monokulo-engine'), BIN('monokulo'), BIN(path.join('examples', 'coverage_fixture')), BIN('fake-monerod'), BIN('xtask')];
+const BINARIES = [BIN('monokulo-engine'), BIN('monokulo-pay'), BIN(path.join('examples', 'coverage_fixture')), BIN('fake-monerod'), BIN('xtask')];
 
 // E2E_PREBUILT_BINARIES=1 runs the binaries already in target/debug instead:
 // CI's browser job downloads them from the job that built the Rust tests,
@@ -249,7 +249,7 @@ async function startStack(options = {}) {
     `path = ${JSON.stringify(path.join(dir, 'monokulo.db'))}`,
     '',
   ].join('\n'));
-  const monokulo = spawn(BIN('monokulo'), ['--options', monokuloOptions], {
+  const monokulo = spawn(BIN('monokulo-pay'), ['--options', monokuloOptions], {
     cwd: dir,
     env: {
       ...cleanEnv(),

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-const BIN: &str = env!("CARGO_BIN_EXE_monokulo");
+const BIN: &str = env!("CARGO_BIN_EXE_monokulo-pay");
 const ENGINE_TOKEN: &str = "options-file-test-token-0123456789abcdef";
 
 fn encryption_key() -> String {

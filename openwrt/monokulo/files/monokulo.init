@@ -122,7 +122,7 @@ start_service() {
 	[ "$engine_nice" -le 19 ] || engine_nice=19
 
 	procd_open_instance monokulo
-	procd_set_param command /usr/bin/monokulo \
+	procd_set_param command /usr/bin/monokulo-pay \
 		--options "$data_dir/monokulo.toml" \
 		--server-bind "$addr:$port" \
 		--database-path "$data_dir/monokulo.db" \

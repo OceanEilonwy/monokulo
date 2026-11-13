@@ -32,7 +32,7 @@ function state(st) {
 }
 
 // Where a build's commit link points.
-var REPOSITORY = 'https://github.com/OceanEilonwy/monokulo';
+var REPOSITORY = 'https://github.com/OceanEilonwy/monokulo-pay';
 
 // A build to read: the version, and the start of its commit linked to it.
 function describe(b) {

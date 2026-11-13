@@ -24,7 +24,7 @@ services:
     build: .
     image: monokulo
     command:
-      - monokulo
+      - monokulo-pay
       - --options=/var/lib/monokulo/monokulo.toml
       - --server-bind=0.0.0.0:8081
       - --database-path=/var/lib/monokulo/monokulo.db
@@ -62,7 +62,7 @@ services:
 #    image: monokulo
 #    depends_on: [engine]
 #    command:
-#      - monokulo
+#      - monokulo-pay
 #      - --options=/var/lib/monokulo/monokulo.toml
 #      - --server-bind=0.0.0.0:8081
 #      - --database-path=/var/lib/monokulo/monokulo.db
