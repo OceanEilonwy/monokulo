@@ -4,6 +4,14 @@ version.workspace = true
 repository.workspace = true
 edition = "2021"
 
+# The executable is `monokulo-pay`, named for the repository; the package
+# keeps its name, so `-p monokulo` and `monokulo::…` paths stay put. The
+# installs (the Docker image, the OpenWrt package) keep `monokulo` as a
+# link to it for existing scripts.
+[[bin]]
+name = "monokulo-pay"
+path = "src/main.rs"
+
 [features]
 # `http::AppState::for_tests`, `db::Db::seed_test_admin`, `http::test_support`
 # and the API reference's recording (`api::runtime::recording`), for other

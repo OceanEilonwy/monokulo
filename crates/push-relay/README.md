@@ -1,6 +1,6 @@
 # monokulo-push-relay
 
-The push relay of [Monokulo](https://github.com/OceanEilonwy/monokulo), on
+The push relay of [Monokulo](https://github.com/OceanEilonwy/monokulo-pay), on
 its own: it takes the Web Push that monokulo and the Monokular Bell send to
 a till app and hands it on to Apple's (APNs) or Google's (FCM) push service,
 under the app's own keys. An app registers its device token here and gets

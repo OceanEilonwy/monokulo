@@ -49,7 +49,7 @@ members = [
 # with it.
 [workspace.package]
 version = "0.1.0"
-repository = "https://github.com/OceanEilonwy/monokulo"
+repository = "https://github.com/OceanEilonwy/monokulo-pay"
 
 # Every crate takes these (`[lints] workspace = true`). Clippy's default lints
 # are errors, so `cargo clippy` fails locally exactly as it does in CI (which

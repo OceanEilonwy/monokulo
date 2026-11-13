@@ -665,7 +665,7 @@ mod tests {
     const NEXTEST: &str = r#"<testsuites>
         <testsuite name="engine"><testcase name="scanner::tests::a" time="0.5"/></testsuite>
         <testsuite name="engine::backup_restore"><testcase name="restores" time="2.0"><failure/></testcase></testsuite>
-        <testsuite name="monokulo::bin/monokulo"><testcase name="main::tests::b" time="0.1"><skipped/></testcase></testsuite>
+        <testsuite name="monokulo::bin/monokulo-pay"><testcase name="main::tests::b" time="0.1"><skipped/></testcase></testsuite>
         <testsuite name="engine::e2e_stagenet"><testcase name="pays" time="30"/></testsuite>
     </testsuites>"#;
 
@@ -684,7 +684,7 @@ mod tests {
             [
                 ("engine", Kind::Unit, Status::Passed),
                 ("engine::backup_restore", Kind::Integration, Status::Failed),
-                ("monokulo::bin/monokulo", Kind::Unit, Status::Skipped),
+                ("monokulo::bin/monokulo-pay", Kind::Unit, Status::Skipped),
                 ("engine::e2e_stagenet", Kind::E2e, Status::Passed),
             ]
         );

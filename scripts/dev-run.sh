@@ -58,7 +58,7 @@ ENGINE_DIR="$RUN_DIR/engine"
 MK_DIR="$RUN_DIR/monokulo"
 
 ENGINE_BIN="$REPO_ROOT/target/debug/monokulo-engine"
-MK_BIN="$REPO_ROOT/target/debug/monokulo"
+MK_BIN="$REPO_ROOT/target/debug/monokulo-pay"
 
 ENGINE_OPTIONS="$ENGINE_DIR/engine.toml"
 MK_OPTIONS="$MK_DIR/monokulo.toml"
@@ -140,7 +140,7 @@ ensure_cp_key() {
 
 build() {
     echo "==> building the engine and monokulo (debug)"
-    (cd "$REPO_ROOT" && cargo build -p engine --bin monokulo-engine -p monokulo --bin monokulo)
+    (cd "$REPO_ROOT" && cargo build -p engine --bin monokulo-engine -p monokulo --bin monokulo-pay)
 }
 
 # Writes each process's options file with the dev values, the first time
@@ -183,7 +183,7 @@ EOF
         cat > "$MK_OPTIONS" <<EOF
 # The dev stack's monokulo settings, written once by scripts/dev-run.sh.
 # Edit them here or on the admin settings page; delete this file to get
-# the dev values back. \`monokulo --init --options x.toml\` writes a file
+# the dev values back. \`monokulo-pay --init --options x.toml\` writes a file
 # describing every setting.
 
 [server]

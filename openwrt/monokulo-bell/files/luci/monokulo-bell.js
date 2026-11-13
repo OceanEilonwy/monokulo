@@ -76,7 +76,7 @@ var GROUPS = [
 ];
 
 // Where a build's commit link points.
-var REPOSITORY = 'https://github.com/OceanEilonwy/monokulo';
+var REPOSITORY = 'https://github.com/OceanEilonwy/monokulo-pay';
 
 function text(value) {
 	return document.createTextNode(value == null ? '' : String(value));

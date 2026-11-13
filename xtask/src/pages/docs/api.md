@@ -230,7 +230,7 @@ To generate a client at a pinned Monokulo commit, write the same document
 from its source:
 
 ```
-git clone https://github.com/OceanEilonwy/monokulo && cd monokulo
+git clone https://github.com/OceanEilonwy/monokulo-pay && cd monokulo-pay
 cargo xtask api openapi --out openapi.json
 ```
 

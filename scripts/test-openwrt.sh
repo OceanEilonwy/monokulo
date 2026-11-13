@@ -139,6 +139,7 @@ luci_login() {
 
 check "monokulo installs by name from the repository" 'apk add monokulo'
 eventually "monokulo runs" '. /tmp/t.sh; running monokulo'
+check "monokulo's old executable name still runs it" '[ "$(readlink /usr/bin/monokulo)" = monokulo-pay ] && monokulo --version | grep -q .'
 check "rpcd serves monokulo's ubus object" 'ubus -S list monokulo'
 luci_login monokulo
 check "LuCI's status of monokulo has it running and its build, and no secret" \
@@ -330,6 +331,6 @@ removal_stops monokulo-push-relay
 removal_stops monokulo-bell
 check "monokulo is removed" 'apk del monokulo'
 eventually "monokulo's removal stops it" '. /tmp/t.sh; ! running monokulo'
-check "monokulo's removal takes its program and keeps its key" '[ ! -e /usr/bin/monokulo ] && [ -s /etc/monokulo/secrets ]'
+check "monokulo's removal takes its program and keeps its key" '[ ! -e /usr/bin/monokulo-pay ] && [ ! -L /usr/bin/monokulo ] && [ -s /etc/monokulo/secrets ]'
 
 echo "all $passed checks passed"

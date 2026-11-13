@@ -11,10 +11,10 @@ pub(in crate::pages) const LEAD: &str =
     "Download one executable, start it in a terminal, then finish setup in your browser.";
 
 /// The key commands for Linux and macOS, which are the same.
-const UNIX_KEY: &str = "umask 077\nopenssl rand -hex 32 > monokulo.key\nchmod +x monokulo";
+const UNIX_KEY: &str = "umask 077\nopenssl rand -hex 32 > monokulo.key\nchmod +x monokulo-pay";
 
 /// The start command for Linux and macOS.
-const UNIX_START: &str = "MONOKULO_ENCRYPTION_KEY=\"$(cat monokulo.key)\" ./monokulo";
+const UNIX_START: &str = "MONOKULO_ENCRYPTION_KEY=\"$(cat monokulo.key)\" ./monokulo-pay";
 
 /// The page under its title and lead: where to download a release (from
 /// the given repository), a tab per operating system with its key and
@@ -66,7 +66,7 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
                 p.muted.small {
                     "The executable is unsigned. If macOS blocks it after download, clear its quarantine attribute once for the binary you downloaded from the release page:"
                 }
-                (command("xattr -d com.apple.quarantine monokulo", "Copy the quarantine command"))
+                (command("xattr -d com.apple.quarantine monokulo-pay", "Copy the quarantine command"))
             },
         ),
         (
@@ -88,7 +88,7 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
                     " for an Intel / AMD 64-bit PC. Right-click the ZIP and choose "
                     strong { "Extract All…" }
                     ", then open PowerShell in the folder containing "
-                    code { "monokulo.exe" }
+                    code { "monokulo-pay.exe" }
                     "."
                 }
                 p.muted.small {
@@ -111,7 +111,7 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
             "Start Monokulo",
             html! {
                 p { "Run this each time you start it, from the folder containing your executable and key file." }
-                (command("$env:MONOKULO_ENCRYPTION_KEY = (Get-Content -Raw .\\monokulo.key).Trim()\n.\\monokulo.exe", "Copy the start commands"))
+                (command("$env:MONOKULO_ENCRYPTION_KEY = (Get-Content -Raw .\\monokulo.key).Trim()\n.\\monokulo-pay.exe", "Copy the start commands"))
             },
         ),
     ]);
@@ -126,14 +126,21 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
             "Open the "
             a href=(format!("{github_url}/releases/latest")) { "latest release" }
             " and download the "
-            code { "monokulo-…" }
+            code { "monokulo-pay-…" }
             " ZIP for your computer. For the newest build from main, use the "
             a href=(format!("{github_url}/releases/tag/latest-main")) { "latest-main prerelease" }
             ". Extract the ZIP, then open a terminal in the extracted folder containing "
-            code { "monokulo" }
+            code { "monokulo-pay" }
             " (or "
-            code { "monokulo.exe" }
+            code { "monokulo-pay.exe" }
             ")."
+        }
+        p.muted.small {
+            "The executable was called "
+            code { "monokulo" }
+            " before. The Docker image and the OpenWrt package still answer to that name as an alias, for now; in a ZIP, run "
+            code { "monokulo-pay" }
+            "."
         }
         p.muted.small {
             "Each ZIP has a matching "

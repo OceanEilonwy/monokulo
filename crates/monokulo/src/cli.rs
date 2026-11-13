@@ -1,4 +1,4 @@
-//! The `monokulo` command line, with `clap`: `--options` and `--init` for
+//! The `monokulo-pay` command line, with `clap`: `--options` and `--init` for
 //! the options file, and an option for every setting that takes one, with
 //! help from the settings' own declarations (`live_settings::cli`). The
 //! engine that runs inside monokulo (`engine.mode = "embedded"`, the
@@ -32,13 +32,13 @@ file, only in their environment variable (listed after the options): every user 
 machine can read the process list. MONOKULO_ENCRYPTION_KEY is required.";
 
 const EXAMPLES: &str = "Examples:
-  monokulo --init
+  monokulo-pay --init
       Write the options file, with every setting described, and say where.
-  MONOKULO_ENCRYPTION_KEY=$(cat monokulo.key) monokulo
+  MONOKULO_ENCRYPTION_KEY=$(cat monokulo.key) monokulo-pay
       Start monokulo, with its engine inside it.
-  ... monokulo --server-bind 0.0.0.0:8081 --engine-payment-confirmations-required 3
+  ... monokulo-pay --server-bind 0.0.0.0:8081 --engine-payment-confirmations-required 3
       Listen on every address; payments need 3 confirmations unless a store says otherwise.
-  ... MONOKULO_ENGINE_TOKEN=$(cat engine.token) monokulo --engine-mode remote --engine-url http://engine:8443
+  ... MONOKULO_ENGINE_TOKEN=$(cat engine.token) monokulo-pay --engine-mode remote --engine-url http://engine:8443
       Use a separate engine on another host.";
 
 /// monokulo's options file, in `~/.config/monokulo/` unless `--options`
@@ -48,7 +48,7 @@ pub const OPTIONS_FILE: &str = "monokulo.toml";
 /// The command line: the options file, then an option per setting, then
 /// the embedded engine's.
 pub fn command() -> Command {
-    let command = Command::new("monokulo")
+    let command = Command::new("monokulo-pay")
         .version(env!("CARGO_PKG_VERSION"))
         .about(ABOUT)
         .long_about(LONG_ABOUT)

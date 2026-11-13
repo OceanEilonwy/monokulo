@@ -84,7 +84,7 @@ jobs:
             -E 'package(engine) & kind(lib)' --archive-file target/engine-tests.tar.zst
           cargo build -p xtask --locked
           tar --zstd -cf target/rust-binaries.tar.zst -C target \
-            debug/monokulo debug/monokulo-engine debug/fake-monerod debug/examples/coverage_fixture \
+            debug/monokulo-pay debug/monokulo-engine debug/fake-monerod debug/examples/coverage_fixture \
             debug/stress_fixture debug/xtask
           ls -l target/*.tar.zst
           if test -n "${RUSTC_WRAPPER:-}"; then sccache --show-stats; fi

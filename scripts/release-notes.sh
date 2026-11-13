@@ -18,7 +18,7 @@ link() {
 }
 
 row() {
-	echo "| $1 | $(link monokulo "$2") |"
+	echo "| $1 | $(link monokulo-pay "$2") |"
 }
 
 # The push relay's and the Bell's zips, side by side.
@@ -29,8 +29,8 @@ services() {
 cat <<EOF
 ## Download
 
-monokulo is one executable with the engine inside it. Pick the file for your
-computer:
+monokulo is one executable, \`monokulo-pay\`, with the engine inside it. Pick
+the file for your computer:
 
 | Computer | File |
 | --- | --- |
@@ -44,20 +44,20 @@ Unzip it and start monokulo with a key of your own for its database
 (64 hex characters; \`openssl rand -hex 32\` makes one, and keep it):
 
 \`\`\`sh
-MONOKULO_ENCRYPTION_KEY=<64 hex chars> ./monokulo
+MONOKULO_ENCRYPTION_KEY=<64 hex chars> ./monokulo-pay
 \`\`\`
 
 On Windows (PowerShell):
 
 \`\`\`powershell
-\$env:MONOKULO_ENCRYPTION_KEY = "<64 hex chars>"; .\\monokulo.exe
+\$env:MONOKULO_ENCRYPTION_KEY = "<64 hex chars>"; .\\monokulo-pay.exe
 \`\`\`
 
 Then open http://127.0.0.1:8081 to create the admin account.
 
 - **macOS**: the binary isn't signed by Apple, so macOS refuses one
   downloaded in a browser. Clear that once with
-  \`xattr -d com.apple.quarantine monokulo\`.
+  \`xattr -d com.apple.quarantine monokulo-pay\`.
 - **Windows**: the binary isn't signed, so SmartScreen may ask first
   (More info > Run anyway). It needs the Microsoft Visual C++ runtime,
   which nearly every Windows machine already has.

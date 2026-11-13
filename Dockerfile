@@ -51,11 +51,11 @@ ARG MONOKULO_GIT_COMMIT=
 RUN cargo build --release --locked \
         ${ENGINE_FEATURES:+--features engine/${ENGINE_FEATURES}} \
         -p engine --bin monokulo-engine \
-        -p monokulo --bin monokulo \
+        -p monokulo --bin monokulo-pay \
         -p push-relay --bin monokulo-push-relay \
         -p monokulo-bell --bin monokulo-bell \
  && mkdir /out \
- && cp target/release/monokulo-engine target/release/monokulo target/release/monokulo-push-relay \
+ && cp target/release/monokulo-engine target/release/monokulo-pay target/release/monokulo-push-relay \
        target/release/monokulo-bell /out/
 
 FROM debian:${DEBIAN_VERSION}-slim
@@ -65,6 +65,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --user-group --home-dir /var/lib/monokulo --create-home monokulo
 COPY --from=build /out/ /usr/local/bin/
+# `monokulo`, the executable's old name, for scripts and compose files that
+# still run it.
+RUN ln -s monokulo-pay /usr/local/bin/monokulo
 USER monokulo
 WORKDIR /var/lib/monokulo
 VOLUME /var/lib/monokulo
@@ -79,5 +82,5 @@ ENTRYPOINT ["tini", "--"]
 # database in the volume. Given as options, these are locked on the admin
 # page; everything else is saved to the options file. compose.yaml runs the
 # engine the same way.
-CMD ["monokulo", "--options", "/var/lib/monokulo/monokulo.toml", \
+CMD ["monokulo-pay", "--options", "/var/lib/monokulo/monokulo.toml", \
      "--server-bind", "0.0.0.0:8081", "--database-path", "/var/lib/monokulo/monokulo.db"]

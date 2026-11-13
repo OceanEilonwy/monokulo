@@ -64,9 +64,9 @@ pub(in crate::pages) fn config(_: &Site) -> Markup {
             "To choose a config file explicitly, start with "
             code { "--options /path/to/monokulo.toml" }
             ". Running "
-            code { "./monokulo --init" }
+            code { "./monokulo-pay --init" }
             " (PowerShell: "
-            code { ".\\monokulo.exe --init" }
+            code { ".\\monokulo-pay.exe --init" }
             ") writes a template with documented defaults and prints its location. The data folder contains "
             code { "monokulo.db" }
             " and "

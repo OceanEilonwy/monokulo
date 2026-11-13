@@ -36,7 +36,7 @@ endef
 define Package/monokulo/description
   Accept Monero on your own router. Monokulo watches the chain with each
   store's view key (never a spend key), tracks orders and tells the store
-  when one is paid. One static binary: monokulo, the web app and admin,
+  when one is paid. One static binary, monokulo-pay: the web app and admin,
   with the private engine that scans the chain running inside it on CPUs
   of its own. Includes its LuCI page under Services > Monokulo.
 endef
@@ -50,7 +50,9 @@ endef
 
 define Package/monokulo/install
 	$(INSTALL_DIR) $(1)/usr/bin $(1)/etc/init.d $(1)/etc/config $(1)/lib/upgrade/keep.d
-	$(INSTALL_BIN) $(CURDIR)/files/monokulo $(1)/usr/bin/monokulo
+	$(INSTALL_BIN) $(CURDIR)/files/monokulo-pay $(1)/usr/bin/monokulo-pay
+	# The executable's old name, for scripts that still run it.
+	$(LN) monokulo-pay $(1)/usr/bin/monokulo
 	$(INSTALL_BIN) $(CURDIR)/files/monokulo.init $(1)/etc/init.d/monokulo
 	$(INSTALL_CONF) $(CURDIR)/files/monokulo.config $(1)/etc/config/monokulo
 	$(INSTALL_DATA) $(CURDIR)/files/monokulo.keep $(1)/lib/upgrade/keep.d/monokulo

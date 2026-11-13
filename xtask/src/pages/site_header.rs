@@ -14,7 +14,7 @@ use maud::{html, Markup, PreEscaped};
 use ui::assets::icons;
 
 /// The repository the site links to when no other is given.
-pub(crate) const GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
+pub(crate) const GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo-pay";
 
 /// Where the site is published (GitHub Pages, custom domain), with no
 /// trailing slash: the address the landing page tells routers to install

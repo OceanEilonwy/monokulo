@@ -73,9 +73,10 @@ jobs:
       coverage: true
 
   monokulo:
-    # monokulo (the engine inside it: one executable) for every computer a
-    # merchant might run it on, as monokulo-{version}-{target}.zip with its
-    # SHA-256. The release jobs below put the files on the repository's
+    # monokulo (the engine inside it: one executable, monokulo-pay) for every
+    # computer a merchant might run it on, as
+    # monokulo-pay-{version}-{target}.zip with its SHA-256, named for the
+    # executable as the services' zips are. The release jobs below put the files on the repository's
     # Releases page; a manual run of any branch (Actions > release > Run
     # workflow) keeps them as the run's artifacts only.
     name: build monokulo (${{ matrix.target }})
@@ -118,10 +119,10 @@ jobs:
           MONOKULO_GIT_COMMIT: ${{ github.sha }}
         # With the engine's default features (zmq), as the Docker image and
         # the OpenWrt package are built.
-        run: cargo build --release --locked -p monokulo --bin monokulo --target ${{ matrix.target }}
+        run: cargo build --release --locked -p monokulo --bin monokulo-pay --target ${{ matrix.target }}
       - name: Check it runs
         shell: bash
-        run: target/${{ matrix.target }}/release/monokulo --version
+        run: target/${{ matrix.target }}/release/monokulo-pay --version
       - name: Package
         id: package
         shell: bash
@@ -131,9 +132,9 @@ jobs:
           if test "$GITHUB_REF_TYPE" = tag; then version="${GITHUB_REF_NAME#v}"
           elif test "$GITHUB_REF" = refs/heads/main; then version=main
           else version="dev-${GITHUB_SHA::7}"; fi
-          name="monokulo-${version}-${{ matrix.target }}"
-          bin=monokulo
-          if test "$RUNNER_OS" = Windows; then bin=monokulo.exe; fi
+          name="monokulo-pay-${version}-${{ matrix.target }}"
+          bin=monokulo-pay
+          if test "$RUNNER_OS" = Windows; then bin=monokulo-pay.exe; fi
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/$bin" README.md "dist/$name/"
           cd dist
@@ -407,11 +408,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      # The version's zips only: monokulo-* also matches the OpenWrt package
-      # artifacts (monokulo-openwrt-*).
+      # The version's zips only: monokulo-pay-[0-9]* and not the OpenWrt
+      # package artifacts (monokulo-openwrt-*) or the services'.
       - uses: actions/download-artifact@v8
         with:
-          pattern: monokulo-[0-9]*
+          pattern: monokulo-pay-[0-9]*
           path: dist
           merge-multiple: true
       - uses: actions/download-artifact@v8
@@ -459,11 +460,11 @@ jobs:
       TAG: latest-main
     steps:
       - uses: actions/checkout@v7
-      # Only main's own zips: monokulo-* also matches the OpenWrt package
-      # artifacts, whose assets/ directory `gh release upload dist/*` refuses.
+      # Only main's own zips, not the OpenWrt package artifacts, whose
+      # assets/ directory `gh release upload dist/*` refuses.
       - uses: actions/download-artifact@v8
         with:
-          pattern: monokulo-main-*
+          pattern: monokulo-pay-main-*
           path: dist
           merge-multiple: true
       - uses: actions/download-artifact@v8
