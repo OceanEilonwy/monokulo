@@ -1,0 +1,1 @@
+<section >{{status}}{{if awaiting}}<p>us{{fiat}}</p>{{qr small}}{<br>d{{end}}</section>

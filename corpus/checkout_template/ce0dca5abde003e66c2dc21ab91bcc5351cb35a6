@@ -1,0 +1,1 @@
+<section class="a">{{status}}{{status}}{{if !awaiting}}<p>{{amount}} {{fiat}}</p>{{qr small}}{ss="qfc{if !awaiting}}<p>{{amount}} {{fiat}}</p>{{qr small}}{ss=}!{{end}}</section>
